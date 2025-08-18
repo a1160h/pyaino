@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.08.17 A.Inoue
+# 2025.08.18 A.Inoue
 
 import copy
 import warnings
@@ -3459,25 +3459,30 @@ class GeneralNormalizationBase(Function):
         return gx 
 
 class BatchNormalization(GeneralNormalizationBase):
-    def __init__(self, scale_and_bias=True, **kwargs):
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
         # 正規化の軸はバッチ軸0だが、scale_and_biasの軸は特長軸すなわち0以外の軸
-        if scale_and_bias:
-            # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
-            kwargs['inplace'] = True
-            #pass
-        super().__init__(axis=0, ppl=True, scale_and_bias=scale_and_bias, exclude=True, **kwargs)
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
+        kwargs['axis']           = 0
+        kwargs['exclude']        = True
+        kwargs['ppl']            = True
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
 
 class batch_normalization(BatchNormalization):
     pass
 
 
 class LayerNormalization(GeneralNormalizationBase):
-    def __init__(self, axis=-1, scale_and_bias=True, **kwargs):
+    def __init__(self, axis=-1, scale_and_bias=True, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
-        #if scale_and_bias: 
-            # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
-        #    kwargs['inplace'] = True
-        super().__init__(axis=axis, ppl=False, scale_and_bias=scale_and_bias, exclude=False, **kwargs)
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
+        kwargs['axis']           = axis
+        kwargs['exclude']        = False
+        kwargs['ppl']            = False
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
 
 
 #### 層正規化 #####################################################

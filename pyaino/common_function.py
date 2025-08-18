@@ -1,5 +1,5 @@
 # common_function
-# 2025.08.17 A.Inoue 
+# 2025.08.18 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -21,6 +21,14 @@ except:
     print('Please install Pillow.')
 
 print('common_function np =', np.__name__)    
+
+def xy_graph(x, y):
+    """ 入出力関係の表示(散布図) """
+    plt.grid()
+    plt.scatter(x, y, marker='.')
+    plt.xlabel('input')
+    plt.ylabel('output')
+    plt.show()
 
 def is_user_defined_instance(obj):
     """ インスタンス化されたユーザ定義のクラスの判別(FunctionsやNeuronのクラス) """
