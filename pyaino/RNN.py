@@ -1,5 +1,5 @@
 ﻿# RNN
-# 2025.08.17 A.Inoue
+# 2025.09.01 A.Inoue
 from pyaino.Config import *
 from pyaino import Neuron as neuron, Functions as f
 from pyaino import LossFunctions
@@ -19,6 +19,16 @@ class RNN_Base:
             v, l, m, n = None, None, None, None
         self.config = v, l, m, n # 語彙数,語ベクトル長,隠れ層ニューロン数,出力数
         print('Initialize', self.__class__.__name__, self.config)
+        
+        # 残差接続residual(未指定:False、数値:有効、その他:例外)
+        res = kwargs.pop('residual', None)
+        if res is None:
+            self.residual = False
+        elif isinstance(res, (int, float, np.floating)):
+            self.residual = np.asarray(float(res), dtype=Config.dtype)
+        else:
+            raise TypeError("residual should be scalar number in range 0-1.")
+            
         # 出力層(full_connection_layer、affine_layer)
         ol_act_cand = 'Sigmoid' if n == 1 else 'Softmax'
         opt_for_ol = {}
@@ -139,6 +149,8 @@ class RNN_Base:
                 print('   weight_clipping = ', layer.WCw.clip, end='')
             if getattr(layer, 'WC2w', None) is not None:
                 print('   weight_clipping2 = ', layer.WC2w.clip, end='')
+            if self.residual and i>0 and layer.__class__.__base__.__name__=='RnnBaseLayer':
+                print(' residual connection =', self.residual, end='')
             print('\n------------------------------------------------------------------------')
         #print(' except for output layer, dropout rate is given when forward propagation')
         if hasattr(self, 'loss_function'):
@@ -242,6 +254,8 @@ class RNN_Base:
                 enumerate(zip(self.layers, self.fopt_for_layers, self.r0_target_layer)):
             self.error_layer = layer                                      # デバグ用 
 
+            last_x = y.copy()
+            
             if hasattr(layer, 'mask'): # Emmbeddingや親がRnnBaseLayerの場合のmask
                 opt['mask'] = mask
                 
@@ -251,6 +265,10 @@ class RNN_Base:
                 self.r0_given = True
             else:
                 y = layer.forward(y, **opt) # optは辞書型
+
+            #print(i, layer.__class__.__name__, last_x.shape, y.shape)  
+            if self.residual and i>0 and layer.__class__.__base__.__name__=='RnnBaseLayer':
+                y = y + self.residual * last_x 
             
             self.outputshape[str(i) + layer.__class__.__name__] = y.shape # デバグ用
 
@@ -275,11 +293,21 @@ class RNN_Base:
         gx = gy; gr0 = None
         for layer, r0t in zip(reversed(self.layers), reversed(self.r0_target_layer)):
             self.error_layer = layer
+
+            last_gx = gx.copy()
+            
             if r0t and self.r0_given:
                 gx, gr0 = layer.backward(gx)
                 self.r0_given = False
             else:    
                 gx = layer.backward(gx)
+
+            
+            #print(layer.__class__.__name__, type(last_gx), type(gx))
+            #print(layer.__class__.__name__, last_gx.shape)#, gx.shape)
+            if self.residual and layer.__class__.__base__.__name__=='RnnBaseLayer':
+                gx += self.residual * last_gx
+                
         self.gr0 = gr0        
         return gx
 
@@ -513,6 +541,8 @@ class RNN_With_Attention_Base(RNN_Base):
                 enumerate(zip(self.layers, self.fopt_for_layers, self.r0_target_layer)):
             self.error_layer = layer
 
+            last_x = y.copy() 
+
             if hasattr(layer, 'mask'): # Emmbeddingや親がRnnBaseLayerの場合のmask
                 opt['mask'] = mask
                 
@@ -530,6 +560,10 @@ class RNN_With_Attention_Base(RNN_Base):
             else:
                 y = layer.forward(y, **opt) # optは辞書型
 
+            #print(i, layer.__class__.__name__, last_x.shape, y.shape)  
+            if self.residual and i>0 and layer.__class__.__base__.__name__=='RnnBaseLayer':
+                y = y + self.residual * last_x 
+            
             self.outputshape[str(i) + layer.__class__.__name__] = y.shape # デバグ用
                
         if t is None:
@@ -552,6 +586,9 @@ class RNN_With_Attention_Base(RNN_Base):
         gx = gy; gr0 = None
         for layer, r0t in zip(reversed(self.layers), reversed(self.r0_target_layer)):
             self.error_layer = layer
+            
+            last_gx = gx.copy()
+            
             if layer.__class__.__name__ == 'AttentionUnit':
                 B, T, H2 = gx.shape; H = H2//2
                 gv, gk, gq = layer.backward(gx[:,:,:H]) # gv:valueの勾配、gk:keyの勾配、gq:queryの勾配
@@ -562,6 +599,12 @@ class RNN_With_Attention_Base(RNN_Base):
                 self.r0_given = False
             else:    
                 gx = layer.backward(gx)
+
+            #print(layer.__class__.__name__, type(last_gx), type(gx))
+            #print(layer.__class__.__name__, last_gx.shape)#, gx.shape)
+            if self.residual and layer.__class__.__base__.__name__=='RnnBaseLayer':
+                gx += self.residual * last_gx
+                
         self.gr0 = gr0
         return gx, gz
 
