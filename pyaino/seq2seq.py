@@ -1,9 +1,9 @@
 # seq2seq sequence to sequence
 # Base functions for seq2seq and each seq2seq is defined
-# 20250901 A.Inoue
+# 20250902 A.Inoue
 from pyaino.Config import *
 from pyaino import common_function as cf
-from pyaino import RNN2 as RNN
+from pyaino import RNN
 from pyaino import LossFunctions
 
 class Seq2seq_Base:
