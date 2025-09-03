@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.08.18 A.Inoue
+# 2025.09.03 A.Inoue
 
 import copy
 import warnings
@@ -116,9 +116,12 @@ class LinearLayer(Function):
             self.WCw(self.w)
         
     def fix_configuration(self, shape):
-        m = 1
-        for i in shape[1:]:                       # バッチ軸以外の積
-            m *= i
+        if self.dot_linear.__class__.__name__=='MatMulLinear':
+            m = shape[-1]
+        else:
+            m = 1
+            for i in shape[1:]:                       # バッチ軸以外の積
+                m *= i
         self.config = m, self.config[1]
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
