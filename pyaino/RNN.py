@@ -1,5 +1,5 @@
 ﻿# RNN
-# 2025.09.01 A.Inoue
+# 2025.09.03 A.Inoue
 from pyaino.Config import *
 from pyaino import Neuron as neuron, Functions as f
 from pyaino import LossFunctions
@@ -291,7 +291,8 @@ class RNN_Base:
             raise Exception("Can't get gradient for backward.")
 
         gx = gy; gr0 = None
-        for layer, r0t in zip(reversed(self.layers), reversed(self.r0_target_layer)):
+        for layer, r0t in \
+            enumerate(zip(reversed(self.layers), reversed(self.r0_target_layer))):
             self.error_layer = layer
 
             last_gx = gx.copy()
@@ -305,7 +306,8 @@ class RNN_Base:
             
             #print(layer.__class__.__name__, type(last_gx), type(gx))
             #print(layer.__class__.__name__, last_gx.shape)#, gx.shape)
-            if self.residual and layer.__class__.__base__.__name__=='RnnBaseLayer':
+            if self.residual and i > len(self.layers) -1 \
+                             and layer.__class__.__base__.__name__=='RnnBaseLayer':
                 gx += self.residual * last_gx
                 
         self.gr0 = gr0        
@@ -584,7 +586,8 @@ class RNN_With_Attention_Base(RNN_Base):
             raise Exception("Can't get gradient for backward.")
 
         gx = gy; gr0 = None
-        for layer, r0t in zip(reversed(self.layers), reversed(self.r0_target_layer)):
+        for i, (layer, r0t) in \
+            enumerate(zip(reversed(self.layers), reversed(self.r0_target_layer))):
             self.error_layer = layer
             
             last_gx = gx.copy()
@@ -600,9 +603,10 @@ class RNN_With_Attention_Base(RNN_Base):
             else:    
                 gx = layer.backward(gx)
 
-            #print(layer.__class__.__name__, type(last_gx), type(gx))
-            #print(layer.__class__.__name__, last_gx.shape)#, gx.shape)
-            if self.residual and layer.__class__.__base__.__name__=='RnnBaseLayer':
+            #print(i, layer.__class__.__name__, type(last_gx), type(gx))
+            #print(i, layer.__class__.__name__, last_gx.shape)#, gx.shape)
+            if self.residual and i > len(self.layers) -1 \
+                             and layer.__class__.__base__.__name__=='RnnBaseLayer':
                 gx += self.residual * last_gx
                 
         self.gr0 = gr0
