@@ -1,5 +1,5 @@
 # common_function
-# 2025.08.18 A.Inoue 
+# 2025.09.05 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1774,7 +1774,6 @@ class Tokenizer:
             self.token2id = {}
         elif type(default)==dict:
             self.token2id = default
-            self.token2id.pop('<unk>', None) # <unk>は一旦削除
         self.id2token = {v: k for k, v in self.token2id.items()}
         used_ids = set(i for i in self.id2token) # 使用idの集合
 
@@ -1792,10 +1791,13 @@ class Tokenizer:
                 self.id2token[new_id] = token
                 used_ids.add(new_id)
             
-        # 末尾に<unk>を加える        
-        last_id = len(self.token2id) 
-        self.token2id["<unk>"] = last_id
-        self.id2token[last_id] = "<unk>"
+        # 末尾に<unk>を加える
+        if '<unk>' in self.token2id:
+            pass
+        else:
+            last_id = len(self.token2id) 
+            self.token2id["<unk>"] = last_id
+            self.id2token[last_id] = "<unk>"
         return
 
     def encode(self, text, ndarray=True):
