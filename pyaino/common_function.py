@@ -1,5 +1,5 @@
 # common_function
-# 2025.09.05 A.Inoue 
+# 2025.09.06 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1755,22 +1755,25 @@ class Tokenizer:
             self.joiner = lambda data : self.end.join(data)
             print('joiner is built-in join() function in Python.')
 
-        if text is None:
-            data = None
-        elif isinstance(text, (list, tuple)):
-            data = text
-        else:
-            data = self.splitter(text)
-
-        self.create_vocab(data, default)
+        self.token2id = None
+        self.id2token = None      
+        self.create_vocab(text, default)
 
     def vocab_size(self):
         return len(self.token2id)
      
-    def create_vocab(self, data=None, default=None):
-        """ リスト形式のdataからtokenとidの間の双方向の変換の辞書を作る """
+    def create_vocab(self, text=None, default=None, clear=False):
+        """ textを分割しdataを得て、tokenとidの間の双方向の変換の辞書を作る """
+
+        if text is None:
+            data = None
+        elif isinstance(text, (list, tuple)): # 分割済みと想定
+            data = text
+        else:
+            data = self.splitter(text)
+
         # defaultに応じたtoken2idとid2tokenの初期化
-        if default is None:
+        if clear and default is None:
             self.token2id = {}
         elif type(default)==dict:
             self.token2id = default
@@ -1791,7 +1794,7 @@ class Tokenizer:
                 self.id2token[new_id] = token
                 used_ids.add(new_id)
             
-        # 末尾に<unk>を加える
+        # <unk>が無い場合に加える
         if '<unk>' in self.token2id:
             pass
         else:
