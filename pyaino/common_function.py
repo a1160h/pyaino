@@ -1,5 +1,5 @@
 # common_function
-# 2025.09.06 A.Inoue 
+# 2025.09.07 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1018,15 +1018,51 @@ def get_accuracy(y, t, mchx=False):
         return accuracy
 
 class Mesurement:
-    def __init__(self, model, get_acc=None):
+    def __init__(self, model, get_acc=None, batch_size=200):
         self.model = model
         if get_acc is not None:
             self.get_acc = get_acc
         else:
             self.get_acc = get_accuracy # get_accuracyはcommon_function内に定義
         self.error, self.accuracy = [], []
+        self.batch_size = batch_size
     
     def __call__(self, x, t, n=None):
+        if n is None or n > len(x): # 指定しないか、データ数より大きな数を指定した場合        
+            n = len(x)
+            x_sample = x
+            t_sample = t
+        else:                       # nを指定したらその数そのものがn
+            #if n > len(x):
+            #    print('与えられた入力のサンプル数は指定したサンプル数より小さいです')
+            #    n = len(x)
+            index_rand = np.arange(len(x))
+            np.random.shuffle(index_rand)    # 
+            index_rand = index_rand[:n]      # n個だけindexを取出す
+            #print(type(index_rand), type(x), type(c))
+            x_sample = x[index_rand, :]
+            t_sample = t[index_rand, :]
+
+        ln = 0; an = 0; nn = 0
+        n2 = n if n < self.batch_size else self.batch_size  
+        for i in range(0, n, n2):
+            xi = x_sample[i:i+n2]
+            ti = t_sample[i:i+n2]
+            yi = self.model.forward(xi)
+            li = self.model.loss_function.forward(yi, ti)
+            ai = self.get_acc(yi, ti)
+            ni = len(xi) # エラーと正解率の分母
+            ln += li * ni
+            an += ai * ni
+            nn += ni
+        l   = ln / nn
+        acc = an / nn
+
+        self.error.append(float(ln / nn))
+        self.accuracy.append(an / nn)
+        return float(ln / nn), an / nn
+
+    def __call__bkup(self, x, t, n=None):
         if n is None or n > len(x): # 指定しないか、データ数より大きな数を指定した場合        
             n = len(x)
             x_sample = x
