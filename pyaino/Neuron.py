@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.09.03 A.Inoue
+# 2025.09.07 A.Inoue
 
 import copy
 import warnings
@@ -36,6 +36,9 @@ class Sequential:
         for l in self.layers:
             if hasattr(l, 'update'): 
                 l.update(eta=eta, **kwargs)
+                
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
     def summary(self):
         for l in self.layers:
