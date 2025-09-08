@@ -1,5 +1,5 @@
 # common_function
-# 2025.09.07 A.Inoue 
+# 2025.09.08 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1808,14 +1808,26 @@ class Tokenizer:
         else:
             data = self.splitter(text)
 
-        # defaultに応じたtoken2idとid2tokenの初期化
-        if clear and default is None:
+        # defaultに応じたtoken2idの初期化
+        if clear or self.token2id is None: 
             self.token2id = {}
+            
+        if default is None:
+            pass
         elif type(default)==dict:
-            self.token2id = default
+            if self.id2token is not None:  # 既存の辞書のチェック
+                for k, v in default.items():
+                    if v in self.id2token: # 登録済みのidに遭遇したら
+                        raise Exception('Duplication of id detected.')
+            self.token2id.update(default)
+        else:
+            raise TypeError('Default should be a dictionary.')
+
+        # id2tokenの初期化(一旦既存の分で更新)
         self.id2token = {v: k for k, v in self.token2id.items()}
         used_ids = set(i for i in self.id2token) # 使用idの集合
-
+              
+        # token2idの生成
         if data is not None: # dataから辞書を作る
             new_id = 0 # forループの中では0に初期化する必要はなく続きから探せば良い
             for token in data:
