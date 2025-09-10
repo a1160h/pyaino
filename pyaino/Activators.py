@@ -1,5 +1,5 @@
 # Activators
-# 2025.08.17 A.Inoue
+# 2025.09.10 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -220,6 +220,81 @@ class Mish(ActivatorBase):
         gx = gy * (ts + (1 - np.square(ts)) * x / (1 + np.exp(-x))) 
         return gx
 
+class GELU(Function):
+    """ GELU "erf"(exact). """
+    def __init__(self, eps=1e-7):
+        super().__init__()
+        # 関数erfを用意 
+        try:        # cupy
+            #raise Exception() # for debug 
+            from np._cupyx.scipy.special import erf #as cupy_erf
+            self.erf = erf
+            print('Use cupyx.scipy.special for erf.')
+        except:     # numpy
+            try:    # scipy
+                #raise Exception() # for debyg
+                from scipy.special import erf
+                self.erf = erf
+                print('Use scipy for erf.')
+            except: # math 
+                try:
+                    from math import erf
+                    self.erf = np.vectorize(erf)
+                    print('Use math for erf and is vectorized.')
+                except:
+                    raise Exception('No erf available on your computer.') 
+
+        # 定数を用意
+        self.c = np.array(np.sqrt(2.0 / np.pi), dtype=Config.dtype)   # √(2/π)
+        self.inv_sqrt2 = np.array(1.0 / np.sqrt(2.0), dtype=Config.dtype)
+        self.eps = eps
+
+    def __forward__(self, x):
+        z = self.erf(x * self.inv_sqrt2)
+        y = 0.5 * x * (1.0 + z)
+        #self.z = z
+        return y
+
+    def erf_backward(self, gy):
+        x, = self.inputs
+        return gy * (2.0 / np.sqrt(np.pi)) * np.exp(-x * x)
+
+    def __backward__(self, gy):
+        x, = self.inputs 
+        y = self.get_outputs()
+        z = 2.0 * (y / (x + self.eps)) - 1.0
+        #z = self.z
+        pdf = self.c * np.exp(-0.5 * x**2)
+        dgelu_dx = 0.5 * (1.0 + z) + 0.5 * x * pdf
+        return gy * dgelu_dx
+
+class GELUap(Function):
+    """ GELUap  "tanh" (Hendrycks & Gimpel approx) """
+    def __init__(self, eps=1e-7):
+        super().__init__()
+
+        # 定数を dtype 付きで確定
+        self.c = np.array(np.sqrt(2.0 / np.pi), dtype=Config.dtype)   # √(2/π)
+        self.k = np.array(0.044715, dtype=Config.dtype)
+        self.eps = eps
+
+    def __forward__(self, x):
+        u = self.c * (x + self.k * x**3)
+        t = np.tanh(u)
+        y = 0.5 * x * (1.0 + t)
+        #self.t = t
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        y = self.get_outputs()
+        t =  2.0 * (y / (x + self.eps)) - 1.0 
+        #t  = self.t
+        du_dx = self.c * (1.0 + 3.0 * self.k * x**2)
+        dt_dx = (1.0 - t**2) * du_dx
+        dgelu_dx = 0.5 * (1.0 + t) + 0.5 * x * dt_dx
+        return gy * dgelu_dx
+
 class Softmax(ActivatorBase):
     def __init__(self, temperature=1.0, **kwargs):
         super().__init__()
@@ -354,7 +429,7 @@ if __name__=='__main__':
     import matplotlib.pyplot as plt
 
     Funcs = [Identity, Step, Sigmoid, Tanh, ReLU, LReLU, ELU, Softmax]
-    Funcs += [Swish, Softplus, Mish]
+    Funcs += [Swish, Softplus, Mish, GELU, GELUap]
     Funcs += [SigmoidOut, SigmoidWithLoss, SoftmaxWithLoss, SoftmaxWithLossMasked] 
 
     x = np.linspace(-5, 5, 100) # 値の範囲を指定
