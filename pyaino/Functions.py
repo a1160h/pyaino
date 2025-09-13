@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20250817 A.Inoue
+# 20250913 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -180,6 +180,46 @@ class Cos(Function):
 
 def cos(x):
     return Cos()(x)
+
+class Erf(Function):
+    """ 誤差関数(ガウスの誤差関数) """
+    def __init__(self):
+        super().__init__()
+        
+        try:        # cupy
+            #raise Exception() # for debug 
+            from np._cupyx.scipy.special import erf #as cupy_erf
+            self.erf = z.erf
+            print('Use cupyx.scipy.special for erf.')
+        except:     # numpy
+            try:    # scipy
+                #raise Exception() # for debug 
+                from scipy.special import erf
+                self.erf = erf
+                print('Use scipy for erf.')
+            except: # Abramowitz–Stegunの有理近似
+                def AbramowitzStegun(x):
+                    a1 = 0.254829592
+                    a2 = -0.284496736
+                    a3 = 1.421413741
+                    a4 = -1.453152027
+                    a5 = 1.061405429
+                    p  = 0.3275911
+                    sign = np.sign(x)
+                    ax = np.abs(x)
+                    t = 1.0 / (1.0 + p * ax)
+                    poly = (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t
+                    y = 1.0 - poly * np.exp(-ax * ax)
+                    return sign * y
+                self.erf = AbramowitzStegun
+                print('Use Abramowitz Stegun approximation for erf.')
+
+    def __forward__(self, x):
+        return self.erf(x)
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        return gy * (2.0 / np.sqrt(np.pi)) * np.exp(-x * x)
 
 class Add(Function):
     def __forward__(self, x0, x1):
@@ -1021,6 +1061,7 @@ class L2Normalize_bkup(Function):
         gx = gy * (1 - x * x.sum(axis=self.axis, keepdims=True) / l2n**2) / l2n
         return gx
 
+
 ############################################ 
 # 仮実装　0240731
 # seq2seq_with_attentionでbacktraceできるようにするために
@@ -1540,7 +1581,7 @@ if __name__=='__main__':
 
     #"""#
     print('オペランドが１つの関数')
-    functions = (Assign, Neg, Abs, Sin, Cos, Square, Sqrt, Exp, Pow, Log)
+    functions = (Assign, Neg, Abs, Sin, Cos, Square, Sqrt, Exp, Pow, Log, Erf)
     
     x = np.linspace(-4, 4)
 
@@ -1552,6 +1593,7 @@ if __name__=='__main__':
         
         plt.plot(x.tolist(), y.tolist())
         plt.plot(x.tolist(), gx.tolist())
+        plt.title(func.__class__.__name__)
         plt.show()
 
     print('オペランドが１つの関数 拡張')
@@ -1568,6 +1610,7 @@ if __name__=='__main__':
         
         plt.plot(x.tolist(), y.tolist())
         plt.plot(x.tolist(), gx.tolist())
+        plt.title(func.__class__.__name__)
         plt.show()
 
 
@@ -1587,6 +1630,7 @@ if __name__=='__main__':
         gy2 = np.ones_like(y)
         gx = func.backward(gy2, flush=False)
         plt.plot(x.tolist(), gx.tolist())
+        plt.title(func.__class__.__name__)
         plt.show()
 
 
@@ -1607,6 +1651,7 @@ if __name__=='__main__':
         plt.plot(gx0.tolist(), label='gx0')
         plt.plot(gx1.tolist(), label='gx1')
         plt.legend()
+        plt.title(func.__class__.__name__)
         plt.show()
 
     print('オペランドが複数の関数')
@@ -1630,6 +1675,7 @@ if __name__=='__main__':
         for i, gx in enumerate(gxs):
             plt.plot(gx.tolist(), label='gx'+str(i))
         plt.legend()
+        plt.title(func.__class__.__name__)
         plt.show()
 
  
@@ -1656,6 +1702,7 @@ if __name__=='__main__':
         plt.plot(x.tolist(), gx.tolist())
         plt.plot(x.tolist(), gy.tolist())
         plt.grid()
+        plt.title(func.__class__.__name__)
         plt.show()
 
     print('基本関数の組み合わせのテスト2 backtrace')
@@ -1679,6 +1726,7 @@ if __name__=='__main__':
         plt.plot(x.tolist(), gx.tolist())
         plt.plot(x.tolist(), gy.tolist())
         plt.grid()
+        plt.title(func.__class__.__name__)
         plt.show()
 
     set_derivative(False)
@@ -1716,6 +1764,7 @@ if __name__=='__main__':
 
     plt.plot(x.tolist(), y.tolist())
     plt.plot(x.tolist(), gx.tolist())
+    plt.title(func.__class__.__name__)
     plt.show()
 
     #'''#
@@ -1735,6 +1784,7 @@ if __name__=='__main__':
 
     plt.plot(x.tolist(), y.tolist())
     plt.plot(x.tolist(), gx.tolist())
+    plt.title(sigmoid.__class__.__name__)
     plt.show()
 
     #'''#
@@ -1754,6 +1804,7 @@ if __name__=='__main__':
 
     plt.plot(x.tolist(), y.tolist())
     plt.plot(x.tolist(), gx.tolist())
+    plt.title(sigmoid.__class__.__name__)
     plt.show()
 
     #'''#
@@ -1775,6 +1826,7 @@ if __name__=='__main__':
              
     plt.plot(x.tolist(), y.tolist())
     plt.plot(x.tolist(), gx.tolist())
+    plt.title(tan.__class__.__name__)
     plt.show()
 
     #'''#
@@ -1801,6 +1853,7 @@ if __name__=='__main__':
     plt.plot(x.tolist(), gx.tolist())
     plt.plot(x.tolist(), gy.tolist())
     plt.grid()
+    plt.title(normalize.__class__.__name__)
     plt.show()
 
     #'''#
