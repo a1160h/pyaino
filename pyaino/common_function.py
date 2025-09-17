@@ -1,5 +1,5 @@
 # common_function
-# 2025.09.08 A.Inoue 
+# 2025.09.17 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1754,6 +1754,168 @@ def shape_text_data(texts, **kwargs):
     return texts_shaped
 
 class Tokenizer:
+    """ 日本語、英語の両方に対応するTokenizer """
+
+    def __init__(self, text=None, splitter=None, joiner=None, default={'<unk>': 0}, base_vocab=None, 
+                 language='Japanese', unit=None, delimiter=None, end=None):
+        print(self.__class__.__name__, splitter, joiner, language, unit, delimiter, end)
+
+        # splitterを定義
+        if splitter is not None and isinstance(splitter, types.FunctionType):
+            self.splitter = splitter
+            print('splitter is', splitter.__name__)
+            btwo = '' if language.startswith(('J', 'j')) else ' '
+        elif delimiter is not None: # 区切り文字を指定
+            self.splitter = lambda text : text.split(delimiter)
+            print('splitter is according to specified delimiter.')
+            btwo = delimiter
+        elif unit in ('語', 'W', 'w', 'word') and language.startswith(('J', 'j')): # 日本語語分割　
+            self.splitter = split_japanese
+            print('splitter is a simple one based on regular expressions')
+            btwo = ''
+        elif unit in ('語', 'W', 'w', 'word'): # 英語など語分割
+            self.splitter = lambda text : text.split()
+            print('splitter is the built-in split() function in Python.')
+            btwo = ' '
+        else: # 文字分割
+            self.splitter = lambda text : list(text)
+            print('splitter is character based.')
+            btwo = ''
+        self.end = btwo if end is None else end
+
+        # joinerを定義
+        if joiner is not None and isinstance(joiner, types.FunctionType):
+            self.joiner = joiner
+            print('joiner is', joiner.__name__)
+        else:
+            self.joiner = lambda data : self.end.join(data)
+            print('joiner is built-in join() function in Python.')
+
+        self.token2id = {}
+        self.id2token = {}
+
+        self.default = default
+        self.create_vocab(text, base_vocab)
+
+    def vocab_size(self):
+        return len(self.token2id)
+     
+    def split_by_default(self, text):
+        """ text を default のいずれかが出るたびに分割、返り値はリスト """
+        if self.default is None:
+            return [text]
+        pattern = "(" + "|".join(map(re.escape, self.default)) + ")"  # 添付の作りと同じ発想
+        parts = re.split(pattern, text)
+        return [p for p in parts if p] # 無駄な''を削除、p != ""と同じ
+
+    def split_text_into_tokens(self, text, drop_empty=False):
+        """ text(文字列)をtokens(リスト)に分割 """
+        if text is None:
+            tokens = None
+        elif isinstance(text, (list, tuple)): # 分割済みと想定
+            tokens = text
+        else:
+            chunks = self.split_by_default(text)
+            tokens = []
+            for seg in chunks:
+                if self.default is not None and seg in self.default:
+                    tokens.append(seg)
+                else:
+                    for t in self.splitter(seg):
+                        if drop_empty and (not t or t.isspace()):
+                            continue
+                        tokens.append(t)
+        return tokens                
+        
+    def create_vocab(self, text=None, base_vocab=None, clear=False, drop_empty=False):
+        """ tokenとidの間の双方向の変換の辞書を作る """
+
+        tokens = self.split_text_into_tokens(text, drop_empty)
+
+        if clear: 
+            self.token2id = {}
+            
+        # defaultでtoken2idの初期化
+        self.token2id.update(self.default)
+
+        # base_vocabに応じたtoken2idの初期化
+        if base_vocab is None:
+            pass
+        elif type(base_vocab)==dict:
+            if self.id2token is not None:  # 既存の辞書のチェック
+                for k, v in base_vocab.items():
+                    if v in self.id2token: # 登録済みのidに遭遇したら
+                        raise Exception('Duplication of id detected.')
+            self.token2id.update(base_vocab)
+        else:
+            raise TypeError('base_vocab should be a dictionary.')
+
+        # id2tokenの初期化(一旦既存の分で更新)
+        self.id2token = {v: k for k, v in self.token2id.items()}
+        used_ids = set(i for i in self.id2token) # 使用idの集合
+
+        # token2idの生成
+        if tokens is not None: # tokensから辞書を作る
+            new_id = 0 # forループの中では0に初期化する必要はなく続きから探せば良い
+            for token in tokens:
+                if token in self.token2id:
+                    continue
+                # 使用されていないidを順に探す
+                #new_id = 0
+                while new_id in used_ids:
+                    new_id += 1
+                # 見つかった欠番のidで変換辞書を登録し、使用idの集合に追加    
+                self.token2id[token]  = new_id
+                self.id2token[new_id] = token
+                used_ids.add(new_id)
+            
+        # <unk>が無い場合に加える
+        if '<unk>' in self.token2id:
+            pass
+        else:
+            last_id = len(self.token2id) 
+            self.token2id["<unk>"] = last_id
+            self.id2token[last_id] = "<unk>"
+        return
+
+    def encode(self, text, ndarray=True):
+        """ textを分割してidに変換し、それをindicesで返す """
+
+        tokens = self.split_text_into_tokens(text)
+        
+        #tokens = self.splitter(text)
+        unk_id = self.token2id["<unk>"]
+        
+        indices = [self.token2id.get(d, unk_id) for d in tokens]
+        if ndarray:
+            indices = np.array(indices)
+        return indices
+
+    def decode(self, indices):
+        """ indicesからtokenに変換して結合し文章textを返す """
+        if isinstance(indices, np.ndarray):  
+            indices = indices.tolist()
+        elif type(indices)==int:
+            indices = [indices]    
+        tokens = [self.id2token.get(idx, "<unk>") for idx in indices]
+        text = self.joiner(tokens)
+        return text
+
+    # -- 学習結果の保存(辞書形式) --
+    def save(self, file_name):
+        params = self.token2id
+        with open(file_name, 'wb') as f:
+            pickle.dump(params, f)
+        print(self.__class__.__name__, '辞書をファイルに記録しました=>', file_name)    
+
+    # -- 学習結果の継承(辞書形式) --
+    def load(self, file_name):
+        with open(file_name, 'rb') as f:
+            params = pickle.load(f)
+        self.create_vocab(default=params)
+        print(self.__class__.__name__, '辞書をファイルから取得しました<=', file_name)
+        
+class Tokenizer_bkup:
     """ 日本語、英語の両方に対応するTokenizer """
 
     def __init__(self, text=None, splitter=None, joiner=None, default=None, 
