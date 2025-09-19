@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.09.07 A.Inoue
+# 2025.09.18 A.Inoue
 
 import copy
 import warnings
@@ -26,9 +26,12 @@ class Sequential:
             y = l.forward(y, **kwargs)
         return y
 
-    def backward(self, gy):
-        gx = gy
-        for l in reversed(self.layers):
+    def backward(self, gy=None):
+        if gy is None:
+            gx = self.layers[-1].backward()
+        else:
+            gx = self.layers[-1].backward(gy)
+        for l in reversed(self.layers[:-1]):
             gx = l.backward(gx)
         return gx
 
