@@ -1,5 +1,5 @@
 # Activators
-# 2025.09.10 A.Inoue
+# 2025.09.19 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -268,6 +268,20 @@ class GELU(Function):
         dgelu_dx = 0.5 * (1.0 + z) + 0.5 * x * pdf
         return gy * dgelu_dx
 
+    def __backward__2(self, gy):
+        x, = self.inputs
+        y = self.get_outputs()
+        
+        Phi = np.where(np.abs(x) > self.eps, y / x, 0.5)
+        
+        # 閉形式の勾配で高速に
+        #Phi = 0.5 * (1.0 + self.erf(x / np.sqrt(2.0)))
+        
+        phi = np.exp(-0.5 * x * x) * self.inv_sqrt2
+        gx  = gy * (Phi + x * phi)
+        return gx    
+    
+
 class GELUap(Function):
     """ GELUap  "tanh" (Hendrycks & Gimpel approx) """
     def __init__(self, eps=1e-7):
@@ -342,6 +356,50 @@ class Softmax2(ActivatorBase):
             # 逆伝播の計算
             dx[i] = np.dot(jacobian, gy[i])
         return dx / self.temperature  # 温度の影響を考慮
+
+class TargetSelector:
+    """ ターゲットラベルに対する gather と scatter """
+    def __init__(self, t):
+        self.t = t
+        self.indices = np.arange(t.size), t.ravel()
+
+    def gather(self, x):
+        """ tの指すxの要素を抜き出す(戻り値はtと同形) """
+        y = x.reshape(-1, x.shape[-1])[*self.indices]
+        return y.reshape(self.t.shape)
+
+    def scatter(self, x, delta=-1.0, inplace=True):
+        """ tが指すxの要素にdeltaを加える(戻り値はxと同形) """
+        y = x if inplace else x.copy()
+        y = y.reshape(-1, x.shape[-1])
+        y[*self.indices] += delta
+        return y.reshape(x.shape)
+
+
+class SoftmaxCrossEntropy(Function):
+    """ logitとtargetからSoftmaxとCrossEntropyを併せて算出 """
+    def __forward__(self, z, t=None):
+        # zはlogits, tは正解ラベル
+        m = z.max(axis=-1, keepdims=True)
+        expz = np.exp(z - m)
+        sum_exp = np.sum(expz, axis=-1, keepdims=True)
+        y = expz / sum_exp
+        if t is None:
+            return y
+        
+        log_sum_exp = np.log(sum_exp)
+        self.selector = TargetSelector(t)
+        zt = self.selector.gather(z)
+        l = log_sum_exp + np.squeeze(m, axis=-1) - zt
+        return y, l
+        
+    def __backward__(self, *args): # argsは使わない
+        y, l = self.get_outputs()
+        z, t = self.inputs
+        gz = y.copy() 
+        gz = self.selector.scatter(gz) # gz[t]
+        return gz 
+    
 
 class SoftmaxWithLoss(ActivatorBase):
     def __init__(self, **kwargs):
@@ -449,5 +507,19 @@ if __name__=='__main__':
         plt.title(func.__class__.__name__)
         plt.show()
 
+     
+    z = x.reshape(1, -1) # 値の範囲を指定
+    t = np.array([50])
+
+    func = SoftmaxCrossEntropy()
+    y, l = func.forward(z, t)
+    print('loss =', l)
+    plt.plot(z.squeeze().tolist(), y.squeeze().tolist())
+
+    gz = func.backward()
+    
+    plt.plot(z.squeeze().tolist(), gz.squeeze().tolist())
+    plt.title(func.__class__.__name__)
+    plt.show()
 
     
