@@ -1,5 +1,5 @@
 # Activators
-# 2025.09.19 A.Inoue
+# 2025.09.20 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -378,19 +378,25 @@ class TargetSelector:
 
 class SoftmaxCrossEntropy(Function):
     """ logitとtargetからSoftmaxとCrossEntropyを併せて算出 """
+    def __init__(self):
+        super().__init__()
+        self.k = None
+
     def __forward__(self, z, t=None):
         # zはlogits, tは正解ラベル
         m = z.max(axis=-1, keepdims=True)
-        expz = np.exp(z - m)
+        expz = np.exp(z - m) # 最大値を引いてオーバーフロー対策
         sum_exp = np.sum(expz, axis=-1, keepdims=True)
         y = expz / sum_exp
         if t is None:
             return y
-        
         log_sum_exp = np.log(sum_exp)
         self.selector = TargetSelector(t)
         zt = self.selector.gather(z)
-        l = log_sum_exp + np.squeeze(m, axis=-1) - zt
+        log_sum_exp += m     # expzを求める際に最大値を引いた分を戻す
+        l = np.squeeze(log_sum_exp, axis=-1) - zt
+        self.k = len(l)
+        l = np.mean(l)
         return y, l
         
     def __backward__(self, *args): # argsは使わない
@@ -398,7 +404,7 @@ class SoftmaxCrossEntropy(Function):
         z, t = self.inputs
         gz = y.copy() 
         gz = self.selector.scatter(gz) # gz[t]
-        return gz 
+        return gz / self.k
     
 
 class SoftmaxWithLoss(ActivatorBase):
