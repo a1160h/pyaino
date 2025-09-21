@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.09.18 A.Inoue
+# 2025.09.21 A.Inoue
 
 import copy
 import warnings
@@ -96,9 +96,6 @@ class LinearLayer(Function):
         if self.bias:
             self.optimizer_b = cf.eval_in_module(optimize, Optimizers, **optimize_option)
 
-    def fix_configuration(self, shape):
-        raise NotImplementedError('fix_configuration method for BaseLayer')
-        
     def init_parameter(self):#, m, n):
         m, n = self.get_parameter_size() # m:入力幅、n:ニューロン数
         if m is None or n is None:
@@ -150,7 +147,7 @@ class LinearLayer(Function):
         return grad_x
 
     def accommodate(self):
-        if self.config <= self.w.shape:
+        if self.config[1] <= self.w.shape[1]:
             return
         print(self.__class__.__name__, 'expand the size of w to accommodate new vocabulary.')
         m, n = self.config
@@ -165,7 +162,114 @@ class LinearLayer(Function):
             print('new bias =', new_bias.shape)
             self.b = np.concatenate([self.b, new_bias])
             
-   
+#### ニューロンの基本機能 ##############################################
+class LinearLayerCrossEntropy(LinearLayer):
+    """ 損失まで一気に算出するニューロンの基本機能 """
+    def __init__(self, *configuration, **kwargs):
+        super().__init__(*configuration, **kwargs)
+        self.tile_size  = kwargs.pop('tile_size',   None) # 
+       
+    def __forward__(self, x, t=None, **kwargs):       # kwargsは使わない
+        
+        if None in self.config:
+            print(self.__class__.__name__, 'input.shape', x.shape)
+            self.fix_configuration(x.shape)
+        if self.w is None:
+            self.init_parameter()
+
+        m, n = self.config
+        if self.tile_size is None:
+            self.tile_size = n
+
+        B = x.shape[0]
+
+        # 全体の最大logits値とその位置の初期値(バッチサイズ分並べる)
+        max_logit = np.full((B,), -np.inf, dtype=x.dtype) # 現時点の最大logit
+        last_max_logit = np.full((B,), -np.inf, dtype=x.dtype) # 1回前の最大logit
+        max_index = np.full((B,), -1)                     # その語彙ID
+        sum_exp = np.zeros((B,), dtype=x.dtype)        # 逐次 exp 累積
+        if t is not None:
+            zt = np.zeros((B,), dtype=x.dtype)         # 正解値の指すlogitのロジット
+
+        for start in range(0, n, self.tile_size):
+            # タイル毎にlogitsを算出
+            end = min(start + self.tile_size, n)
+            #print('### forward loop', start, '->', end)
+            tile_w = self.w[:, start:end]
+            tile_b = self.b[start:end]
+            tile_z = self.dot_linear.forward(x, tile_w, tile_b)      # (B, Vt)
+            #print('tile_logit\n', tile_z)
+            # タイル内の最大位置を求め、そのlogits値を得る
+            tile_max_index = np.argmax(tile_z, axis=-1)            # (B,)
+            tile_max_logit = tile_z[np.arange(B), tile_max_index]        # (B,)
+            #print('tile ', tile_max_index, tile_max_logit)
+            # 全体最大を更新(タイルの最大が全体の最大より大きいものについて処理)
+            mask = tile_max_logit > max_logit
+            if mask.any():
+                last_max_logit[mask] = max_logit[mask] 
+                max_logit[mask] = tile_max_logit[mask]
+                max_index[mask] = start + tile_max_index[mask]  # 全体での位置=語彙ID 
+            #print('whole', max_index, max_logit)
+            # 最新と以前の最大値の補正をしながらsum_exp を更新
+            sum_exp = (sum_exp * np.exp(last_max_logit - max_logit) # 補正項　
+                     + np.sum(np.exp(tile_z - max_logit[:, None]), axis=-1)) # 更新値
+            #print('sum_exp', sum_exp)    
+            # tがtileに含まれる場合だけztを更新(zt:正解値tの指すlogit)
+            if t is not None:
+                t_in_tile = (start <= t) & (t < end) # tがタイル内かどうか
+                if t_in_tile.any():
+                    idx_in_tile = (t[t_in_tile] - start).astype(np.int64)
+                    zt[t_in_tile] = tile_z[t_in_tile, idx_in_tile] # t_in_tile=Trueのバッチだけ更新
+            #print('zt', zt)
+        # 予測だけ欲しい（推論）場合
+        if t is None:
+            return max_index, max_logit
+
+        # 逆伝播用に保存
+        self.sum_exp = sum_exp
+        self.max_logit = max_logit
+
+        # 確定した値で損失計算
+        log_sum_exp = np.log(sum_exp) + max_logit     # 補正項
+        loss = log_sum_exp - zt                       # CrossEntropy算出
+        loss = np.mean(loss)
+        # 学習時の返りは慣習的に (pred, loss) にしておく
+        return max_index, loss
+
+        
+    def __backward__(self, *args): # argsは使わない
+        m, n = self.config
+        x, t = self.inputs 
+
+        self.grad_w = np.zeros_like(self.w)
+        self.grad_b = np.zeros_like(self.b)
+        grad_x = np.zeros_like(x)
+
+        for start in range(0, n, self.tile_size):
+            # タイル毎にlogitsを算出
+            end = min(start + self.tile_size, n)
+            #print('### backward loop', start, '->', end)
+            tile_w = self.w[:, start:end]
+            tile_b = self.b[start:end]
+            tile_z = self.dot_linear.forward(x, tile_w, tile_b)      # (B, Vt)
+            #print('tile_logit\n', tile_z)
+            # Softmaxでlogit->確率 
+            tile_y = np.exp(tile_z - self.max_logit[:, None]) / self.sum_exp[:, None]
+            tile_gz = tile_y.copy()
+            t_in_tile = (start <= t) & (t < end) # tがタイル内かどうか
+            if t_in_tile.any():
+                idx_in_tile = (t[t_in_tile] - start).astype(np.int64)
+                tile_gz[t_in_tile, idx_in_tile] -= 1 # t_in_tile=Trueのバッチだけ更新
+                #print(t_in_tile, idx_in_tile)
+
+            tile_gx, tile_gw, tile_gb = self.dot_linear.backward(tile_gz)    
+            grad_x += tile_gx
+            self.grad_w[:, start:end] = tile_gw
+            self.grad_b[start:end] = tile_gb
+
+        return grad_x
+
+
 
 #### ニューロン関連共通部分 ##############################################
 # NeuronLayer(Affine),
