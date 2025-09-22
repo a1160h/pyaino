@@ -185,7 +185,7 @@ class LinearLayerCrossEntropy(LinearLayer):
         
         # 全体の最大logits値とその位置の初期値(バッチサイズ分並べる)
         max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype) # 現時点の最大logit
-        last_max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype) # 1回前の最大logit
+        #last_max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype) # 1回前の最大logit
         max_index = np.full(leading_shape, -1)                     # その語彙ID
         sum_exp = np.zeros(leading_shape, dtype=x.dtype)        # 逐次 exp 累積
         if t is not None:
@@ -199,19 +199,22 @@ class LinearLayerCrossEntropy(LinearLayer):
             tile_b = self.b[start:end]
             tile_z = self.dot_linear.forward(x, tile_w, tile_b)      # (B, Vt)
             #print('tile_logit\n', tile_z)
+
+            last_max_logit = max_logit.copy() # 更新前のmax_logit  
+
             # タイル内の最大位置を求め、そのlogits値を得る
             tile_max_index = np.argmax(tile_z, axis=-1)            # (B,)
             #tile_max_logit = tile_z[np.arange(B), tile_max_index]        # (B,)
             #tile_max_logit = np.max(tile_z, axis=-1)    # 仮20250922AI
 
-            tile_max_logit = (np.take_along_axis(x, tile_max_index[..., None], axis=-1)
+            tile_max_logit = (np.take_along_axis(tile_z, tile_max_index[..., None], axis=-1)
                               .squeeze(-1))
 
             #print('tile ', tile_max_index, tile_max_logit)
             # 全体最大を更新(タイルの最大が全体の最大より大きいものについて処理)
             mask = tile_max_logit > max_logit
             if mask.any():
-                last_max_logit[mask] = max_logit[mask] 
+                #last_max_logit[mask] = max_logit[mask] 
                 max_logit[mask] = tile_max_logit[mask]
                 max_index[mask] = start + tile_max_index[mask]  # 全体での位置=語彙ID 
             #print('whole', max_index, max_logit)
@@ -223,8 +226,9 @@ class LinearLayerCrossEntropy(LinearLayer):
             if t is not None:
                 t_in_tile = (start <= t) & (t < end) # tがタイル内かどうか
                 if t_in_tile.any():
-                    idx_in_tile = (t[t_in_tile] - start).astype(np.int64)
-                    zt[t_in_tile] = tile_z[t_in_tile, idx_in_tile] # t_in_tile=Trueのバッチだけ更新
+                    coords = np.where(t_in_tile)                # 先行軸の座標タプル
+                    idx_in_tile = (t[coords] - start).astype(np.int64)
+                    zt[coords] = tile_z[coords + (idx_in_tile,)] # 多次元インデクスとして結合
             #print('zt', zt)
         # 予測だけ欲しい（推論）場合
         if t is None:
@@ -257,20 +261,22 @@ class LinearLayerCrossEntropy(LinearLayer):
             tile_w = self.w[:, start:end]
             tile_b = self.b[start:end]
             tile_z = self.dot_linear.forward(x, tile_w, tile_b)      # (B, Vt)
+
             #print('tile_logit\n', tile_z)
             # Softmaxでlogit->確率 
             tile_y = np.exp(tile_z - self.max_logit[..., None]) / self.sum_exp[..., None]
             tile_gz = tile_y.copy()
             t_in_tile = (start <= t) & (t < end) # tがタイル内かどうか
             if t_in_tile.any():
-                idx_in_tile = (t[t_in_tile] - start).astype(np.int64)
-                tile_gz[t_in_tile, idx_in_tile] -= 1 # t_in_tile=Trueのバッチだけ更新
-                #print(t_in_tile, idx_in_tile)
+                coords = np.where(t_in_tile)
+                idx_in_tile = (t[coords] - start).astype(np.int64)
+                tile_gz[coords + (idx_in_tile,)] -= 1
 
             tile_gx, tile_gw, tile_gb = self.dot_linear.backward(tile_gz)    
             grad_x += tile_gx
             self.grad_w[:, start:end] = tile_gw
-            self.grad_b[start:end] = tile_gb
+            if self.bias:
+                self.grad_b[start:end] = tile_gb
 
         return grad_x
 
