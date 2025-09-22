@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.09.21 A.Inoue
+# 2025.09.22 A.Inoue
 
 import copy
 import warnings
@@ -164,7 +164,7 @@ class LinearLayer(Function):
             
 #### ニューロンの基本機能 ##############################################
 class LinearLayerCrossEntropy(LinearLayer):
-    """ 損失まで一気に算出するニューロンの基本機能 """
+    """ Softmaxそして損失まで一気に算出するニューロンの基本機能 """
     def __init__(self, *configuration, **kwargs):
         super().__init__(*configuration, **kwargs)
         self.tile_size  = kwargs.pop('tile_size',   None) # 
@@ -181,15 +181,15 @@ class LinearLayerCrossEntropy(LinearLayer):
         if self.tile_size is None:
             self.tile_size = n
 
-        B = x.shape[0]
-
+        leading_shape = x.shape[:-1]
+        
         # 全体の最大logits値とその位置の初期値(バッチサイズ分並べる)
-        max_logit = np.full((B,), -np.inf, dtype=x.dtype) # 現時点の最大logit
-        last_max_logit = np.full((B,), -np.inf, dtype=x.dtype) # 1回前の最大logit
-        max_index = np.full((B,), -1)                     # その語彙ID
-        sum_exp = np.zeros((B,), dtype=x.dtype)        # 逐次 exp 累積
+        max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype) # 現時点の最大logit
+        last_max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype) # 1回前の最大logit
+        max_index = np.full(leading_shape, -1)                     # その語彙ID
+        sum_exp = np.zeros(leading_shape, dtype=x.dtype)        # 逐次 exp 累積
         if t is not None:
-            zt = np.zeros((B,), dtype=x.dtype)         # 正解値の指すlogitのロジット
+            zt = np.zeros(leading_shape, dtype=x.dtype)         # 正解値の指すlogitのロジット
 
         for start in range(0, n, self.tile_size):
             # タイル毎にlogitsを算出
@@ -201,7 +201,12 @@ class LinearLayerCrossEntropy(LinearLayer):
             #print('tile_logit\n', tile_z)
             # タイル内の最大位置を求め、そのlogits値を得る
             tile_max_index = np.argmax(tile_z, axis=-1)            # (B,)
-            tile_max_logit = tile_z[np.arange(B), tile_max_index]        # (B,)
+            #tile_max_logit = tile_z[np.arange(B), tile_max_index]        # (B,)
+            #tile_max_logit = np.max(tile_z, axis=-1)    # 仮20250922AI
+
+            tile_max_logit = (np.take_along_axis(x, tile_max_index[..., None], axis=-1)
+                              .squeeze(-1))
+
             #print('tile ', tile_max_index, tile_max_logit)
             # 全体最大を更新(タイルの最大が全体の最大より大きいものについて処理)
             mask = tile_max_logit > max_logit
@@ -212,7 +217,7 @@ class LinearLayerCrossEntropy(LinearLayer):
             #print('whole', max_index, max_logit)
             # 最新と以前の最大値の補正をしながらsum_exp を更新
             sum_exp = (sum_exp * np.exp(last_max_logit - max_logit) # 補正項　
-                     + np.sum(np.exp(tile_z - max_logit[:, None]), axis=-1)) # 更新値
+                     + np.sum(np.exp(tile_z - max_logit[..., None]), axis=-1)) # 更新値
             #print('sum_exp', sum_exp)    
             # tがtileに含まれる場合だけztを更新(zt:正解値tの指すlogit)
             if t is not None:
@@ -254,7 +259,7 @@ class LinearLayerCrossEntropy(LinearLayer):
             tile_z = self.dot_linear.forward(x, tile_w, tile_b)      # (B, Vt)
             #print('tile_logit\n', tile_z)
             # Softmaxでlogit->確率 
-            tile_y = np.exp(tile_z - self.max_logit[:, None]) / self.sum_exp[:, None]
+            tile_y = np.exp(tile_z - self.max_logit[..., None]) / self.sum_exp[..., None]
             tile_gz = tile_y.copy()
             t_in_tile = (start <= t) & (t < end) # tがタイル内かどうか
             if t_in_tile.any():
