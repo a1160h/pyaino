@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.09.22 A.Inoue
+# 2025.09.23 A.Inoue
 
 import copy
 import warnings
@@ -181,7 +181,10 @@ class LinearLayerCrossEntropy(LinearLayer):
         if self.tile_size is None:
             self.tile_size = n
 
-        leading_shape = x.shape[:-1]
+        leading_shape = x.shape[:-1] # (B,)や(B,T)
+        self.leading_size = 1.0      # leading_shapeの積
+        for i in leading_shape:
+            self.leading_size *= i 
         
         # 全体の最大logits値とその位置の初期値(バッチサイズ分並べる)
         max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype) # 現時点の最大logit
@@ -241,7 +244,7 @@ class LinearLayerCrossEntropy(LinearLayer):
         # 確定した値で損失計算
         log_sum_exp = np.log(sum_exp) + max_logit     # 補正項
         loss = log_sum_exp - zt                       # CrossEntropy算出
-        loss = np.mean(loss)
+        loss = np.sum(loss) / self.leading_size       # 平均
         # 学習時の返りは慣習的に (pred, loss) にしておく
         return max_index, loss
 
@@ -270,8 +273,9 @@ class LinearLayerCrossEntropy(LinearLayer):
             if t_in_tile.any():
                 coords = np.where(t_in_tile)
                 idx_in_tile = (t[coords] - start).astype(np.int64)
-                tile_gz[coords + (idx_in_tile,)] -= 1
-
+                tile_gz[coords + (idx_in_tile,)] -= 1 # 確率分布pからone-hot を引く
+            tile_gz /= self.leading_size    # 順伝播のloss/leading_sizeに合わせる
+              
             tile_gx, tile_gw, tile_gb = self.dot_linear.backward(tile_gz)    
             grad_x += tile_gx
             self.grad_w[:, start:end] = tile_gw
