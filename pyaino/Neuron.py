@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.09.24 A.Inoue
+# 2025.09.26 A.Inoue
 
 import copy
 import warnings
@@ -2790,7 +2790,7 @@ class SelfAttention(Function):
         self.linear_o.config = emb_dim, emb_dim
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
-    def __forward__(self, x, *, dropout=0.0):
+    def __forward__(self, x, *, mask=None, dropout=0.0):
         if None in (*self.config, *self.linear_i.config, *self.linear_o.config):
             print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -2801,7 +2801,7 @@ class SelfAttention(Function):
         #lambda_now = lambda_scheduler(self.step, base_lambda=1e-4, power=2)
         
         #y = self.attention.forward(value, key, query, lambda_reg=lambda_now, dropout=dropout)
-        y = self.attention.forward(value, key, query, dropout=dropout)
+        y = self.attention.forward(value, key, query, mask=mask, dropout=dropout)
         y = self.linear_o.forward(y)
         y = self.DO.forward(y, dropout=dropout)
         self.y = y

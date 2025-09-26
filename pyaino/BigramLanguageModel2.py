@@ -47,9 +47,9 @@ class Block:
         self.ln1 = Neuron.LayerNormalization(**kwargs) # 20250515AI
         self.ln2 = Neuron.LayerNormalization(**kwargs) # 20250515AI
             
-    def forward(self, x, dropout=0.0):
+    def forward(self, x, mask=None, dropout=0.0):
         z = self.ln1.forward(x)
-        z = self.sa.forward(z, dropout=dropout)
+        z = self.sa.forward(z, mask=mask, dropout=dropout)
         #z += x # 自動微分で問題 20250528AI
         z = z + x
         y = self.ln2.forward(z)
@@ -164,9 +164,9 @@ class BigramLanguageModel(ModelBase):
         self.vocab_size = vocab_size
         self.memory = []
 
-    def forward(self, idx, targets=None, dropout=0.0):
+    def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
-        x = self.blocks.forward(x, dropout=dropout)
+        x = self.blocks.forward(x, mask=mask, dropout=dropout)
         x = self.ln_f(x)
         y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
         return y
@@ -216,12 +216,12 @@ class BigramLanguageModel2(ModelBase):
         self.vocab_size = vocab_size
         self.memory = []
 
-    def forward(self, idx, targets=None, dropout=0.0):
+    def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
         z = self.ln_pf.forward(x)
         z = self.pffwd.forward(z)
         x = z + x
-        x = self.blocks.forward(x, dropout=dropout)
+        x = self.blocks.forward(x, mask=mask, dropout=dropout)
         x = self.ln_f(x)
         y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
         return y
