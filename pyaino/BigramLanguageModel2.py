@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20250916 A.Inoue
+# 20250929 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -76,8 +76,81 @@ class Block:
         self.ln1.update(**kwargs)
         self.ln2.update(**kwargs)
 
+class LmHead:
+    """ 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築 """
+    def __init__(self, emb_dim, vocab_size, matmul=True, unify=True,
+                       tile_size=200, optimize='AdamT', ignore=-1):
+
+        self.ln_f = Neuron.LayerNormalization(optimize=optimize) #mask_enable=True) 
+        if unify: # 損失関数までの一体処理
+            self.linear_layer = Neuron.LinearLayerCrossEntropy(
+                emb_dim, vocab_size, matmul=matmul, tile_size=tile_size, optimize=optimize)#, **kwargs)
+        else:     # 機能別処理
+            self.linear_layer = Neuron.LinearLayer(
+                emb_dim, vocab_size, matmul=matmul, optimize=optimize)
+            self.loss_function = lf.CrossEntropyErrorForLogits(ignore=ignore)
+        self.unify = unify    
+
+    def forward(self, x, targets=None):
+        x = self.ln_f(x)
+        if self.unify:
+            y = self.linear_layer(x, targets) # logits.shape=(B,T,vocab_size)
+            return y # (max_index, max_logit) if targets is None else (max_index, loss) 
+        logits = self.linear_layer(x) # logits.shape=(B,T,vocab_size)
+        if targets is None:
+            return logits
+        loss = self.loss_function(logits, targets)
+        return logits, loss
+        
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def backward(self, gy=None):
+        if self.unify:
+            gx = self.linear_layer.backward()
+        else:
+            if gy is None: # gyが指定されない場合は損失関数から得る
+                gy = self.loss_function.backward()
+            gx = self.linear_layer.backward(gy)
+        gx = self.ln_f.backward(gx)
+        return gx     
+
+    def update(self, **kwargs):
+        self.ln_f.update(**kwargs)
+        self.linear_layer.update(**kwargs)
 
 class ModelBase:
+    """ 共通ベース """
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
+                 unify=True,
+                 optimize='AdamT',
+                 #decayrate=0.999,
+                 w_decay=0.01,
+                 ignore=-1, **kwargs):
+        kwargs['optimize']  = optimize
+        #kwargs['decayrate'] = decayrate
+        kwargs['w_decay']   = w_decay
+        #emb_width =np.sqrt(1/(emb_dim)) # 20250530AI
+        emb_width =np.sqrt(1/(emb_dim/np.sqrt(n_head))) # 20250530AI
+        #emb_width =np.sqrt(1/(emb_dim/n_head)) # 20250530AI
+        self.embed = Neuron.PositionalEmbedding(
+            vocab_size, block_size, emb_dim, **kwargs)
+        self.blocks = Neuron.Sequential(
+            *[Block(emb_dim, n_head, block_size, **kwargs) for _ in range(n_layer)]
+            )
+        matmul = True                   
+        tile_size = 100 if vocab_size > 200 else None 
+        self.lm_head = LmHead(emb_dim, vocab_size, matmul, unify, tile_size, optimize)
+
+        if not unify: # 以下2項は明示的に見せる必要がある
+            self.softmax = Activators.Softmax()
+            self.loss_function = self.lm_head.loss_function
+        self.unify = unify
+
+        self.block_size = block_size
+        self.vocab_size = vocab_size
+        self.memory = []
+
     def generate(self, seed, max_tokens=1000,
                  stochastic=True, beta=2, skip_ids=None, end_id=None,
                  memory_size=1000, flush=True):
@@ -100,9 +173,17 @@ class ModelBase:
             self.memory = self.memory[-memory_size:]
         gen_data = seed.copy()
         for i in range(max_tokens - len(seed)):
-            max_index, _ = self.forward(self.memory[-block_size:].reshape(1,-1)) 
-            next_idx = max_index[:,-1] # 末尾を選ぶ
-            
+            if self.unify:
+                max_index, _ = self.forward(self.memory[-block_size:].reshape(1,-1)) 
+                next_idx = max_index[:,-1] # 末尾を選ぶ
+            else:
+                logits = self.forward(self.memory[-block_size:].reshape(1,-1)) # バッチ軸追加して順伝播
+                # 次の単語の予測確率を得る
+                probs = self.softmax(logits[:, -1, :]) # (B, C)
+                # 上記確率にもとづいて次のidxをサンプリング
+                probs = probs.reshape(-1)
+                next_idx = cf.select_category(probs, stochastic, beta)
+                
             if skip_ids is not None and next_idx in skip_ids:
                 continue
             gen_data    = np.concatenate((gen_data,    next_idx)) 
@@ -110,7 +191,6 @@ class ModelBase:
             if end_id is not None and next_idx==end_id: # end_idが出現したら打切り　
                 break
         return gen_data
-
    
     def get_sa_result1(self, flatten=True):
         sa_result1 = []
@@ -134,87 +214,35 @@ class ModelBase:
             sa_result2 = sa_result2.reshape(-1)
         return sa_result2
     
-
-
 class BigramLanguageModel(ModelBase):
     """ GPT：基本の構成（Embedding → Blocks → lm_head） """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 optimize='AdamT',
-                 #decayrate=0.999,
-                 w_decay=0.01,
-                 ignore=-1, **kwargs):
-        kwargs['optimize']  = optimize
-        #kwargs['decayrate'] = decayrate
-        kwargs['w_decay']   = w_decay
-        #emb_width =np.sqrt(1/(emb_dim)) # 20250530AI
-        emb_width =np.sqrt(1/(emb_dim/np.sqrt(n_head))) # 20250530AI
-        #emb_width =np.sqrt(1/(emb_dim/n_head)) # 20250530AI
-        self.embed = Neuron.PositionalEmbedding(vocab_size, block_size, emb_dim,
-        #                                        width=emb_width,
-                                                **kwargs)
-        self.blocks = Neuron.Sequential(*[Block(emb_dim, n_head, block_size,
-                                                **kwargs)
-                                        for _ in range(n_layer)])
-        self.ln_f = Neuron.LayerNormalization(optimize=optimize) #mask_enable=True) 
-        #self.ln_f = Neuron.Normalization(axis=-1)
-        tile_size = 100 if vocab_size > 200 else None 
-        self.lm_head = Neuron.LinearLayerCrossEntropy(emb_dim, vocab_size,
-                           matmul=True, tile_size=tile_size, **kwargs)
-        self.block_size = block_size
-        self.vocab_size = vocab_size
-        self.memory = []
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
         x = self.blocks.forward(x, mask=mask, dropout=dropout)
-        x = self.ln_f(x)
         y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
         return y
 
-    def backward(self, *args):
-        gx = self.lm_head.backward()
-        gx = self.ln_f.backward(gx)
+    def backward(self, gy=None):
+        gx = self.lm_head.backward(gy)
         gx = self.blocks.backward(gx)
         self.embed.backward(gx)
 
     def update(self, **kwargs):
         self.embed.update(**kwargs)
         self.blocks.update(**kwargs)
-        self.ln_f.update(**kwargs)
         self.lm_head.update(**kwargs)
 
 class BigramLanguageModel2(ModelBase):
     """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 optimize='AdamT',
-                 #decayrate=0.999,
-                 w_decay=0.01,
-                 ignore=-1, **kwargs):
-        kwargs['optimize']  = optimize
-        #kwargs['decayrate'] = decayrate
-        kwargs['w_decay']   = w_decay
-        #emb_width =np.sqrt(1/(emb_dim)) # 20250530AI
-        emb_width =np.sqrt(1/(emb_dim/np.sqrt(n_head))) # 20250530AI
-        #emb_width =np.sqrt(1/(emb_dim/n_head)) # 20250530AI
-        self.embed = Neuron.PositionalEmbedding(vocab_size, block_size, emb_dim,
-        #                                        width=emb_width,
-                                                **kwargs)
+                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+
+        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
+                 unify, optimize, w_decay, ignore, **kwargs)
+        
         self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
         self.pffwd = FeedForward(emb_dim, n_head, **kwargs)
-        #self.ln_pf = Neuron.Normalization(axis=-1)
-        self.blocks = Neuron.Sequential(*[Block(emb_dim, n_head, block_size,
-                                                **kwargs)
-                                        for _ in range(n_layer)])
-        self.ln_f = Neuron.LayerNormalization(optimize=optimize) #mask_enable=True) 
-        #self.ln_f = Neuron.Normalization(axis=-1) 
-        self.lm_head = Neuron.LinearLayerCrossEntropy(emb_dim, vocab_size, matmul=True,
-                                          **kwargs)
-        tile_size = 100 if vocab_size > 200 else None 
-        self.lm_head = Neuron.LinearLayerCrossEntropy(emb_dim, vocab_size, matmul=True,
-                                          tile_size=tile_size, **kwargs)
-        self.block_size = block_size
-        self.vocab_size = vocab_size
-        self.memory = []
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
@@ -222,13 +250,11 @@ class BigramLanguageModel2(ModelBase):
         z = self.pffwd.forward(z)
         x = z + x
         x = self.blocks.forward(x, mask=mask, dropout=dropout)
-        x = self.ln_f(x)
         y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
         return y
     
-    def backward(self, *args):
-        gz = self.lm_head.backward()
-        gz = self.ln_f.backward(gz)
+    def backward(self, gy=None):
+        gz = self.lm_head.backward(gy)
         gz = self.blocks.backward(gz)
         gx = self.pffwd.backward(gz)
         gx = self.ln_pf.backward(gx)
@@ -240,7 +266,59 @@ class BigramLanguageModel2(ModelBase):
         self.ln_pf.update(**kwargs)
         self.pffwd.update(**kwargs)
         self.blocks.update(**kwargs)
-        self.ln_f.update(**kwargs)
+        self.lm_head.update(**kwargs)
+
+class BigramLanguageModel3(BigramLanguageModel2):
+    """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
+                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+
+        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
+                 unify, optimize, w_decay, ignore, **kwargs)
+        
+        self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
+   
+class BigramLanguageModel4(BigramLanguageModel2):
+    """ GPT4：Embedding と最初の Block の間に 簡易LN + 単層LinearLayer を挿入 """
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
+                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+
+        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
+                 unify, optimize, w_decay, ignore, **kwargs)
+        
+        self.ln_pf = Neuron.Normalization(axis=-1)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
+
+class BigramLanguageModel5(ModelBase):
+    """ GPT5：Embedding と最初の Block の間に単層LinearLayer を挿入 """
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
+                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+
+        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
+                 unify, optimize, w_decay, ignore, **kwargs)
+
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
+
+    def forward(self, idx, targets=None, mask=None, dropout=0.0):
+        x = self.embed.forward(idx)
+        z = self.pffwd.forward(x)
+        x = z + x
+        x = self.blocks.forward(x, mask=mask, dropout=dropout)
+        y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
+        return y
+    
+    def backward(self, gy=None):
+        gz = self.lm_head.backward(gy)
+        gz = self.blocks.backward(gz)
+        gx = self.pffwd.backward(gz)
+        gx += gz
+        self.embed.backward(gx)
+
+    def update(self, **kwargs):
+        self.embed.update(**kwargs)
+        self.pffwd.update(**kwargs)
+        self.blocks.update(**kwargs)
         self.lm_head.update(**kwargs)
 
 
@@ -298,7 +376,8 @@ if __name__=='__main__':
     t = np.array(correct_data)
 
     # -- 各層の初期化 --
-    model = BigramLanguageModel2(vocab_size, block_size, emb_dim, n_layer, n_head,
+    model = BigramLanguageModel5(vocab_size, block_size, emb_dim, n_layer, n_head,
+                                unify=True,
                                 optimize='AdamT',
                                 regularizer='AttentionRegularizer()',
                                 w_decay=0.01,
@@ -308,7 +387,9 @@ if __name__=='__main__':
     error_record = []; entropy_record = []
     print('学習を開始')
     for i in range(epoch):
+        #print(x.shape, t.shape)
         y, l = model.forward(x, t)
+        
         model.backward()
         model.update(eta=0.01)#, g_clip=0.5)
 
