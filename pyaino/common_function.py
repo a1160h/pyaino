@@ -1,5 +1,5 @@
 # common_function
-# 2025.09.17 A.Inoue 
+# 2025.10.01 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -997,18 +997,25 @@ def split_train_test(*data, **kwargs):
 
     return train + test # リストの結合
 
-def get_accuracy(y, t, mchx=False):
+def get_accuracy(y, t, mchx=False, y_label=False):
     '''
     y:順伝播の結果と、対応する t:正解とを与え、分類の正解率を返す
     mchx=Trueでは正誤表も返す
     '''
-    result = np.argmax(y, axis=-1)
-    if t.shape==y.shape: # 正解がone_hotの場合
-        correct = np.argmax(t, axis=-1)
-    elif t.ndim < y.ndim:
+    if not y_label:
+        result = np.argmax(y, axis=-1)
+        if t.shape==y.shape: # 正解がone_hotの場合
+            correct = np.argmax(t, axis=-1)
+        elif t.ndim < y.ndim:
+            correct = t
+
+    elif t.ndim == y.ndim: # 出力も正解もラベルの場合
+        result  = y
         correct = t
+
     else:
-        raise Exception('Wrong dimension of t')
+        raise Exception('Wrong dimension of y or t')
+
     errata = result == correct
     size = y.size / y.shape[-1] # 時系列データ対応
     accuracy = float(np.sum(errata) / size)
