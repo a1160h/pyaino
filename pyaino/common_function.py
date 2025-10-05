@@ -1,5 +1,5 @@
 # common_function
-# 2025.10.01 A.Inoue 
+# 2025.10.05 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1919,7 +1919,8 @@ class Tokenizer:
     def load(self, file_name):
         with open(file_name, 'rb') as f:
             params = pickle.load(f)
-        self.create_vocab(default=params)
+        self.token2id = params
+        self.create_vocab()
         print(self.__class__.__name__, '辞書をファイルから取得しました<=', file_name)
         
 class Tokenizer_bkup:
