@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20250929 A.Inoue
+# 20251007 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -89,7 +89,7 @@ class LmHead:
             self.linear_layer = Neuron.LinearLayer(
                 emb_dim, vocab_size, matmul=matmul, optimize=optimize)
             self.loss_function = lf.CrossEntropyErrorForLogits(ignore=ignore)
-        self.unify = unify    
+        self.unify = unify
 
     def forward(self, x, targets=None):
         x = self.ln_f(x)
@@ -139,7 +139,7 @@ class ModelBase:
             *[Block(emb_dim, n_head, block_size, **kwargs) for _ in range(n_layer)]
             )
         matmul = True                   
-        tile_size = 100 if vocab_size > 200 else None 
+        tile_size = 1000 if vocab_size > 1000 else None 
         self.lm_head = LmHead(emb_dim, vocab_size, matmul, unify, tile_size, optimize)
 
         if not unify: # 以下2項は明示的に見せる必要がある
@@ -150,6 +150,7 @@ class ModelBase:
         self.block_size = block_size
         self.vocab_size = vocab_size
         self.memory = []
+        return kwargs
 
     def generate(self, seed, max_tokens=1000,
                  stochastic=True, beta=2, skip_ids=None, end_id=None,
@@ -238,8 +239,8 @@ class BigramLanguageModel2(ModelBase):
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                 unify, optimize, w_decay, ignore, **kwargs)
+        kwargs = super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
+                     unify, optimize, w_decay, ignore, **kwargs)
         
         self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
         self.pffwd = FeedForward(emb_dim, n_head, **kwargs)
@@ -273,8 +274,8 @@ class BigramLanguageModel3(BigramLanguageModel2):
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                 unify, optimize, w_decay, ignore, **kwargs)
+        kwargs = ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
+                     unify, optimize, w_decay, ignore, **kwargs)
         
         self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
@@ -284,8 +285,8 @@ class BigramLanguageModel4(BigramLanguageModel2):
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                 unify, optimize, w_decay, ignore, **kwargs)
+        kwargs = ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
+                     unify, optimize, w_decay, ignore, **kwargs)
         
         self.ln_pf = Neuron.Normalization(axis=-1)
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
@@ -295,8 +296,8 @@ class BigramLanguageModel5(ModelBase):
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                 unify, optimize, w_decay, ignore, **kwargs)
+        kwargs = super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
+                     unify, optimize, w_decay, ignore, **kwargs)
 
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
 
@@ -376,8 +377,8 @@ if __name__=='__main__':
     t = np.array(correct_data)
 
     # -- 各層の初期化 --
-    model = BigramLanguageModel5(vocab_size, block_size, emb_dim, n_layer, n_head,
-                                unify=True,
+    model = BigramLanguageModel2(vocab_size, block_size, emb_dim, n_layer, n_head,
+                                unify=False,
                                 optimize='AdamT',
                                 regularizer='AttentionRegularizer()',
                                 w_decay=0.01,
