@@ -1,5 +1,5 @@
 # common_function
-# 2025.10.05 A.Inoue 
+# 2025.10.08 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1910,7 +1910,7 @@ class Tokenizer:
 
     # -- 学習結果の保存(辞書形式) --
     def save(self, file_name):
-        params = self.token2id
+        params = self.token2id, self.default
         with open(file_name, 'wb') as f:
             pickle.dump(params, f)
         print(self.__class__.__name__, '辞書をファイルに記録しました=>', file_name)    
@@ -1919,10 +1919,11 @@ class Tokenizer:
     def load(self, file_name):
         with open(file_name, 'rb') as f:
             params = pickle.load(f)
-        self.token2id = params
+        self.token2id, self.default = params
         self.create_vocab()
         print(self.__class__.__name__, '辞書をファイルから取得しました<=', file_name)
         
+       
 class Tokenizer_bkup:
     """ 日本語、英語の両方に対応するTokenizer """
 
