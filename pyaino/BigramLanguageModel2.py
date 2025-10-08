@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20251007 A.Inoue
+# 20251008 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -150,7 +150,6 @@ class ModelBase:
         self.block_size = block_size
         self.vocab_size = vocab_size
         self.memory = []
-        return kwargs
 
     def generate(self, seed, max_tokens=1000,
                  stochastic=True, beta=2, skip_ids=None, end_id=None,
@@ -239,11 +238,11 @@ class BigramLanguageModel2(ModelBase):
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        kwargs = super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
+        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
                      unify, optimize, w_decay, ignore, **kwargs)
         
         self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
-        self.pffwd = FeedForward(emb_dim, n_head, **kwargs)
+        self.pffwd = FeedForward(emb_dim, n_head, optimize=optimize, w_decay=w_decay, **kwargs)
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
@@ -274,32 +273,35 @@ class BigramLanguageModel3(BigramLanguageModel2):
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        kwargs = ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
+        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
                      unify, optimize, w_decay, ignore, **kwargs)
         
         self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
-        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
+                                        matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
    
 class BigramLanguageModel4(BigramLanguageModel2):
     """ GPT4：Embedding と最初の Block の間に 簡易LN + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        kwargs = ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
+        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
                      unify, optimize, w_decay, ignore, **kwargs)
         
         self.ln_pf = Neuron.Normalization(axis=-1)
-        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
+                                        matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
 
 class BigramLanguageModel5(ModelBase):
     """ GPT5：Embedding と最初の Block の間に単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
-        kwargs = super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
+        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
                      unify, optimize, w_decay, ignore, **kwargs)
 
-        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
+                                        matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
@@ -378,7 +380,7 @@ if __name__=='__main__':
 
     # -- 各層の初期化 --
     model = BigramLanguageModel2(vocab_size, block_size, emb_dim, n_layer, n_head,
-                                unify=False,
+                                #unify=False,
                                 optimize='AdamT',
                                 regularizer='AttentionRegularizer()',
                                 w_decay=0.01,
