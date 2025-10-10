@@ -1,5 +1,5 @@
 # Optimizers
-# 2025.08.17 A.Inoue
+# 2025.10.10 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -463,28 +463,28 @@ class Adam3:
 #### 最適化に関連する、その他の関数 ####################################
 class SpectralNormalization:
     """ 入力WにSpectral Normalizationを適用して更新する """
-    def __init__(self, power_iterations=1):
+    def __init__(self, power_iterations=1, eps=1e-12):
         # power_iterations: パワー反復の回数（デフォルトは1）
         self.power_iterations = power_iterations
         print(self.__class__.__name__, power_iterations)
-    
+        self.u = None
+        self.eps = eps
+   
     def __call__(self, W):
-        """ Wを更新する """
-        # W: 重み行列
-        W_shape = W.shape
-        W = W.reshape(W_shape[0], -1)    # 必要に応じて2次元化
-        
-        u = np.random.randn(W_shape[0])  # 初期のランダムベクトル u
-        #v = np.random.randn(W_shape[1]) # 初期のランダムベクトル v
-        
+        """ W(重み行列)を更新する """
+        m, n = W.shape
+        if self.u is None: 
+            self.u = np.random.randn(n, 1).astype(W.dtype) # 初期のランダムベクトル u
+        u = self.u    
         for _ in range(self.power_iterations):
-            v = np.dot(W.T, u)
-            v = v / np.linalg.norm(v)    # vをノルムで正規化
-            u = np.dot(W, v)
-            u = u / np.linalg.norm(u)    # uをノルムで正規化
+            v = np.dot(W, u)
+            v = v / (np.linalg.norm(v, axis=0, keepdims=True) + self.eps) # vをノルムで正規化
+            u = np.dot(W.T, v)
+            u = u / (np.linalg.norm(u, axis=0, keepdims=True) + self.eps) # uをノルムで正規化
+        sigma = np.dot(v.T, np.dot(W, u))    # Wのスペクトラルノルム
+        W /= sigma + self.eps # Wを更新
+        self.u = u
         
-        sigma = np.dot(u, np.dot(W, v))  # Wのスペクトラルノルム
-        W /= sigma
 
 def spectral_normalization(W, power_iterations=1):
     return SpectralNormalization(power_iterations)(W)
