@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.09.26 A.Inoue
+# 2025.10.12 A.Inoue
 
 import copy
 import warnings
@@ -3617,6 +3617,32 @@ class ScaleAndBias(Function):
         if self.gamma is None:
             self.init_parameters(x.shape)
         return self.gamma * x + self.beta
+
+#### スカラ値によるスケーリングを適用するクラス ###############################
+class ScalarScale(Function):
+    def __init__(self, **kwargs):
+        super().__init__()
+        optimize = kwargs.pop('optimize',     'SGD')       # 勾配降下法
+        self.OFg = cf.eval_in_module(optimize, Optimizers) # 最適化関数
+        self.gamma = None
+
+    def init_parameters(self):
+        self.gamma = np.array(1.0, dtype=Config.dtype)                     
+
+    def update(self, eta=0.001, **kwargs): # 他のパラメタの更新と呼応して更新
+        self.gamma -= self.OFg.update(self.ggamma, eta, **kwargs) 
+               
+    def __forward__(self, x):
+        if self.gamma is None:
+            self.init_parameters()
+        y = x * self.gamma    # xを温存しないと逆伝播出来ない
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        self.ggamma = np.sum(x * gy)
+        gx = gy * self.gamma
+        return gx 
 
 #### 正規化の汎用ベース #### 
 class GeneralNormalizationBase(Function):
