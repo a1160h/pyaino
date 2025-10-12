@@ -1,5 +1,5 @@
 # Optimizers
-# 2025.10.10 A.Inoue
+# 2025.10.12 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -463,11 +463,12 @@ class Adam3:
 #### 最適化に関連する、その他の関数 ####################################
 class SpectralNormalization:
     """ 入力WにSpectral Normalizationを適用して更新する """
-    def __init__(self, power_iterations=1, eps=1e-12):
+    def __init__(self, power_iterations=1, alpha=1.0, eps=1e-12):
         # power_iterations: パワー反復の回数（デフォルトは1）
         self.power_iterations = power_iterations
         print(self.__class__.__name__, power_iterations)
         self.u = None
+        self.alpha = alpha # 緩和係数 0.5～0.8で表現力を残しつつ安定化
         self.eps = eps
    
     def __call__(self, W):
@@ -482,8 +483,9 @@ class SpectralNormalization:
             u = np.dot(W.T, v)
             u = u / (np.linalg.norm(u, axis=0, keepdims=True) + self.eps) # uをノルムで正規化
         sigma = np.dot(v.T, np.dot(W, u))    # Wのスペクトラルノルム
-        W /= sigma + self.eps # Wを更新
+        W /= sigma ** self.alpha + self.eps  # Wを更新
         self.u = u
+        #print('sigma =', sigma)
         
 
 def spectral_normalization(W, power_iterations=1):
