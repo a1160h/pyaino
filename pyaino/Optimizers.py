@@ -1,5 +1,5 @@
 # Optimizers
-# 2025.10.12 A.Inoue
+# 2025.10.15 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -7,66 +7,97 @@ import copy
 #### 最適化関数の共通機能 ############################################
 class OptimizerBase:
     '''
-    annealingやg_clipなどの共通機能を各optimizerに付与する
+    最適化関数の基底クラスであって、以下の関連機能を纏め、共通機能を付与する
+      weight decay
+      gradient clipping
+      learning rate scheduler
+      dynamic adjustment of learning rate
+      spectral normalization(更新時にパラメタのリプシッツ制約を行う)   
+      weight clipping
 
     '''
-    def __init__(self, **kwargs): 
+    
+    def __init__(self, **kwargs):
+        # biasか？ -> 以下対象外: weight decay, weight clipping, spectral normalization 　　
+        self.bias = kwargs.pop('bias', False)         
+        
+        # weight decay : 0で無効
+        self.w_decay = 0 if self.bias else kwargs.pop('w_decay', 0)  
+        
         # 勾配クリッピングは更新の際の指定による
         self.gradient_clipping = GradientClipping() 
 
-        # 以下はAnnealing(学習率を学習回数に応じて調整)用の設定
-        anneal    = kwargs.pop('anneal',    False)
-        self.annealing = Annealing(**kwargs) if anneal else None
-
-        # ExponetialDecay
-        exponential_decay = kwargs.pop('exponential_decay', False)
-        self.exponential_decay = ExponentialDecay(**kwargs) if exponential_decay else None       
-
-        # CosineDecay
-        cos_decay = kwargs.pop('cos_decay', False)
-        self.cos_decay = CosineDecay(**kwargs) if cos_decay else None
-        
-        # LinearGrowCosineDecay
-        linear_grow_cos_decay = kwargs.pop('linear_grow_cos_decay', False)
-        self.linear_grow_cos_decay = LinearGrowCosineDecay(**kwargs) if linear_grow_cos_decay else None
-        
-        # SinGrowCosineDecay
-        sin_grow_cos_decay = kwargs.pop('sin_grow_cos_decay', False)
-        self.sin_grow_cos_decay = SineGrowCosineDecay(**kwargs) if sin_grow_cos_decay else None
-        
+        # 以下はlearning rate scheduler, 
+        self.scheduler = None
+        if kwargs.pop('anneal', False) and self.scheduler is None:
+            self.scheduler = Annealing(**kwargs) 
+        if kwargs.pop('exponential_decay', False) and self.scheduler is None:
+            self.scheduler = ExponentialDecay(**kwargs)
+        if kwargs.pop('cos_decay', False) and self.scheduler is None:
+            self.scheduler = CosineDecay(**kwargs)
+        if kwargs.pop('linear_grow_cos_decay', False) and self.scheduler is None:
+            self.scheduler = LinearGrowCosineDecay(**kwargs)
+        if kwargs.pop('sin_grow_cos_decay', False) and self.scheduler is None:
+            self.scheduler = SineGrowCosineDecay(**kwargs)
+            
         # DynamicAdjust(学習率をindicatorの変化に応じて動的に調整)
-        dynamic   = kwargs.pop('dynamic',   False)
-        self.dynamic_adjust = DynamicAdjust() if dynamic else None
+        if kwargs.pop('dynamic',   False):
+            self.dynamic_adjust = DynamicAdjust()
+        else:
+            self.dynamic_adjust = None
 
+        # SpectralNormalizationのksnを数値で指定
+        spctrnorm = kwargs.pop('spctrnorm', None)
+        if spctrnorm is not None and not self.bias:
+            self.spctrnorm = SpectralNormalization(power_iterations=spctrnorm)
+        else:
+            self.spctrnorm = None
+
+        # Weight Clipping
+        wghtclpng  = kwargs.pop('wghtclpng',  None)
+        wghtclpng2 = kwargs.pop('wghtclpng2', None)
+        self.wghtclpng = None
+        if self.bias:
+            pass
+        elif wghtclpng  is not None: # wghtclpng > wghtclpng2
+            self.wghtclpng = WeightClipping(wghtclpng)
+        elif wghtclpng2 is not None:
+            self.wghtclpng = WeightClipping2(wghtclpng2)
+            
         self.iter = 0    
             
-    def update(self, gradient, eta=0.001, **kwargs):
+    def update(self, parameter, gradient, eta=0.001, **kwargs): # parameter追加
+        # w_decay操作を勾配による更新とは独立に行う
+        if self.w_decay!=0:
+            parameter *= (1 - eta * self.w_decay)
+
+        # 勾配クリッピング 無指定では__call__()しない
         if any(kwargs): # kwargsは勾配クリッピングの指定のみ
             eta *= self.gradient_clipping(gradient, **kwargs)
+            
+        # 学習率調整の諸手法 learning rate scheduler　　
+        if self.scheduler is not None: 
+            eta *= self.scheduler(self.iter)
 
-        if self.annealing is not None: 
-            eta *= self.annealing(self.iter)
-
-        if self.exponential_decay is not None:
-            eta *= self.exponential_decay(self.iter)
-
-        if self.cos_decay is not None:
-            eta *= self.cos_decay(self.iter)
-        
-        if self.linear_grow_cos_decay is not None:
-            eta *= self.linear_grow_cos_decay(self.iter)
-        
-        if self.sin_grow_cos_decay is not None:
-            eta *= self.sin_grow_cos_decay(self.iter)
-        
+        # 学習率の動的調整
         if self.dynamic_adjust is not None:
             g_l2n = np.sqrt(np.sum(np.square(gradient))) # 仮実装20250320AI
             eta *= self.dynamic_adjust(g_l2n)            #
 
+        # 最適化関数に従い勾配にもとづく更新
         self.eta = eta
         self.iter += 1 # AdamTでも使う
-        y = self.__call__(gradient, eta)
-        return y
+        parameter -= self.__call__(gradient, eta)
+
+        # Spectral Normalization 
+        if self.spctrnorm is not None: 
+            self.spctrnorm(parameter)
+
+        # Weight Clipping
+        if self.wghtclpng is not None:
+            self.wghtclpng(parameter)
+            
+        return parameter
 
 class GradientClipping:
     def __init__(self):
@@ -78,7 +109,7 @@ class GradientClipping:
         g_clip_b = kwargs.pop('g_clip_b', None)
         g_l2n = np.sqrt(np.sum(np.square(gradient)))           # 勾配のL2ノルム
         if g_clip is not None:     # g_clip が有効 
-            rate = g_clip / (g_l2n + 1e-6)   # 上限値に対する逆比(1で丁度、大きいほど余裕あり)
+            rate = g_clip / (g_l2n + 1e-6) # 上限値に対する逆比(1で丁度、大きいほど余裕あり)
             return rate if rate < 1.0 else 1.0
         
         # 以下 g_clip_a または g_clip_b の指定あり
@@ -122,8 +153,8 @@ class ExponentialDecay:
         return decay
 
 class CosineDecay:
+    """　Cosine decay関数 """
     def __init__(self, **kwargs):
-        """　Cosine decay関数 """
         self.rate  = kwargs.pop('decay_rate',    1.0)
         self.start = kwargs.pop('decay_start',     0)
         self.end   = kwargs.pop('decay_end',  100000) 
@@ -141,8 +172,8 @@ class CosineDecay:
         return decay
 
 class LinearGrowCosineDecay:
+    """　Linear grow & Cosine decay関数 """
     def __init__(self, **kwargs):
-        """　Linear grow &Cosine decay関数 """
         self.warmup      = kwargs.pop('warmup',       1000)
         self.decay_rate  = kwargs.pop('decay_rate',    1.0)
         self.decay_start = kwargs.pop('decay_start',  1000)
@@ -162,8 +193,8 @@ class LinearGrowCosineDecay:
             
 
 class SineGrowCosineDecay:
+    """　Sine grow & Cosine decay関数 """
     def __init__(self, **kwargs):
-        """　Sine grow & Cosine decay関数 """
         self.initial     = kwargs.pop('initial',       1.0)
         self.grow_start  = kwargs.pop('grow_start',      0)
         self.grow_end    = kwargs.pop('grow_end',     1000)
@@ -203,7 +234,7 @@ class DynamicAdjust: # 仮実装20250320AI
         self.memory = indicator
         return self.adjust
     
-#### 各種最適化関数 ##################################################
+#### 以下、各種最適化関数 ##################################################
 class SGD(OptimizerBase):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -465,7 +496,7 @@ class SpectralNormalization:
     """ 入力WにSpectral Normalizationを適用して更新する """
     def __init__(self, power_iterations=1, alpha=1.0, eps=1e-12):
         # power_iterations: パワー反復の回数（デフォルトは1）
-        self.power_iterations = power_iterations
+        self.power_iterations = int(power_iterations)
         print(self.__class__.__name__, power_iterations)
         self.u = None
         self.alpha = alpha # 緩和係数 0.5～0.8で表現力を残しつつ安定化
@@ -582,7 +613,7 @@ if __name__ == "__main__":
         for i in range(200):
             y  = func(x)
             gx = func.backward()
-            x -= opt.update(gx, eta=eta)
+            x = opt.update(x, gx, eta=eta)
             trajectory.append(x.reshape(-1).tolist())
         plt.plot(trajectory, label=name)
 

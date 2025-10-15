@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.10.12 A.Inoue
+# 2025.10.14 A.Inoue
 
 import copy
 import warnings
@@ -67,11 +67,7 @@ class LinearLayer(Function):
         matmul          = kwargs.pop('matmul',     False) # MatMulLinearを使う 
         self.bias       = kwargs.pop('bias',        True) # dot_linearのbias有無
         optimize        = kwargs.get('optimize',   'SGD') # kwargsに残してBNに渡す
-        self.w_decay    = kwargs.pop('w_decay',      0.0) # 重み減衰の値を指定　　
         self.width      = kwargs.pop('width',       None) # 重みの初期値の広がりを指定
-        spctrnorm       = kwargs.pop('spctrnorm',   None) # ksnの数値を指定
-        wghtclpng       = kwargs.pop('wghtclpng',   None) # clip範囲をタプルで指定
-        wghtclpng2      = kwargs.pop('wghtclpng2',  None) # l2normを数値で指定        
         self.debug_mode = kwargs.pop('debug_mode', False) # 重みを一律に初期化
         optimize_option = kwargs.copy()                   # 残りは最適化のオプション
 
@@ -80,21 +76,11 @@ class LinearLayer(Function):
         else:
             self.dot_linear = F.DotLinear(self.bias)
         self.w, self.b  = None, None
-        self.grad_w, self.grad_b = None, None 
+        self.grad_w, self.grad_b = None, None
 
-        self.SNw  = Optimizers.SpectralNormalization(spctrnorm) if spctrnorm is not None else None
-        if wghtclpng is not None:
-            self.WCw = Optimizers.WeightClipping(wghtclpng)
-            #self.WCb = Optimizers.WeightClipping(wghtclpng)
-        elif wghtclpng2 is not None:    
-            self.WCw = Optimizers.WeightClipping2(wghtclpng2)
-            #self.WCb = Optimizers.WeightClipping2(wghtclpng2)
-        else:
-            self.WCw = None
-            #self.WCb = None
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **optimize_option)  # 最適化関数
         if self.bias:
-            self.optimizer_b = cf.eval_in_module(optimize, Optimizers, **optimize_option)
+            self.optimizer_b = cf.eval_in_module(optimize, Optimizers, bias=True, **optimize_option)
 
     def init_parameter(self):#, m, n):
         m, n = self.get_parameter_size() # m:入力幅、n:ニューロン数
@@ -108,15 +94,9 @@ class LinearLayer(Function):
             self.b = np.zeros(n, dtype=Config.dtype)                   
         
     def update(self, eta=0.001, **kwargs):
-        if self.w_decay!=0: # 最適化関数による更新より前にw_decayを適用20250414AI
-            self.w -= eta * self.w_decay * self.w # w_decayによる更新は最適化関数とは独立に 20250121AI                  
-        self.w -= self.optimizer_w.update(self.grad_w, eta, **kwargs) # 戻り値=更新量
+        self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs) # 戻り値=更新量
         if self.bias:
-            self.b -= self.optimizer_b.update(self.grad_b, eta, **kwargs) # 戻り値=更新量
-        if self.SNw is not None:
-            self.SNw(self.w)
-        if self.WCw is not None:
-            self.WCw(self.w)
+            self.optimizer_b.update(self.b, self.grad_b, eta, **kwargs) # 戻り値=更新量
         
     def fix_configuration(self, shape):
         if self.dot_linear.__class__.__name__=='MatMulLinear':
@@ -366,14 +346,10 @@ class BaseLayer(Function): # ニューロンの基本機能
         self.bias       = kwargs.pop('bias',          True) # dot_linearのbias有無
         activate        = kwargs.pop('activate','Identity') # 恒等関数
         optimize        = kwargs.get('optimize',     'SGD') # 最適化関数(getでBNにも渡す)
-        self.w_decay    = kwargs.pop('w_decay',        0.0) # 重み減衰の値を指定
         self.width      = kwargs.pop('width',         None) # 重みの初期値の広がりを指定
         dropout         = kwargs.pop('dropout',      False) # ドロップアウト可否(forwardで指定)
         batchnorm       = kwargs.pop('batchnorm',    False) # バッチ正規化の適用有無
         layernorm       = kwargs.pop('layernorm',    False) # 層正規化の適用有無
-        spctrnorm       = kwargs.pop('spctrnorm',     None) # ksnの数値を指定
-        wghtclpng       = kwargs.pop('wghtclpng',     None) # clip範囲をタプルで指定
-        wghtclpng2      = kwargs.pop('wghtclpng2',    None) # l2normを数値で指定        
         self.debug_mode = kwargs.pop('debug_mode',   False) # 重みを一律に初期化
         optimize_option = kwargs.copy()                     # 残りは最適化のオプション
         activate_option = kwargs.copy()                     # 残りは活性化のオプション
@@ -394,20 +370,10 @@ class BaseLayer(Function): # ニューロンの基本機能
         else:
             self.Norm = None
 
-        self.SNw = Optimizers.SpectralNormalization(spctrnorm) if spctrnorm is not None else None
-        if wghtclpng is not None:
-            self.WCw = Optimizers.WeightClipping(wghtclpng)
-            #self.WCb = Optimizers.WeightClipping(wghtclpng)
-        elif wghtclpng2 is not None:    
-            self.WCw = Optimizers.WeightClipping2(wghtclpng2)
-            #self.WCb = Optimizers.WeightClipping2(wghtclpng2)
-        else:
-            self.WCw = None
-            #self.WCb = None
         self.activator   = cf.eval_in_module(activate, Activators, **activate_option)  # 活性化関数
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **optimize_option)  # 最適化関数
         if self.bias:
-            self.optimizer_b = cf.eval_in_module(optimize, Optimizers, **optimize_option)
+            self.optimizer_b = cf.eval_in_module(optimize, Optimizers, bias=True, **optimize_option)
 
     def fix_configuration(self, shape):
         raise NotImplementedError('fix_configuration method for BaseLayer')
@@ -427,17 +393,11 @@ class BaseLayer(Function): # ニューロンの基本機能
         bkup = kwargs.pop('bkup', False)
         if bkup:
             self.backup()
-        if self.w_decay!=0: # 最適化関数による更新より前にw_decayを適用20250414AI
-            self.w -= eta * self.w_decay * self.w # w_decayによる更新は最適化関数とは独立に 20250121AI                  
-        self.w -= self.optimizer_w.update(self.grad_w, eta, **kwargs) # 戻り値=更新量
+        self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs) # 戻り値=更新量
         if self.bias:
-            self.b -= self.optimizer_b.update(self.grad_b, eta, **kwargs) # 戻り値=更新量
+            self.optimizer_b.update(self.b, self.grad_b, eta, **kwargs) # 戻り値=更新量
         if self.Norm:
             self.Norm.update(**kwargs)                                 # batch normalization
-        if self.SNw is not None:
-            self.SNw(self.w)
-        if self.WCw is not None:
-            self.WCw(self.w)
 
     def flush_gradient(self):
         self.grad_w = np.zeros_like(self.w, dtype=Config.dtype)
@@ -1699,18 +1659,15 @@ class RnnBaseLayer(Function):
         print('Initialize', self.__class__.__name__, self.config[:2], 'stateful', self.config[2])
         
         self.cell_normalization = kwargs.pop('cell_normalization', False) # セル正規化(層正規化相当)の適用有無
-        self.w_decay            = kwargs.pop('w_decay',      0.0) # 重み減衰の値を指定
         self.init_method        = kwargs.pop('method', 'Orthogonal') # 重みの初期化手段
         self.width              = kwargs.pop('width',       None) # 重みの初期値の広がりを指定
-        wghtclpng               = kwargs.pop('wghtclpng',   None) # clip範囲をタプルで指定
-        wghtclpng2              = kwargs.pop('wghtclpng2',  None) # l2normを数値で指定        
         self.debug_mode         = kwargs.pop('debug_mode', False) # 重みを一律に初期化
         optimize                = kwargs.pop('optimize',   'SGD') # 最適化関数の指定 
         optimize_option         = kwargs                          # 残りは最適化のオプション
 
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **optimize_option)
         self.optimizer_v = cf.eval_in_module(optimize, Optimizers, **optimize_option)
-        self.optimizer_b = cf.eval_in_module(optimize, Optimizers, **optimize_option)
+        self.optimizer_b = cf.eval_in_module(optimize, Optimizers, bias=True, **optimize_option)
         self.CPT = Capture()
         self.DO  = Dropout()
 
@@ -1719,15 +1676,6 @@ class RnnBaseLayer(Function):
         self.r0, self.c0 = None, None
         self.grad_r0, self.grad_c0 = None, None # seq2seqなどの場合に外部から参照するので必要   
         self.r0_given, self.c0_given = False, False
-        if wghtclpng is not None:
-            self.WCw = Optimizers.WeightClipping(wghtclpng)
-            self.WCv = Optimizers.WeightClipping(wghtclpng)
-        elif wghtclpng2 is not None:    
-            self.WCw = Optimizers.WeightClipping2(wghtclpng2)
-            self.WCv = Optimizers.WeightClipping2(wghtclpng2)
-        else:
-            self.WCw = None
-            self.WCv = None
         self.mask = None    
         
     def fix_configuration(self, shape):
@@ -1756,17 +1704,9 @@ class RnnBaseLayer(Function):
         #self.hold_gradient = False
         
     def update(self, eta=0.001, **kwargs):
-        if self.w_decay!=0: # 最適化関数による更新より前にw_decayを適用20250414AI
-            self.w -= eta * self.w_decay * self.w # w_decayによる更新は最適化関数とは独立に 20250121AI                  
-            self.v -= eta * self.w_decay * self.v # w_decayによる更新は最適化関数とは独立に 20250121AI                  
-        self.w -= self.optimizer_w.update(self.grad_w, eta, **kwargs)
-        self.v -= self.optimizer_v.update(self.grad_v, eta, **kwargs)
-        self.b -= self.optimizer_b.update(self.grad_b, eta, **kwargs)
-
-        if self.WCw is not None:
-            self.WCw(self.w)
-        if self.WCv is not None:
-            self.WCv(self.v)
+        self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs)
+        self.optimizer_v.update(self.v, self.grad_v, eta, **kwargs)
+        self.optimizer_b.update(self.b, self.grad_b, eta, **kwargs)
 
     def __forward__bkup(self, x, r0=None, c0=None, *, CPT=None, dropout=0.0):
         """
@@ -2288,7 +2228,6 @@ class Embedding(Function):
             m = 10000; n = 100
         self.config = m, n    
         print('Initialize', self.__class__.__name__, self.config)    
-        self.w_decay    = kwargs.pop('w_decay',      0.0) 
         self.width      = kwargs.pop('width',       None)
         self.debug_mode = kwargs.pop('debug_mode', False) # 重みを一律に初期化
         optimize        = kwargs.pop('optimize',   'SGD') 
@@ -2331,9 +2270,7 @@ class Embedding(Function):
         self.w = init_weight((m, n), method='Orthogonal', debug_mode=self.debug_mode)
 
     def update(self, eta=0.001, **kwargs):
-        if self.w_decay!=0:  # pytorchに習い除外20250404AI
-            self.w -= eta * self.w_decay * self.w # w_decayによる更新は最適化関数とは独立に 20250121AI                  
-        self.w -= self.optimizer_w.update(self.grad_w, eta, **kwargs)
+        self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs)
 
     def accommodate(self):
         if self.config <= self.w.shape:
@@ -2952,13 +2889,12 @@ class ContextualSelfAttention(Function):
         self.config = m, n
         self.attention = AttentionUnit(scale=True)
         optimize     = kwargs.pop('optimize', 'SGD') 
-        self.w_decay = kwargs.pop('w_decay',    0.0)
         self.width   = kwargs.pop('width',     None)
         self.dot_linear = F.MatMulLinear()
         self.w = None; self.b = None; self.q = None
 
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)
-        self.optimizer_b = cf.eval_in_module(optimize, Optimizers, **kwargs)
+        self.optimizer_b = cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs)
         self.optimizer_q = cf.eval_in_module(optimize, Optimizers, **kwargs)
         self.debug_mode = kwargs.pop('debug_mode', False)
        
@@ -2983,12 +2919,9 @@ class ContextualSelfAttention(Function):
         print(self.__class__.__name__, 'init_parameters', m, n)
 
     def update(self, eta=0.001, **kwargs):
-        if self.w_decay!=0: # 最適化関数による更新より前にw_decayを適用20250414AI
-            self.w -= eta * self.w_decay * self.w # w_decayによる更新は最適化関数とは独立に 20250121AI                  
-            self.q -= eta * self.w_decay * self.q 
-        self.w -= self.optimizer_w.update(self.grad_w, eta, **kwargs) 
-        self.b -= self.optimizer_b.update(self.grad_b, eta, **kwargs) 
-        self.q -= self.optimizer_q.update(self.grad_q, eta, **kwargs)
+        self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs) 
+        self.optimizer_b.update(self.b, self.grad_b, eta, **kwargs) 
+        self.optimizer_q.update(self.q, self.grad_q, eta, **kwargs)
 
     def get_parameter_size(self):
         m, n = self.config
@@ -3484,8 +3417,8 @@ class Normalization(Function):
 
     def update(self, *args, **kwargs):
         if self.ppl:
-            self.mu_ppl -= self.OFm.update(self.mu_ppl - self.mu, eta=0.1)
-            self.sigma_ppl -= self.OFs.update(self.sigma_ppl - self.sigma, eta=0.1)
+            self.OFm.update(self.mu_ppl,    self.mu_ppl    - self.mu,    eta=0.1)
+            self.OFs.update(self.sigma_ppl, self.sigma_ppl - self.sigma, eta=0.1)
 
     def __forward__(self, x, *, train=False):
         if self.ppl and self.mu_ppl is None:
@@ -3596,8 +3529,8 @@ class ScaleAndBias(Function):
         self.remain_axis = remain_axis # 逆伝播に必要
 
     def update(self, eta=0.001, **kwargs): # 他のパラメタの更新と呼応して更新
-        self.gamma -= self.OFg.update(self.ggamma, eta, **kwargs) 
-        self.beta  -= self.OFb.update(self.gbeta,  eta, **kwargs)  
+        self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
+        self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
                
     def __forward__(self, x):
         if self.gamma is None:
@@ -3630,7 +3563,7 @@ class ScalarScale(Function):
         self.gamma = np.array(1.0, dtype=Config.dtype)                     
 
     def update(self, eta=0.001, **kwargs): # 他のパラメタの更新と呼応して更新
-        self.gamma -= self.OFg.update(self.ggamma, eta, **kwargs) 
+        self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
                
     def __forward__(self, x):
         if self.gamma is None:
@@ -3766,10 +3699,10 @@ class batch_normalization2(Function):
         self.var_ppl = np.ones(n, dtype='f4')      # 全体分散
 
     def update(self):
-        self.gamma   -= self.OFg.update(self.ggamma)
-        self.beta    -= self.OFb.update(self.gbeta)
-        self.mu_ppl  -= self.OFm.update(self.mu_ppl  - self.mu,  eta=0.1)#, g_clip=100)
-        self.var_ppl -= self.OFv.update(self.var_ppl - self.var, eta=0.1)#, g_clip=100)
+        self.OFg.update(self.gamma, self.ggamma)
+        self.OFb.update(self.beta,  self.gbeta)
+        self.OFm.update(self.mu_ppl,  self.mu_ppl  - self.mu,  eta=0.1)#, g_clip=100)
+        self.OFv.update(self.var_ppl, self.var_ppl - self.var, eta=0.1)#, g_clip=100)
                
     def __forward__(self, x, *, train=False):
         if self.mu_ppl is None:
