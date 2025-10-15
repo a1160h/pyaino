@@ -19,7 +19,7 @@ print('gamma\n', model.gamma)
 print('beta\n', model.beta)
 
 print('学習により、modelが元の値を出力するように、gammaとbetaが調整される')
-for i in range(10000):
+for i in range(20000):
     y = model.forward(x)
     l = loss.forward(y, x)
     gy = loss.backward()
