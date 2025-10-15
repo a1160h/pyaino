@@ -1,5 +1,5 @@
 # NN_CNN
-# 2025.08.17 A.Inoue　
+# 2025.10.15 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -39,6 +39,7 @@ class NN_CNN_Base:
     def summary(self):
         print('～～ model summary of ' + str(self.__class__.__name__) + '  ～～～～～～～～～～～～～～～～～～～～～')
         for i, layer in enumerate(self.layers):
+            post_nl = False
             print('layer', i, layer.__class__.__name__, end=' ')
             if hasattr(layer, 'config') and layer.config is not None:
                 print('config =', layer.config)
@@ -46,21 +47,36 @@ class NN_CNN_Base:
                 print(' method =', layer.method, end=' ')
             if hasattr(layer, 'activator'):
                 print(' activate =', layer.activator.__class__.__name__, end=' ')
-            if hasattr(layer, 'update'):
-                print(' optimize =', layer.optimizer_w.__class__.__name__, end=' ')
+                post_nl = True
             if getattr(layer, 'DO', None) is not None:
                 print('', layer.DO.__class__.__name__, 'applicable', end='')
+                post_nl = True
             if getattr(layer, 'Norm', None) is not None and layer.Norm.__class__.__name__!='Identity':
-                print('\n', layer.Norm.__class__.__name__, '= True', end='')
-            if getattr(layer, 'SNw', None) is not None:
-                print('\n spectral_normalization = True, power_iterations =', layer.SNw.power_iterations, end='')  
-            if hasattr(layer, 'update') and layer.w_decay!=0:   
-                print('\n weight_decay_lambda =', layer.w_decay, end=' ')
-            if getattr(layer, 'WCw', None) is not None:
-                print('\n weight_clipping = ', layer.WCw.clip, end='')
-            if getattr(layer, 'WC2w', None) is not None:
-                print('\n weight_clipping2 = ', layer.WC2w.clip, end='')
-            print('\n------------------------------------------------------------------------')
+                print('', layer.Norm.__class__.__name__, '= True')
+                post_nl = False
+
+            if hasattr(layer, 'optimizer_w'):
+                if post_nl:
+                    print()
+                print(' optimize =', layer.optimizer_w.__class__.__name__, end=' ')
+                post_nl = True
+                item = layer.optimizer_w
+                if item.scheduler is not None:
+                    print(' scheduler =', item.scheduler.__class__.__name__, end=' ')
+                if item.w_decay!=0:   
+                    print(' weight_decay_lambda =', item.w_decay)
+                    post_nl=False
+                if getattr(item, 'spctrnorm', None) is not None:
+                    print('', item.spctrnorm.__class__.__name__,
+                          '=', item.spctrnorm.power_iterations, end='')
+                    post_nl=True
+                if getattr(item, 'wghtclpng', None) is not None:
+                    print(' weight_clipping =', item.wghtclpng.__class__.__name__,
+                          'clip =', item.wghtclpng.clip, end='')
+                    post_nl = True
+            if post_nl:
+                print()
+            print('------------------------------------------------------------------------')
         if hasattr(self, 'loss_function'):
             print(' loss_function =', self.loss_function.__class__.__name__)
         print('～～ end of summary ～～～～～～～～～～～～～～～～～～～～～～～～～～～～\n')

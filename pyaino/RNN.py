@@ -1,5 +1,5 @@
 ﻿# RNN
-# 2025.09.03 A.Inoue
+# 2025.10.15 A.Inoue
 from pyaino.Config import *
 from pyaino import Neuron as neuron, Functions as f
 from pyaino import LossFunctions
@@ -131,32 +131,53 @@ class RNN_Base:
                 print(' configuration =', layer.config[:2], 'stateful =', layer.config[2])
             else:
                 print(' configuration =', layer.config)
+            post_nl = False    
             if hasattr(layer, 'method'):
                 print(' method =', layer.method, end=' ')
+                post_nl = True
             if hasattr(layer, 'activator'):
                 print(' activate =', layer.activator.__class__.__name__, end=' ')
-            if hasattr(layer, 'optimizer_w'):
-                print(' optimize =', layer.optimizer_w.__class__.__name__, end='')
+                post_nl = True
             if hasattr(layer, 'DO') and i<len(self.layers)-1:
-                print('  dropout applicable.', end='')
+                print(' dropout applicable.', end='')
+                post_nl = True
             if getattr(layer, 'cell_normalization', False):
                 print('\n cell_normalization = True', end='')
+                post_nl = True
             if getattr(layer, 'batchnorm', False):
                 print('\n batch_normalization = True', end='')
-            if hasattr(layer, 'update') and hasattr(layer, 'w_decay') and layer.w_decay!=0:     
-                print('\n weight_decay_lambda =', layer.w_decay, end=' ')
-            if getattr(layer, 'WCw', None) is not None:
-                print('   weight_clipping = ', layer.WCw.clip, end='')
-            if getattr(layer, 'WC2w', None) is not None:
-                print('   weight_clipping2 = ', layer.WC2w.clip, end='')
+                post_nl = True
             if self.residual and i>0 and layer.__class__.__base__.__name__=='RnnBaseLayer':
                 print(' residual connection =', self.residual, end='')
-            print('\n------------------------------------------------------------------------')
-        #print(' except for output layer, dropout rate is given when forward propagation')
+                post_nl = True
+
+            if hasattr(layer, 'optimizer_w'):
+                if post_nl:
+                    print()
+                print(' optimize =', layer.optimizer_w.__class__.__name__, end=' ')
+                post_nl = True
+                item = layer.optimizer_w
+                if item.scheduler is not None:
+                    print(' scheduler =', item.scheduler.__class__.__name__, end=' ')
+                if item.w_decay!=0:   
+                    print(' weight_decay_lambda =', item.w_decay)
+                    post_nl=False
+                if getattr(item, 'spctrnorm', None) is not None:
+                    print('', item.spctrnorm.__class__.__name__,
+                          '=', item.spctrnorm.power_iterations, end='')
+                    post_nl=True
+                if getattr(item, 'wghtclpng', None) is not None:
+                    print(' weight_clipping =', item.wghtclpng.__class__.__name__,
+                          'clip =', item.wghtclpng.clip, end='')
+                    post_nl = True
+            if post_nl:
+                print()
+            print('------------------------------------------------------------------------')
+
         if hasattr(self, 'loss_function'):
-            print(' loss_function =', self.loss_function.__class__.__name__)
+            print('loss_function =', self.loss_function.__class__.__name__)
         if self.share_weight:
-            print(' sharing parameter(weight) of embedding layer and output layer')
+            print('sharing parameter(weight) of embedding layer and output layer')
         print('～～ end of summary ～～～～～～～～～～～～～～～～～～～～～～～～～～～～\n')
 
     def reset_state(self):
@@ -291,7 +312,7 @@ class RNN_Base:
             raise Exception("Can't get gradient for backward.")
 
         gx = gy; gr0 = None
-        for layer, r0t in \
+        for i, (layer, r0t) in \
             enumerate(zip(reversed(self.layers), reversed(self.r0_target_layer))):
             self.error_layer = layer
 
@@ -300,7 +321,7 @@ class RNN_Base:
             if r0t and self.r0_given:
                 gx, gr0 = layer.backward(gx)
                 self.r0_given = False
-            else:    
+            else:
                 gx = layer.backward(gx)
 
             
