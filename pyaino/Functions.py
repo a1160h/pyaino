@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20250913 A.Inoue
+# 20251016 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -782,8 +782,8 @@ class DotLinear(Function):
         x, w, b = self.inputs
         w_T = transpose(w) 
         x_T = transpose(x)  
-        gx = dot(gy, w_T)
-        gw = dot(x_T, gy)
+        gx = np.dot(gy, w_T)
+        gw = np.dot(x_T, gy)
         if self.bias and gy.shape==b.shape:
             gb = gy
         elif self.bias:
@@ -883,6 +883,52 @@ class DualDotLinear(Function):
         else:
             gb = None
         return gx, gr, gw, gv, gb
+
+class ScaleDotLinear(Function):
+    """ ニューラルネットワークで使う基本の重み付け和、ReParameterization対応 """
+    def __init__(self, matmul=False, bias=True, scale=False, eps=1e-8):
+        super().__init__()
+        self.matmul = matmul 
+        self.bias = bias
+        self.scale = scale
+        self.dot = np.matmul if matmul else np.dot
+        self.eps = eps
+        
+    def __forward__(self, x, w, b, g=1.0):
+        y = self.dot(x, w)
+        if self.scale:
+            y *= g 
+        if self.bias:
+            y += b
+        return y
+
+    def __backward__(self, gy):
+        x, w, b, g = self.inputs
+        y = self.get_outputs()
+        x_T = x.T if x.ndim <= 2 else x.reshape(-1, x.shape[-1]).T
+        gyf = gy.reshape(-1, gy.shape[-1])
+        
+        gx = self.dot(gy, w.T)
+        gw = self.dot(x_T, gyf)
+        if self.scale:
+            gx *= g
+            gw *= g
+        
+        if self.bias:
+            gb = np.sum(gyf, axis=0)
+        else:
+            gb = None
+
+        if self.scale:
+            if np.abs(g) > self.eps: # 通常
+                z = y - b if self.bias else y # z=g*(x@w)
+                gg = np.sum(z * gy) / g       # gg=Σgy*(x@w)
+            else:                    # gが0に近いときだけ再計算
+                xw = self.dot(x, w)                    
+                gg = np.sum(gy * xw)
+        else:
+            gg = None
+        return gx, gw, gb, gg
 
 class Flatten(Function):
     """ 軸0はバッチとし、それ以下の軸を平坦化 """
@@ -2021,5 +2067,27 @@ if __name__=='__main__':
         print(gw)
         print(gv)
         print(gb)
+    #"""#
+    #"""#
+    print('そのほかの関数のテスト3')
+    functions = (ScaleDotLinear,)
+    x = np.arange(24).reshape(2,3,4)
+    w = np.arange(8).reshape(4,2)
+    b = np.arange(2)
+    g = np.array(2)
+    print(x)
+    print(w)
+    print(b)
+    print(g)
+    for f in functions:
+        func = f(scale=True)
+        print('test ', func.__class__.__name__)
+        y = func(x, w, b, g)
+        print(y)
+        gx, gw, gb, gg = func.backward()
+        print(gx)
+        print(gw)
+        print(gb)
+        print(gg)
     #"""#
     
