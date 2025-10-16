@@ -1,5 +1,5 @@
 # NN_CNN
-# 2025.10.15 A.Inoue　
+# 2025.10.16 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -45,6 +45,7 @@ class NN_CNN_Base:
                 print('config =', layer.config)
             if hasattr(layer, 'method'):
                 print(' method =', layer.method, end=' ')
+                post_nl = True
             if hasattr(layer, 'activator'):
                 print(' activate =', layer.activator.__class__.__name__, end=' ')
                 post_nl = True
@@ -78,7 +79,7 @@ class NN_CNN_Base:
                 print()
             print('------------------------------------------------------------------------')
         if hasattr(self, 'loss_function'):
-            print(' loss_function =', self.loss_function.__class__.__name__)
+            print('loss_function =', self.loss_function.__class__.__name__)
         print('～～ end of summary ～～～～～～～～～～～～～～～～～～～～～～～～～～～～\n')
 
     # -- 順伝播 --
