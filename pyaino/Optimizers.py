@@ -1,5 +1,5 @@
 # Optimizers
-# 2025.10.15 A.Inoue
+# 2025.10.17 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -50,6 +50,7 @@ class OptimizerBase:
         spctrnorm = kwargs.pop('spctrnorm', None)
         if spctrnorm is not None and not self.bias:
             self.spctrnorm = SpectralNormalization(power_iterations=spctrnorm)
+            self.sn_sigma = None
         else:
             self.spctrnorm = None
 
@@ -91,7 +92,7 @@ class OptimizerBase:
 
         # Spectral Normalization 
         if self.spctrnorm is not None: 
-            self.spctrnorm(parameter)
+            self.sn_sigma = self.spctrnorm(parameter)
 
         # Weight Clipping
         if self.wghtclpng is not None:
@@ -516,8 +517,7 @@ class SpectralNormalization:
         sigma = np.dot(v.T, np.dot(W, u))    # Wのスペクトラルノルム
         W /= sigma ** self.alpha + self.eps  # Wを更新
         self.u = u
-        #print('sigma =', sigma)
-        
+        return sigma
 
 def spectral_normalization(W, power_iterations=1):
     return SpectralNormalization(power_iterations)(W)
