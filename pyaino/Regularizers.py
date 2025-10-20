@@ -1,5 +1,5 @@
 # Regularizers
-# 2025008.17 A.Inoue
+# 202510.20 A.Inoue
 from pyaino.Config import *
 from pyaino.nucleus import Function
 from pyaino import common_function as cf
@@ -41,6 +41,31 @@ class SymmetricKLDivergenceUnit(Function):
         gq = 0.5 * gy * (np.log(q / p) + 1 - p / q)
         return gp, gq
 
+class JSDivergenceUnit(Function):
+    def __init__(self, log_base='e', eps=1e-9):
+        super().__init__()
+        self.log = np.log if log_base=='e' else np.log2
+        self.eps = eps
+
+    def __forward__(self, p, q):
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
+        q = np.clip(q, eps, 1.0)
+        m = 0.5 * (p + q)
+        self.m = m
+        klp = p * self.log(p / m)
+        klq = q * self.log(q / m)
+        return 0.5 * (klp + klq)
+
+    def __backward__(self, gy):
+        p, q = self.inputs
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
+        q = np.clip(q, eps, 1.0)
+        m = self.m  
+        gp = 0.5 * gy * self.log(p / m)
+        gq = 0.5 * gy * self.log(q / m)
+        return gp, gq
 
 class EntropyDivergence(Function):
     """ エントロピーの平均の隔たり """
@@ -53,20 +78,20 @@ class EntropyDivergence(Function):
         else:    
             axis2 = (axis2,) if type(axis2) is not tuple else axis2 # 平均軸
             self.axis = axis2 + axis1
-        self.divf = EntropyUnit()
+        self.unit = EntropyUnit()
         self.mean = F.Mean(axis=self.axis, keepdims=keepdims)
         self.eps = eps
         
     def __forward__(self, a):             # a : (B,h,Tq,Tk)
         self.Tk = a.shape[self.axis1]  
         ac = np.clip(a, self.eps, 1.0)
-        entropy = self.divf(ac)
+        entropy = self.unit(ac)
         entropy = self.mean(entropy) * self.Tk # 全軸mean->末尾の軸のみsum
         return entropy
     
     def __backward__(self, ge):
         ga = self.mean.backward(ge * self.Tk)
-        ga = self.divf.backward(ga)
+        ga = self.unit.backward(ga)
         return ga
 
 class EntropyDivergence2(Function):
@@ -80,7 +105,7 @@ class EntropyDivergence2(Function):
         else:    
             axis2 = (axis2,) if type(axis2) is not tuple else axis2 # 平均軸
             self.axis = axis2 + axis1
-        self.divf = EntropyUnit()
+        self.unit = EntropyUnit()
         self.mean = F.Mean(axis=self.axis, keepdims=keepdims)
         if axis3 is not None:
             self.var  = F.Var(axis=axis3, keepdims=True)
@@ -91,7 +116,7 @@ class EntropyDivergence2(Function):
     def __forward__(self, a):             # a : (B,h,Tq,Tk)
         self.Tk = a.shape[self.axis1]  
         ac = np.clip(a, self.eps, 1.0)
-        entropy = self.divf(ac)
+        entropy = self.unit(ac)
         entropy = self.mean(entropy) * self.Tk # 全軸mean->末尾の軸のみsum
         if self.var is not None:
             entropy = self.var(entropy)
@@ -103,13 +128,14 @@ class EntropyDivergence2(Function):
         else:
             ga = ge
         ga = self.mean.backward(ga * self.Tk)
-        ga = self.divf.backward(ga)
+        ga = self.unit.backward(ga)
         return ga
 
 
-class KLDivergence(Function):
-    def __init__(self, method='permutation', symmetric=False, 
-                 axis0=1, axis1=-1, axis2=(0,2), keepdims=True, flatten=False, eps=1e-9):
+class PairDivergence(Function):
+    def __init__(self, unit, method='permutation', symmetric=False, 
+                 axis0=1, axis1=-1, axis2=(0,2), keepdims=True, flatten=False,
+                 log_base='e', eps=1e-9):
         """p: モデルからの出力, q: 目標分布"""
         super().__init__()
         #self.pairwise = F.Pairwise(axis=axis0, broadcast=True, diagonal_mask=True)  
@@ -123,7 +149,7 @@ class KLDivergence(Function):
         self.flatten = flatten
         self.eps = eps
         self.take_pair = F.TakePair(axis0, method)
-        self.divf = SymmetricKLDivergenceUnit() if symmetric else KLDivergenceUnit()
+        self.unit = unit
         self.mean = F.Mean(axis=self.axis, keepdims=keepdims)
         self.Tk = None
         self.y_shape = None
@@ -134,7 +160,7 @@ class KLDivergence(Function):
         p, q = self.take_pair(a)
         p = np.clip(p, self.eps, 1.0)
         q = np.clip(q, self.eps, 1.0)
-        y = self.divf(p, q)
+        y = self.unit(p, q)
         y = self.mean(y) * self.Tk # 一旦全てmeanをとってからTk軸はsumに戻す
         self.y_shape = y.shape
         if self.flatten:
@@ -146,10 +172,27 @@ class KLDivergence(Function):
         if self.flatten:
             gy = gy.reshape(self.y_shape)
         gl = self.mean.backward(gy * self.Tk)
-        gp, gq = self.divf.backward(gl)
+        gp, gq = self.unit.backward(gl)
         ga = self.take_pair.backward(gp, gq)
         return ga
 
+
+class KLDivergence(PairDivergence):
+    def __init__(self, **kwargs):
+        symmetric = kwargs.pop('symmetric', False)
+        eps       = kwargs.pop('eps',        1e-9)
+        if symmetric:
+            unit = SymmetricKLDivergenceUnit()#eps=eps)
+        else:
+            unit = KLDivergenceUnit()#eps=eps)
+        super().__init__(unit, **kwargs)
+
+class JSDivergence(PairDivergence):
+    def __init__(self, **kwargs):
+        eps       = kwargs.pop('eps',     1e-9)
+        log_base  = kwargs.pop('log_base', 'e')
+        unit = JSDivergenceUnit(log_base=log_base, eps=eps)
+        super().__init__(unit, **kwargs)
 
 class MeanVarDeviation(Function):
     """ 平均と標準偏差をtargetに近づくようにする関数 """
