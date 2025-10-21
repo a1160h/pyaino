@@ -1,5 +1,5 @@
 # Regularizers
-# 202510.20 A.Inoue
+# 202510.21 A.Inoue
 from pyaino.Config import *
 from pyaino.nucleus import Function
 from pyaino import common_function as cf
@@ -9,34 +9,62 @@ from pyaino import Optimizers
 
 
 class EntropyUnit(Function):
+    def __init__(self, eps=1e-9):
+        super().__init__()
+        self.eps = eps
+
     def __forward__(self, p):
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
         entropy = - p * np.log(p)
         return entropy  
 
     def __backward__(self, ge):
         p, = self.inputs
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
         gp = ge * (-np.log(p) - 1.0)
         return gp
 
 
 class KLDivergenceUnit(Function):
+    def __init__(self, eps=1e-9):
+        super().__init__()
+        self.eps = eps
+
     def __forward__(self, p, q):
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
+        q = np.clip(q, eps, 1.0)
         kld = p * np.log(p / q)
         return kld
 
     def __backward__(self, gy):
         p, q = self.inputs
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
+        q = np.clip(q, eps, 1.0)
         gp = gy * (np.log(p / q) + 1)
         gq = - gy * (p / q)
         return gp, gq
 
 class SymmetricKLDivergenceUnit(Function):
+    def __init__(self, eps=1e-9):
+        super().__init__()
+        self.eps = eps
+
     def __forward__(self, p, q):
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
+        q = np.clip(q, eps, 1.0)
         kld = p * np.log(p / q) + q * np.log(q / p)
         return 0.5 * kld 
 
     def __backward__(self, gy):
         p, q = self.inputs
+        eps = self.eps
+        p = np.clip(p, eps, 1.0)
+        q = np.clip(q, eps, 1.0)
         gp = 0.5 * gy * (np.log(p / q) + 1 - q / p)
         gq = 0.5 * gy * (np.log(q / p) + 1 - p / q)
         return gp, gq
@@ -133,6 +161,7 @@ class EntropyDivergence2(Function):
 
 
 class PairDivergence(Function):
+    """ unitで数学的に与えられるKLDやJSDを4軸のattention weightの測定や制御に供する """
     def __init__(self, unit, method='permutation', symmetric=False, 
                  axis0=1, axis1=-1, axis2=(0,2), keepdims=True, flatten=False,
                  log_base='e', eps=1e-9):
@@ -158,14 +187,11 @@ class PairDivergence(Function):
     def __forward__(self, a):
         self.Tk = a.shape[self.axis1]
         p, q = self.take_pair(a)
-        p = np.clip(p, self.eps, 1.0)
-        q = np.clip(q, self.eps, 1.0)
         y = self.unit(p, q)
         y = self.mean(y) * self.Tk # 一旦全てmeanをとってからTk軸はsumに戻す
         self.y_shape = y.shape
         if self.flatten:
             y = y.reshape(-1)
-        #print('###', y.shape)    
         return y
     
     def __backward__(self, gy):
@@ -176,15 +202,14 @@ class PairDivergence(Function):
         ga = self.take_pair.backward(gp, gq)
         return ga
 
-
 class KLDivergence(PairDivergence):
     def __init__(self, **kwargs):
         symmetric = kwargs.pop('symmetric', False)
         eps       = kwargs.pop('eps',        1e-9)
         if symmetric:
-            unit = SymmetricKLDivergenceUnit()#eps=eps)
+            unit = SymmetricKLDivergenceUnit(eps=eps)
         else:
-            unit = KLDivergenceUnit()#eps=eps)
+            unit = KLDivergenceUnit(eps=eps)
         super().__init__(unit, **kwargs)
 
 class JSDivergence(PairDivergence):
@@ -321,7 +346,7 @@ class PairwiseGap_bkup(Function):
 
     
 class AttentionRegularizer(Function):
-    """  """
+    """ MultiHeadAttentionへの組込み機構 """
     def __init__(self,
                  divergence1=EntropyDivergence(),
                  regularize1=None,
