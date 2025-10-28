@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.10.14 A.Inoue
+# 2025.10.28 A.Inoue
 
 import copy
 import warnings
@@ -2708,12 +2708,8 @@ class SelfAttention(Function):
         self.linear_o = LinearLayer(matmul=True, bias=True, optimize=optimize, **kwargs)
         self.DO = Dropout()
         self.step = 0
-        self.lambda_scheduler = Optimizers.SineGrowCosineDecay(
-            initial=0, grow_start=0, grow_end=200,
-            #decay_rate=0.1, decay_start=500, decay_end=1200
-            )
+      
        
-        
     def fix_configuration(self, shape):
         emb_dim, head_dim, n_head = self.config
         if emb_dim is None:
@@ -2733,11 +2729,6 @@ class SelfAttention(Function):
             self.fix_configuration(x.shape)
         z = self.linear_i.forward(x)
         key, query, value = np.split(z, 3, axis=-1)
-
-        lambda_now = self.lambda_scheduler(self.step)
-        #lambda_now = lambda_scheduler(self.step, base_lambda=1e-4, power=2)
-        
-        #y = self.attention.forward(value, key, query, lambda_reg=lambda_now, dropout=dropout)
         y = self.attention.forward(value, key, query, mask=mask, dropout=dropout)
         y = self.linear_o.forward(y)
         y = self.DO.forward(y, dropout=dropout)
