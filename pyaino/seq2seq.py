@@ -1,6 +1,6 @@
 # seq2seq sequence to sequence
 # Base functions for seq2seq and each seq2seq is defined
-# 20250902 A.Inoue
+# 20251030 A.Inoue
 from pyaino.Config import *
 from pyaino import common_function as cf
 from pyaino import RNN
@@ -99,10 +99,12 @@ class Seq2seq_Base:
     def update(self, **kwargs):
         if self.share_weight == True:
             # layers[0]はEmbedding
-            self.encoder.layers[0].grad_w += self.decoder.layers[0].grad_w
+            self.encoder.layers[0].parameters.grad_w \
+                += self.decoder.layers[0].parameters.grad_w
             self.encoder.update(**kwargs)
             self.decoder.update(**kwargs)
-            self.decoder.layers[0].w = self.encoder.layers[0].w
+            self.decoder.layers[0].parameters.w \
+                 = self.encoder.layers[0].parameters.w
         else:
             self.encoder.update(**kwargs)
             self.decoder.update(**kwargs)

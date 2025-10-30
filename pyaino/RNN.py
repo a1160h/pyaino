@@ -1,5 +1,5 @@
 ﻿# RNN
-# 2025.10.15 A.Inoue
+# 2025.10.30 A.Inoue
 from pyaino.Config import *
 from pyaino import Neuron as neuron, Functions as f
 from pyaino import LossFunctions
@@ -151,25 +151,26 @@ class RNN_Base:
                 print(' residual connection =', self.residual, end='')
                 post_nl = True
 
-            if hasattr(layer, 'optimizer_w'):
-                if post_nl:
-                    print()
-                print(' optimize =', layer.optimizer_w.__class__.__name__, end=' ')
-                post_nl = True
-                item = layer.optimizer_w
-                if item.scheduler is not None:
-                    print(' scheduler =', item.scheduler.__class__.__name__, end=' ')
-                if item.w_decay!=0:   
-                    print(' weight_decay_lambda =', item.w_decay)
-                    post_nl=False
-                if getattr(item, 'spctrnorm', None) is not None:
-                    print('', item.spctrnorm.__class__.__name__,
-                          '=', item.spctrnorm.power_iterations, end='')
-                    post_nl=True
-                if getattr(item, 'wghtclpng', None) is not None:
-                    print(' weight_clipping =', item.wghtclpng.__class__.__name__,
-                          'clip =', item.wghtclpng.clip, end='')
+            if hasattr(layer, 'parameters'):
+                if hasattr(layer.parameters, 'optimizer_w'):
+                    if post_nl:
+                        print()
+                    print(' optimize =', layer.parameters.optimizer_w.__class__.__name__, end=' ')
                     post_nl = True
+                    item = layer.parameters.optimizer_w
+                    if item.scheduler is not None:
+                        print(' scheduler =', item.scheduler.__class__.__name__, end=' ')
+                    if item.w_decay!=0:   
+                        print(' weight_decay_lambda =', item.w_decay)
+                        post_nl=False
+                    if getattr(item, 'spctrnorm', None) is not None:
+                        print('', item.spctrnorm.__class__.__name__,
+                              '=', item.spctrnorm.power_iterations, end='')
+                        post_nl=True
+                    if getattr(item, 'wghtclpng', None) is not None:
+                        print(' weight_clipping =', item.wghtclpng.__class__.__name__,
+                              'clip =', item.wghtclpng.clip, end='')
+                        post_nl = True
             if post_nl:
                 print()
             print('------------------------------------------------------------------------')
@@ -216,12 +217,13 @@ class RNN_Base:
 
     def update(self, **kwargs):
         # 始めと終わりの層は重み共有を判定して更新
-        if self.share_weight and self.layers[0].__class__.__name__ == 'Embedding':
+        if self.share_weight \
+           and self.layers[0].__class__.__name__ == 'Embedding':
             # embedding_layerをoutput_layerの勾配を加味して更新
-            self.layers[0].grad_w += self.layers[-1].grad_w.T
+            self.layers[0].parameters.grad_w += self.layers[-1].parameters.grad_w.T
             self.layers[0].update(**kwargs)
             # output_layerはembedding_layerのwに合わせる
-            self.layers[-1].w = self.layers[0].w.T
+            self.layers[-1].parameters.w = self.layers[0].parameters.w.T
         else:
             self.layers[0].update(**kwargs)
             self.layers[-1].update(**kwargs)
@@ -520,23 +522,25 @@ class RNN_Base:
     def export_params(self):
         params = {}
         for i, layer in enumerate(self.layers):
-            if hasattr(layer, 'w'):
-                params['layer'+str(i)+'_w'] = np.array(layer.w)
-            if hasattr(layer, 'v'):
-                params['layer'+str(i)+'_v'] = np.array(layer.v)
-            if hasattr(layer, 'b'):
-                params['layer'+str(i)+'_b'] = np.array(layer.b)
+            if hasattr(layer, 'parameters'):
+                if hasattr(layer.parameters, 'w'):
+                    params['layer'+str(i)+'_w'] = np.array(layer.parameters.w)
+                if hasattr(layer.parameters, 'v'):
+                    params['layer'+str(i)+'_v'] = np.array(layer.parameters.v)
+                if hasattr(layer.parameters, 'b'):
+                    params['layer'+str(i)+'_b'] = np.array(layer.parameters.b)
         return params
 
     # -- 辞書からパラメタ --
     def import_params(self, params):
         for i, layer in enumerate(self.layers):
-            if hasattr(layer, 'w'):
-                layer.w = np.array(params['layer'+str(i)+'_w']) 
-            if hasattr(layer, 'v'):
-                layer.v = np.array(params['layer'+str(i)+'_v']) 
-            if hasattr(layer, 'b'):
-                layer.b = np.array(params['layer'+str(i)+'_b'])
+            if hasattr(layer, 'parameters'):
+                if hasattr(layer.parameters, 'w'):
+                    layer.parameters.w = np.array(params['layer'+str(i)+'_w']) 
+                if hasattr(layer.parameters, 'v'):
+                    layer.parameters.v = np.array(params['layer'+str(i)+'_v']) 
+                if hasattr(layer.parameters, 'b'):
+                    layer.parameters.b = np.array(params['layer'+str(i)+'_b'])
             
     # -- 学習結果の保存 --
     def save_parameters(self, file_name):
