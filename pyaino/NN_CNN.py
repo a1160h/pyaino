@@ -1,5 +1,5 @@
 # NN_CNN
-# 2025.10.16 A.Inoue　
+# 2025.10.30 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -56,25 +56,26 @@ class NN_CNN_Base:
                 print('', layer.Norm.__class__.__name__, '= True')
                 post_nl = False
 
-            if hasattr(layer, 'optimizer_w'):
-                if post_nl:
-                    print()
-                print(' optimize =', layer.optimizer_w.__class__.__name__, end=' ')
-                post_nl = True
-                item = layer.optimizer_w
-                if item.scheduler is not None:
-                    print(' scheduler =', item.scheduler.__class__.__name__, end=' ')
-                if item.w_decay!=0:   
-                    print(' weight_decay_lambda =', item.w_decay)
-                    post_nl=False
-                if getattr(item, 'spctrnorm', None) is not None:
-                    print('', item.spctrnorm.__class__.__name__,
-                          '=', item.spctrnorm.power_iterations, end='')
-                    post_nl=True
-                if getattr(item, 'wghtclpng', None) is not None:
-                    print(' weight_clipping =', item.wghtclpng.__class__.__name__,
-                          'clip =', item.wghtclpng.clip, end='')
+            if hasattr(layer, 'parameters'):
+                if hasattr(layer.parameters, 'optimizer_w'):
+                    if post_nl:
+                        print()
+                    print(' optimize =', layer.parameters.optimizer_w.__class__.__name__, end=' ')
                     post_nl = True
+                    item = layer.parameters.optimizer_w
+                    if item.scheduler is not None:
+                        print(' scheduler =', item.scheduler.__class__.__name__, end=' ')
+                    if item.w_decay!=0:   
+                        print(' weight_decay_lambda =', item.w_decay)
+                        post_nl=False
+                    if getattr(item, 'spctrnorm', None) is not None:
+                        print('', item.spctrnorm.__class__.__name__,
+                              '=', item.spctrnorm.power_iterations, end='')
+                        post_nl=True
+                    if getattr(item, 'wghtclpng', None) is not None:
+                        print(' weight_clipping =', item.wghtclpng.__class__.__name__,
+                              'clip =', item.wghtclpng.clip, end='')
+                        post_nl = True
             if post_nl:
                 print()
             print('------------------------------------------------------------------------')
@@ -142,28 +143,31 @@ class NN_CNN_Base:
     def export_params(self):
         params = {}
         for i, layer in enumerate(self.layers):
-            if hasattr(layer, 'w'):
-                params['layer'+str(i)+'_w'] = np.array(layer.w)
-            if hasattr(layer, 'b'):
-                params['layer'+str(i)+'_b'] = np.array(layer.b)
+            if hasattr(layer, 'parameters'):
+                if hasattr(layer.parameters, 'w'):
+                    params['layer'+str(i)+'_w'] = np.array(layer.parameters.w)
+                if hasattr(layer.parameters, 'b'):
+                    params['layer'+str(i)+'_b'] = np.array(layer.parameters.b)
         return params
 
     # -- 辞書からパラメタ --
     def import_params(self, params):
         for i, layer in enumerate(self.layers):
-            if hasattr(layer, 'w'):
-                layer.w = np.array(params['layer'+str(i)+'_w']) 
-            if hasattr(layer, 'b'):
-                layer.b = np.array(params['layer'+str(i)+'_b'])
+            if hasattr(layer, 'parameters'):
+                if hasattr(layer.parameters, 'w'):
+                    layer.parameters.w = np.array(params['layer'+str(i)+'_w']) 
+                if hasattr(layer.parameters, 'b'):
+                    layer.parameters.b = np.array(params['layer'+str(i)+'_b'])
 
     # -- 勾配から辞書 --　　　
     def export_grads(self):
         grads = {}
         for i, layer in enumerate(self.layers):
-            if hasattr(layer, 'w'):
-                grads['layer'+str(i)+'_w'] = copy.deepcopy(layer.grad_w)
-            if hasattr(layer, 'b'):
-                grads['layer'+str(i)+'_b'] = copy.deepcopy(layer.grad_b)
+            if hasattr(layer, 'parameters'):
+                if hasattr(layer.parameters, 'w'):
+                    grads['layer'+str(i)+'_w'] = copy.deepcopy(layer.parameters.grad_w)
+                if hasattr(layer.parameters, 'b'):
+                    grads['layer'+str(i)+'_b'] = copy.deepcopy(layer.parameters.grad_b)
         return grads
 
 
