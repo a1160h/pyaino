@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.10.30 A.Inoue
+# 2025.11.04 A.Inoue
 
 import copy
 import warnings
@@ -2804,8 +2804,11 @@ class ParametersForContextualSelfAttention:
          
     """
     def __init__(self, layer, **kwargs):
-        optimize     = kwargs.pop('optimize', 'SGD') 
-        self.width   = kwargs.pop('width',     None)
+        print(self.__class__.__name__)
+        self.layer   = layer 
+        optimize     = kwargs.pop('optimize',   'SGD') 
+        self.width   = kwargs.pop('width',       None)
+        self.q_shape = kwargs.pop('q_shape', (1,1,-1))
         self.w = None; self.b = None; self.q = None
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)
         self.optimizer_b = cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs)
@@ -2821,17 +2824,16 @@ class ParametersForContextualSelfAttention:
         m, n = self.layer.get_parameter_size() 
         if m is None or n is None:
             raise Exception('Configuration is not fixed.', self.__class__.__name__)
-        if self.width is not None:
-            width = self.width
-        else:    
-            width = np.sqrt(1/m)  # Xavierの初期値
-
-        self.w = (width * np.random.randn(m, n)).astype(Config.dtype) 
+        self.w = init_weight((m, n),
+                             width=self.width,
+                             debug_mode=self.debug_mode)
         self.b = np.zeros(n, dtype=Config.dtype)
-        self.q = (width * np.random.randn(1,1,n)).astype(Config.dtype) 
-        if self.debug_mode:
-            self.w[...] = 1; self.q[...] = 1 # for debug
-        print(self.__class__.__name__, 'init_parameters', m, n)
+        self.q = init_weight((1,n),
+                             width=np.sqrt(1/m), # 通常とは異なるため指定が必要
+                             debug_mode=self.debug_mode)
+        self.q = self.q.reshape(*self.q_shape)
+                             
+        #(width * np.random.randn(1,1,n)).astype(Config.dtype) 
 
     def update(self, eta=0.001, **kwargs):
         self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs) 
@@ -2853,6 +2855,96 @@ class ContextualSelfAttention(Function):
     そこでqueryは入力xによらないパラメタとして用意する．
          
     """
+    def __init__(self, *configuration,
+                 affine_v=False, affine_k=False, q_shape=(1,1,-1), **kwargs):
+        super().__init__()
+        if len(configuration) == 2:
+            m, n = configuration
+        if len(configuration) == 1:
+            m = None; n, = configuration
+        self.config = m, n
+
+        # linear_iとlinear_oのconfigはfix_configurationで設定
+        self.linear_v = LinearLayer(matmul=True, bias=False,**kwargs) \
+            if affine_v else None
+        self.linear_k = LinearLayer(matmul=True, bias=False,**kwargs) \
+            if affine_k else None
+        # qもfix_configurationで設定
+        self.q, self.grad_q = None, None
+        self.q_shape = q_shape
+        optimize = kwargs.pop('optimize', 'SGD')
+        self.optimizer_q = cf.eval_in_module(optimize, Optimizers, **kwargs)
+        # Attentionとdebug_mode
+        self.attention = AttentionUnit(scale=True)
+        self.debug_mode = kwargs.pop('debug_mode',  False)
+       
+    def fix_configuration(self, shape):
+        self.config = shape[-1], self.config[1]
+        print('config =', self.config)
+        m, n = self.config
+
+        if self.linear_v is not None:
+            self.linear_v.config = m, n 
+        if self.linear_k is not None:
+            self.linear_k.config = m, n 
+
+        self.q = init_weight((1, n),
+                             width=np.sqrt(1/m), # 通常とは異なるため指定が必要
+                             debug_mode=self.debug_mode)
+        self.q = self.q.reshape(*self.q_shape)
+
+    def update(self, eta=0.001, **kwargs):
+        if self.linear_v is not None:
+            self.linear_v.update(eta=eta, **kwargs)
+        if self.linear_k is not None:
+            self.linear_k.update(eta=eta, **kwargs)
+        self.optimizer_q.update(self.q, self.grad_q, eta, **kwargs)
+
+    def get_parameter_size(self):
+        m, n = self.config
+        return m, n
+
+    def __forward__(self, x):
+        if None in self.config or self.q is None:
+            print(self.__class__.__name__, '.input.shape', x.shape)
+            self.fix_configuration(x.shape)
+        m, n = self.config
+        B, _, _ = x.shape
+        
+        v = self.linear_v.forward(x) if self.linear_v is not None else x
+        k = self.linear_k.forward(x) if self.linear_k is not None else x
+        q = np.broadcast_to(self.q, (B, 1, n))
+       
+        y = self.attention.forward(v, k, q)
+        y = y.reshape(B, n)
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        m, n = self.config
+        B, _, _ = x.shape
+
+        gy = gy.reshape(B, 1, n)
+
+        gv, gk, gq = self.attention.backward(gy)
+
+        self.grad_q = np.sum(gq, axis=0, keepdims=True) # (B,1,H)->(1,1,H) forwardでのBCに対応
+
+        gxk = self.linear_k.backward(gk) if self.linear_k is not None else gk
+        gxv = self.linear_v.backward(gv) if self.linear_v is not None else gv
+        gx = gxv + gxk
+
+        return gx
+    
+class ContextualSelfAttention_bkup(Function):
+    """
+    時系列入力xに対してコンテキストベクトルyを返す
+    即ち、入力の時系列に並ぶものの重要なことを抽出して文脈とする
+    この操作では、keyとvalueは必要だがqueryは何でも良い．　　　
+    なぜならば、出力y(コンテクスト)は入力xに応じて決まれば良いのだから．
+    そこでqueryは入力xによらないパラメタとして用意する．
+         
+    """
     def __init__(self, *configuration, **kwargs):
         super().__init__()
         if len(configuration) == 2:
@@ -2862,7 +2954,7 @@ class ContextualSelfAttention(Function):
         self.config = m, n
         self.attention = AttentionUnit(scale=True)
         self.dot_linear = F.MatMulLinear()
-        self.parameters = ParametersForContextualSelfAttention()
+        self.parameters = ParametersForContextualSelfAttention(self, **kwargs)
        
     def fix_configuration(self, shape):
         self.config = shape[-1], self.config[1]
@@ -2921,14 +3013,14 @@ class ContextualSelfAttentionZ1(ContextualSelfAttention):
         if None in self.config:
             print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
-        if self.w is None or self.b is None or self.q is None:
-            self.init_parameter()
+
+        w, b, q = self.parameters()     
         m, n = self.config # m, n = H ベクトルサイズ
         B, T, _ = x.shape
         self.x = x
         # 入力xからkeyを生成 keyの形状 (B, T, H)
         #print('### x =', x.shape, 'w =', self.w.shape)   
-        self.k = np.matmul(x, self.w) + self.b      # (B,T,H)
+        self.k = np.matmul(x, w) + b      # (B,T,H)
         #print('### k =', self.k.shape, 'q =', self.q.shape)   
 
         # s:scoreとa:attention_weightを算出 sとaの形状:(B,T)
@@ -2951,6 +3043,7 @@ class ContextualSelfAttentionZ1(ContextualSelfAttention):
         m, n = self.config
         B, T, _ = x.shape
         
+        w, b, q = self.parameters()     
         # 重み付け和の逆伝播
         gc = gy.reshape(B, 1, n) # (B,H)->(B,1,H)
  
@@ -2962,21 +3055,22 @@ class ContextualSelfAttentionZ1(ContextualSelfAttention):
         gs *= m ** -0.5
 
         #print('### gs =', gs.shape, 'q =', self.q.shape)
-        gk = np.matmul(gs.transpose(0,2,1), self.q)     # (B,1,T)*(1,1,H)->(B,T,H)
+        gk = np.matmul(gs.transpose(0,2,1), q)     # (B,1,T)*(1,1,H)->(B,T,H)
         #print('### gk =', gk.shape)
         #print('### k =', self.k.shape, 'gs =', gs.shape) 
         gq = np.matmul(gs, self.k)                      # (B,1,T)*(B,T,H)->(B,1,H)
         #print('### gq =', gq.shape)
-        self.grad_q = np.sum(gq, axis=0, keepdims=True) # (B,1,H) -> (1,1,H)
+        grad_q = np.sum(gq, axis=0, keepdims=True) # (B,1,H) -> (1,1,H)
         #print('### grad_q =', self.grad_q.shape)
         # keyの逆伝播
         #self.grad_w = np.matmul(x.reshape(-1, m).T, gk.reshape(-1, n))
         grad_w = np.matmul(x.transpose(0,2,1), gk)  # (B,H,T) * (B,T,H) -> (B,H,H)
-        self.grad_w = np.sum(grad_w, axis=0)        # (B,H,H) -> (H,H)
-        self.grad_b = np.sum(gk, axis=(0,1))        # (B,T,H) -> (H,)
+        grad_w = np.sum(grad_w, axis=0)        # (B,H,H) -> (H,H)
+        grad_b = np.sum(gk, axis=(0,1))        # (B,T,H) -> (H,)
         #print('### grad_w', self.grad_w.shape)
         gx += np.matmul(gk, self.w.T)
         #input()
+        self.parameters.set_gradient(grad_w, grad_b, grad_q)
         return gx
   
 class ContextualSelfAttentionZ2(ContextualSelfAttention):
