@@ -22,7 +22,7 @@ plt.title('x')
 plt.show()
 
 y = conv_layer.forward(x)
-conv_layer.w[...] = 0.25
+conv_layer.parameters.w[...] = 0.25
 y = conv_layer.forward(x)
 print('y =', y)
 s = int(y.size**0.5)
@@ -31,7 +31,7 @@ plt.title('y = conv(x)')
 plt.show()
 
 z = deconv_layer.forward(y)
-deconv_layer.w[...] = 0.5
+deconv_layer.parameters.w[...] = 0.5
 z = deconv_layer.forward(y)
 print('z =', z)
 s = int(z.size**0.5)
@@ -71,8 +71,8 @@ for i in range(1000):
     gl = loss_function.backward()
     gy = deconv_layer.backward(gl)
     gx = conv_layer.backward(gy)
-    conv_layer.update(eta=0.01)
-    deconv_layer.update(eta=0.01)
+    conv_layer.update(eta=0.003)
+    deconv_layer.update(eta=0.003)
 
 print('loss =', l)
 plt.plot(error_record)
