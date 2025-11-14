@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.11.07 A.Inoue
+# 2025.11.14 A.Inoue
 
 import copy
 import warnings
@@ -207,7 +207,6 @@ class LinearLayer(Function):
         return y 
         
     def __backward__(self, gy):
-        m, n = self.config                        # m:入力数、n:ニューロン数
         gx, gw, gb, ggamma = self.dot_linear.backward(gy)
         self.parameters.set_gradient(gw, gb, ggamma) 
         return gx
@@ -571,10 +570,10 @@ class Conv1dLayer(BaseLayer):
         # '0'パディング B軸    C軸  Iw左Iw右
         x = np.pad(x, [(0,0),(0,0),(pad,pad)])
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow)
-        self.cols = Vec2col(C, Iw+2*pad, M, Fw, stride)(x)
+        cols = Vec2col(C, Iw+2*pad, M, Fw, stride)(x)
         # Affine変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
         w, b, gamma = self.parameters()    
-        y = self.dot_linear.forward(self.cols, w, b, gamma)
+        y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Ow, M).transpose(0, 2, 1)       # u.shape=(B,M,Ow) 
         y = super().__forward__(y, train=train, dropout=dropout)
         return y
@@ -635,10 +634,10 @@ class DeConv1dLayer(BaseLayer):
             self.fix_configuration(x.shape)
         self.x_shape = x.shape 
         C, Iw, M, Fw, stride, pad, Ow = self.config
-        self.x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
+        x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
         # Affine変換 (B*Iw,C)×(C,M*Fw)->(B*Iw,M*Fw)   
         w, b, gamma = self.parameters()    
-        cols = self.dot_linear.forward(self.x, w, b, gamma)
+        cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)  　
         y = Col2vec(C, Iw, M, Fw, stride)(cols)
         # 画像調整 トリミング
@@ -758,10 +757,10 @@ class Conv2dLayer(BaseLayer):
         # '0'パディング
         x = np.pad(x, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow) 
-        self.cols = Im2col(C, Ih+2*pad, Iw+2*pad, M, Fh, Fw, Sh, Sw)(x)
+        cols = Im2col(C, Ih+2*pad, Iw+2*pad, M, Fh, Fw, Sh, Sw)(x)
         # Affine変換: (B*Oh*Ow,C*Fh*Fw)×(C*Fh*Fw,M)->(B*Oh*Ow,M)
         w, b, gamma = self.parameters()    
-        y = self.dot_linear.forward(self.cols, w, b, gamma)
+        y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
         y = super().__forward__(y, train=train, dropout=dropout)
         return y
@@ -835,12 +834,12 @@ class DeConv2dLayer(BaseLayer):
             self.fix_configuration(x.shape)
         self.x_shape = x.shape
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
-        self.x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
+        x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
 
         #print('## x.shape', x.shape, '->', self.x.shape)
         # Affine変換 (B*Ih*Iw,C)×(C,M*Fh*Fw)->(B*Ih*Iw,M*Fh*Fw)
         w, b, gamma = self.parameters()    
-        cols = self.dot_linear.forward(self.x, w, b, gamma)
+        cols = self.dot_linear.forward(x, w, b, gamma)
 
         #print('## cols.shape', cols.shape)
         # 行列を画像に変換 cols.T:(M*Fh*Fw,B*Ih*Iw)->(B,M,Oh,Ow)  　
