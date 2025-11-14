@@ -570,7 +570,7 @@ class Conv1dLayer(BaseLayer):
         # '0'パディング B軸    C軸  Iw左Iw右
         x = np.pad(x, [(0,0),(0,0),(pad,pad)])
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow)
-        cols = Vec2col(C, Iw+2*pad, M, Fw, stride)(x)
+        cols = Vec2col(C, Iw+2*pad, Fw, stride)(x)
         # Affine変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(cols, w, b, gamma)
@@ -587,7 +587,7 @@ class Conv1dLayer(BaseLayer):
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)  　
-        grad_x = Col2vec(M, Ow, C, Fw, stride)(grad_cols)
+        grad_x = Col2vec(C, Ow, Fw, stride)(grad_cols)
         # パディング分を外して元の画像データに戻す        
         grad_x = grad_x[:,:,pad:pad+Iw]
         grad_x = grad_x.reshape(self.x_shape)
@@ -639,7 +639,7 @@ class DeConv1dLayer(BaseLayer):
         w, b, gamma = self.parameters()    
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)  　
-        y = Col2vec(C, Iw, M, Fw, stride)(cols)
+        y = Col2vec(M, Iw, Fw, stride)(cols)
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Ow]                     # y.shape=(B,M,Ow)
         y = super().__forward__(y, train=train, dropout=dropout)
@@ -652,7 +652,7 @@ class DeConv1dLayer(BaseLayer):
         #  '0'パディング
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad)])
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fh*Fw,B*Ih*Iw)に変換
-        grad_y = Vec2col(M, Ow+2*pad, C, Fw, stride)(grad_y)
+        grad_y = Vec2col(M, Ow+2*pad, Fw, stride)(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
@@ -662,14 +662,14 @@ class DeConv1dLayer(BaseLayer):
 
 class Vec2col:
     """ vec.shape = (B, C, Iw) -> col.shape = (B*Ow, C*Fw) """
-    def __init__(self, C, Iw, M, Fw, stride):
+    def __init__(self, C, Iw, Fw, stride):
         # 出力画像のサイズ
         Ow = (Iw - Fw) // stride + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
-        self.params = (C, Iw, M, Fw, stride, Ow)
+        self.params = (C, Iw, Fw, stride, Ow)
 
     def __call__(self, vec):
-        C, Iw, M, Fw, stride, Ow = self.params
+        C, Iw, Fw, stride, Ow = self.params
         B = vec.size // (C*Iw)
         col = np.empty((B, C, Fw, Ow), dtype=Config.dtype) # メモリ節約のためzerosでなくempty 
         # vecからstride毎のデータを取ってきて、colsにOwになるまで並べる
@@ -682,18 +682,18 @@ class Vec2col:
         return col
 
 class Col2vec:
-    """ col.shape = (B*Iw, M*Fw) -> vec.shape = (B, M, Ow)  """
-    def __init__(self, C, Iw, M, Fw, stride):
+    """ col.shape = (B*Iw, C*Fw) -> vec.shape = (B, C, Ow)  """
+    def __init__(self, C, Iw, Fw, stride):
         # 出力画像のサイズ
         Ow = (Iw - 1) * stride + Fw 
         # パラメータをまとめる(class内での変数受渡しのため)
-        self.params = (C, Iw, M, Fw, stride, Ow)
+        self.params = (C, Iw, Fw, stride, Ow)
 
     def __call__(self, col):
-        C, Iw, M, Fw, stride, Ow = self.params
-        B = col.size // (M*Fw*Iw)
-        col = col.reshape(B,Iw,M,Fw).transpose(0,2,3,1) # col.shape=(B,M,Fw,Iw)
-        vec = np.zeros((B, M, Ow), dtype=Config.dtype)
+        C, Iw, Fw, stride, Ow = self.params
+        B = col.size // (C*Fw*Iw)
+        col = col.reshape(B,Iw,C,Fw).transpose(0,2,3,1) # col.shape=(B,C,Fw,Iw)
+        vec = np.zeros((B, C, Ow), dtype=Config.dtype)
         # colからstride,Ow個のデータを取ってきて、vecにstride毎に並べる
         # それをFh,Fwを満たすまで繰返す
         for fw in range(Fw):
@@ -757,7 +757,7 @@ class Conv2dLayer(BaseLayer):
         # '0'パディング
         x = np.pad(x, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow) 
-        cols = Im2col(C, Ih+2*pad, Iw+2*pad, M, Fh, Fw, Sh, Sw)(x)
+        cols = Im2col(C, Ih+2*pad, Iw+2*pad, Fh, Fw, Sh, Sw)(x)
         # Affine変換: (B*Oh*Ow,C*Fh*Fw)×(C*Fh*Fw,M)->(B*Oh*Ow,M)
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(cols, w, b, gamma)
@@ -774,8 +774,7 @@ class Conv2dLayer(BaseLayer):
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)  　
-        #grad_x = Col2im(M, Oh, Ow, C, Fh, Fw, Sh, Sw)(grad_cols.T)
-        grad_x = Col2im(M, Oh, Ow, C, Fh, Fw, Sh, Sw)(grad_cols) # 20251107AI
+        grad_x = Col2im(C, Oh, Ow, Fh, Fw, Sh, Sw)(grad_cols) 
         # パディング分を外して元の画像データに戻す        
         grad_x = grad_x[:,:,pad:pad+Ih,pad:pad+Iw]
         grad_x = grad_x.reshape(self.x_shape)
@@ -843,8 +842,7 @@ class DeConv2dLayer(BaseLayer):
 
         #print('## cols.shape', cols.shape)
         # 行列を画像に変換 cols.T:(M*Fh*Fw,B*Ih*Iw)->(B,M,Oh,Ow)  　
-        #y = Col2im(C, Ih, Iw, M, Fh, Fw, Sh, Sw)(cols.T)
-        y = Col2im(C, Ih, Iw, M, Fh, Fw, Sh, Sw)(cols) # 20251107AI
+        y = Col2im(M, Ih, Iw, Fh, Fw, Sh, Sw)(cols) # 20251107AI
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Oh,pad:pad+Ow]              # y.shape=(B,M,Oh,Ow)
         y = super().__forward__(y, train=train, dropout=dropout)
@@ -857,7 +855,7 @@ class DeConv2dLayer(BaseLayer):
         #  '0'パディング
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fh*Fw,B*Ih*Iw)に変換
-        grad_y = Im2col(M, Oh+2*pad, Ow+2*pad, C, Fh, Fw, Sh, Sw)(grad_y)
+        grad_y = Im2col(M, Oh+2*pad, Ow+2*pad, Fh, Fw, Sh, Sw)(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
@@ -873,15 +871,15 @@ class Im2col:
     img.shape=(B,C,Ih,Iw) → cols.shape=(B,C,Fh,Fw,Oh,Ow) -> (B*Oh*Ow, C*Fh*Fw)
 
     """
-    def __init__(self, C, Ih, Iw, M, Fh, Fw, Sh, Sw):
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw):
         # 出力画像のサイズ
         Oh = (Ih - Fh) // Sh + 1        # 出力高さ
         Ow = (Iw - Fw) // Sw + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
-        self.params = (C, Ih, Iw, M, Fh, Fw, Sh, Sw, Oh, Ow)
+        self.params = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
     def __call__(self, img):
-        C, Ih, Iw, M, Fh, Fw, Sh, Sw, Oh, Ow = self.params
+        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.params
         B = img.size // (C*Ih*Iw)
         col = np.empty((B, C, Fh, Fw, Oh, Ow), dtype=Config.dtype) # メモリ節約のためzerosでなくempty 
         # imgからstride毎のデータを取ってきて、colsにOh,Owになるまで並べる
@@ -897,20 +895,20 @@ class Im2col:
 
 class Col2im:
     """
-    col.shape=(B*Ih*Iw, M*Fh*Fw)->(B,Ih,Iw,M,Fh,Fw)->(B,M,Fh,Fw,Ih,Iw)→img.shape=(B,M,Oh,Ow)
+    col.shape=(B*Ih*Iw, C*Fh*Fw)->(B,Ih,Iw,C,Fh,Fw)->(B,C,Fh,Fw,Ih,Iw)→img.shape=(B,C,Oh,Ow)
 
     """
-    def __init__(self, C, Ih, Iw, M, Fh, Fw, Sh, Sw):
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw):
         # Im2col 側の Oh,Ow (= ここでの Ih,Iw) から復元後の画像サイズを計算
         Oh = (Ih - 1) * Sh + Fh
         Ow = (Iw - 1) * Sw + Fw
-        self.params = (C, Ih, Iw, M, Fh, Fw, Sh, Sw, Oh, Ow)
+        self.params = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
     def __call__(self, col):
-        C, Ih, Iw, M, Fh, Fw, Sh, Sw, Oh, Ow = self.params
-        B = col.size // (M*Ih*Iw*Fh*Fw)
-        col = col.reshape(B, Ih, Iw, M, Fh, Fw).transpose(0, 3, 4, 5, 1, 2)
-        img = np.zeros((B, M, Oh, Ow), dtype=Config.dtype)
+        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.params
+        B = col.size // (C*Ih*Iw*Fh*Fw)
+        col = col.reshape(B, Ih, Iw, C, Fh, Fw).transpose(0, 3, 4, 5, 1, 2)
+        img = np.zeros((B, C, Oh, Ow), dtype=Config.dtype)
         # colからstride*Ih,Ow個のデータを取ってきて、imgにstride毎に並べる
         # それをFh,Fwを満たすまで繰返す
         for fh in range(Fh):
@@ -920,29 +918,6 @@ class Col2im:
                 img[:, :, fh:h_lim:Sh, fw:w_lim:Sw] += col[:, :, fh, fw, :, :]
         return img
 
-class Col2im_bkup:
-    # col.shape = (M*Fh*Fw, B*Ih*Iw) -> img.shape = (B, M, Oh, Ow)
-    def __init__(self, C, Ih, Iw, M, Fh, Fw, Sh, Sw):
-        # 出力画像のサイズ
-        Oh = (Ih - 1) * Sh + Fh
-        Ow = (Iw - 1) * Sw + Fw 
-        # パラメータをまとめる(class内での変数受渡しのため)
-        self.params = (C, Ih, Iw, M, Fh, Fw, Sh, Sw, Oh, Ow)
-
-    def __call__(self, col):
-        """ col.shape=(B,M,Fh,Fw,Ih,Iw) → img.shape=(B,M,Oh,Ow)  """
-        C, Ih, Iw, M, Fh, Fw, Sh, Sw, Oh, Ow = self.params
-        B = col.size // (M*Fh*Fw*Ih*Iw)
-        col = col.reshape(M,Fh,Fw,B,Ih,Iw).transpose(3,0,1,2,4,5) # col.shape=(B,M,Fh,Fw,Ih,Iw)
-        img = np.zeros((B, M, Oh, Ow), dtype=Config.dtype)
-        # colからstride*Ih,Ow個のデータを取ってきて、imgにstride毎に並べる
-        # それをFh,Fwを満たすまで繰返す
-        for fh in range(Fh):
-            h_lim = fh + Sh*Ih
-            for fw in range(Fw):
-                w_lim = fw + Sw*Iw
-                img[:,:,fh:h_lim:Sh,fw:w_lim:Sw] += col[:,:,fh,fw,:,:]
-        return img
 
 ### プーリング層 ####################################################
 class Pooling1dLayer(Function):  
