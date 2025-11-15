@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.11.14 A.Inoue
+# 2025.11.15 A.Inoue
 
 import copy
 import warnings
@@ -564,37 +564,40 @@ class Conv1dLayer(BaseLayer):
         if None in self.config:
             print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
-        self.x_shape = x.shape 
+        self.x_shape = x.shape   # パディング前の形状
         C, Iw, M, Fw, stride, pad, Ow = self.config
         x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
         # '0'パディング B軸    C軸  Iw左Iw右
         x = np.pad(x, [(0,0),(0,0),(pad,pad)])
-        # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow)
+        # 入力画像を行列に変換 (B,C,Iw+2*pad)->(C*Fw,B*Ow)
         cols = Vec2col(C, Iw+2*pad, Fw, stride)(x)
         # Affine変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Ow, M).transpose(0, 2, 1)       # u.shape=(B,M,Ow) 
         y = super().__forward__(y, train=train, dropout=dropout)
+        self.vec_shape = x.shape # パディング後の形状
         return y
     
     def __backward__(self, grad_y, flush=True):
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Ow)               # grad_y.shape=(B,M,Ow)
         grad_y = super().__backward__(grad_y) # 20250401AI            
-        grad_y = grad_y.transpose(0, 2, 1).reshape(-1, M)   #grad_y.shape=(B*Ow,M)
+        grad_y = grad_y.transpose(0, 2, 1).reshape(-1, M) #grad_y.shape=(B*Ow,M)
         # Affineの逆伝播 grad_cols.shape=(B*Ow,C*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
-        # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)  　
-        grad_x = Col2vec(C, Ow, Fw, stride)(grad_cols)
+        # 行列を画像に変換 (B*Ow,C*Fw)->(B,C,Iw)
+        grad_x = np.zeros(self.vec_shape, dtype=Config.dtype) # Pad分を考慮　
+        grad_x[:,:,:(Ow-1)*stride+Fw] = (  # Vec2colで棄てられた分を考慮
+            Col2vec(C, Ow, Fw, stride)(grad_cols))
         # パディング分を外して元の画像データに戻す        
         grad_x = grad_x[:,:,pad:pad+Iw]
         grad_x = grad_x.reshape(self.x_shape)
         return grad_x
 
-### 逆畳み込み層 #####################################################
-class DeConv1dLayer(BaseLayer):
+### 転置畳込み層 #####################################################
+class Conv1dTransposeLayer(BaseLayer):
     # B:バッチサイズ, C:入力チャンネル数, Ih:入力画像高さ, Iw:入力画像幅
     # M:フィルタ数, Fh:フィルタ高さ, Fw:フィルタ幅
     # stride:ストライド幅, pad:パディング幅
@@ -651,7 +654,7 @@ class DeConv1dLayer(BaseLayer):
         grad_y = super().__backward__(grad_y) # 20250401AI
         #  '0'パディング
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad)])
-        # 画像の勾配を行列に変換 grad_y.shape=(M*Fh*Fw,B*Ih*Iw)に変換
+        # 画像の勾配を行列に変換 grad_y.shape=(M*Fw,B*Iw)に変換
         grad_y = Vec2col(M, Ow+2*pad, Fw, stride)(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
@@ -660,16 +663,27 @@ class DeConv1dLayer(BaseLayer):
         grad_x = grad_x.reshape(self.x_shape)
         return grad_x
 
+
+class DeConv1dLayer(Conv1dTransposeLayer):
+    def __init__(self, *args, **kwargs):
+        msg = (
+        'What is called Deconvolution is actually ConvTranspose, '
+        'which is now considered a misuse of the term.'
+        )
+        print(msg)
+        super().__init__(*args, **kwargs)
+
+
 class Vec2col:
     """ vec.shape = (B, C, Iw) -> col.shape = (B*Ow, C*Fw) """
     def __init__(self, C, Iw, Fw, stride):
         # 出力画像のサイズ
         Ow = (Iw - Fw) // stride + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
-        self.params = (C, Iw, Fw, stride, Ow)
+        self.config = (C, Iw, Fw, stride, Ow)
 
     def __call__(self, vec):
-        C, Iw, Fw, stride, Ow = self.params
+        C, Iw, Fw, stride, Ow = self.config
         B = vec.size // (C*Iw)
         col = np.empty((B, C, Fw, Ow), dtype=Config.dtype) # メモリ節約のためzerosでなくempty 
         # vecからstride毎のデータを取ってきて、colsにOwになるまで並べる
@@ -687,10 +701,10 @@ class Col2vec:
         # 出力画像のサイズ
         Ow = (Iw - 1) * stride + Fw 
         # パラメータをまとめる(class内での変数受渡しのため)
-        self.params = (C, Iw, Fw, stride, Ow)
+        self.config = (C, Iw, Fw, stride, Ow)
 
     def __call__(self, col):
-        C, Iw, Fw, stride, Ow = self.params
+        C, Iw, Fw, stride, Ow = self.config
         B = col.size // (C*Fw*Iw)
         col = col.reshape(B,Iw,C,Fw).transpose(0,2,3,1) # col.shape=(B,C,Fw,Iw)
         vec = np.zeros((B, C, Ow), dtype=Config.dtype)
@@ -751,7 +765,7 @@ class Conv2dLayer(BaseLayer):
         if None in self.config:
             print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
-        self.x_shape = x.shape
+        self.x_shape = x.shape  # パディング前の形状
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
         # '0'パディング
@@ -763,9 +777,11 @@ class Conv2dLayer(BaseLayer):
         y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
         y = super().__forward__(y, train=train, dropout=dropout)
+        self.im_shape = x.shape # パディング後の形状
         return y
     
     def __backward__(self, grad_y, flush=True):
+        x, = self.inputs
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
         grad_y = super().__backward__(grad_y)
@@ -773,9 +789,11 @@ class Conv2dLayer(BaseLayer):
         # Affineの逆伝播 grad_cols.shape=(B*Oh*Ow,C*Fh*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
-        # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)  　
-        grad_x = Col2im(C, Oh, Ow, Fh, Fw, Sh, Sw)(grad_cols) 
-        # パディング分を外して元の画像データに戻す        
+        # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)
+        grad_x = np.zeros(self.im_shape, dtype=Config.dtype) # pad分を考慮 
+        grad_x[:,:,:(Oh-1)*Sh+Fh, :(Ow-1)*Sw+Fw] = (  # Im2colで棄てられた分を考慮 
+            Col2im(C, Oh, Ow, Fh, Fw, Sh, Sw)(grad_cols)) 
+        # パディング分を外して元の画像データに戻す
         grad_x = grad_x[:,:,pad:pad+Ih,pad:pad+Iw]
         grad_x = grad_x.reshape(self.x_shape)
         return grad_x
@@ -783,9 +801,9 @@ class Conv2dLayer(BaseLayer):
 class ConvLayer(Conv2dLayer):
     pass
 
-### 逆畳み込み層 #####################################################
-class DeConv2dLayer(BaseLayer):
-    """ 二次元逆畳込み """
+### 転置畳み込み層 #####################################################
+class Conv2dTransposeLayer(BaseLayer):
+    """ 二次元転置畳込み層 """
     # B:バッチサイズ, C:入力チャンネル数, Ih:入力画像高さ, Iw:入力画像幅
     # M:フィルタ数, Fh:フィルタ高さ, Fw:フィルタ幅
     # Sh/_w:ストライド高さ/幅, pad:パディング幅
@@ -863,6 +881,15 @@ class DeConv2dLayer(BaseLayer):
         grad_x = grad_x.reshape(self.x_shape)
         return grad_x
 
+class DeConv2dLayer(Conv2dTransposeLayer):
+    def __init__(self, *args, **kwargs):
+        msg = (
+        'What is called Deconvolution is actually ConvTranspose, '
+        'which is now considered a misuse of the term.'
+        )
+        print(msg)
+        super().__init__(*args, **kwargs)
+
 class DeConvLayer(DeConv2dLayer):
     pass
 
@@ -876,10 +903,10 @@ class Im2col:
         Oh = (Ih - Fh) // Sh + 1        # 出力高さ
         Ow = (Iw - Fw) // Sw + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
-        self.params = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
+        self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
     def __call__(self, img):
-        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.params
+        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
         B = img.size // (C*Ih*Iw)
         col = np.empty((B, C, Fh, Fw, Oh, Ow), dtype=Config.dtype) # メモリ節約のためzerosでなくempty 
         # imgからstride毎のデータを取ってきて、colsにOh,Owになるまで並べる
@@ -902,10 +929,10 @@ class Col2im:
         # Im2col 側の Oh,Ow (= ここでの Ih,Iw) から復元後の画像サイズを計算
         Oh = (Ih - 1) * Sh + Fh
         Ow = (Iw - 1) * Sw + Fw
-        self.params = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
+        self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
     def __call__(self, col):
-        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.params
+        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
         B = col.size // (C*Ih*Iw*Fh*Fw)
         col = col.reshape(B, Ih, Iw, C, Fh, Fw).transpose(0, 3, 4, 5, 1, 2)
         img = np.zeros((B, C, Oh, Ow), dtype=Config.dtype)
