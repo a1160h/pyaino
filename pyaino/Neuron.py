@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.11.15 A.Inoue
+# 2025.11.17 A.Inoue
 
 import copy
 import warnings
@@ -541,6 +541,8 @@ class Conv1dLayer(BaseLayer):
             C = None; Iw = None; M, Fw = configuration; stride = 1; pad = 0 
         Ow = None
         self.params = self.config = C, Iw, M, Fw, stride, pad, Ow
+        self.vec2col = None
+        self.col2vec = None
         super().__init__(**kwargs)
         
     def fix_configuration(self, shape):
@@ -553,6 +555,8 @@ class Conv1dLayer(BaseLayer):
            
         Ow = (Iw - Fw + 2*pad) // stride + 1   # 出力幅
         self.config = C, Iw, M, Fw, stride, pad, Ow
+        self.vec2col = Vec2col(C, Iw+2*pad, Fw, stride, Ow)
+        self.col2vec = Col2vec(C, Ow, Fw, stride, Iw+2*pad)
 
     def get_parameter_size(self):
         C, Iw, M, Fw, stride, pad, Ow = self.config
@@ -564,13 +568,12 @@ class Conv1dLayer(BaseLayer):
         if None in self.config:
             print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
-        self.x_shape = x.shape   # パディング前の形状
         C, Iw, M, Fw, stride, pad, Ow = self.config
         x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
         # '0'パディング B軸    C軸  Iw左Iw右
         x = np.pad(x, [(0,0),(0,0),(pad,pad)])
         # 入力画像を行列に変換 (B,C,Iw+2*pad)->(C*Fw,B*Ow)
-        cols = Vec2col(C, Iw+2*pad, Fw, stride)(x)
+        cols = self.vec2col(x)
         # Affine変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(cols, w, b, gamma)
@@ -588,12 +591,10 @@ class Conv1dLayer(BaseLayer):
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         # 行列を画像に変換 (B*Ow,C*Fw)->(B,C,Iw)
-        grad_x = np.zeros(self.vec_shape, dtype=Config.dtype) # Pad分を考慮　
-        grad_x[:,:,:(Ow-1)*stride+Fw] = (  # Vec2colで棄てられた分を考慮
-            Col2vec(C, Ow, Fw, stride)(grad_cols))
+        grad_x = self.col2vec(grad_cols)
         # パディング分を外して元の画像データに戻す        
         grad_x = grad_x[:,:,pad:pad+Iw]
-        grad_x = grad_x.reshape(self.x_shape)
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 ### 転置畳込み層 #####################################################
@@ -613,7 +614,10 @@ class Conv1dTransposeLayer(BaseLayer):
             C = None; Iw = None; M, Fw = configuration; stride = 1; pad = 0 
         Ow = None
         self.params = self.config = C, Iw, M, Fw, stride, pad, Ow
+        self.col2vec = None
+        self.vec2col = None
         super().__init__(**kwargs)
+        
 
     def fix_configuration(self, shape):
         C, Iw, M, Fw, stride, pad, Ow = self.config
@@ -624,6 +628,9 @@ class Conv1dTransposeLayer(BaseLayer):
             raise Exception(self.__class__.__name__ + ' cannot fix configuration.')
         Ow = (Iw - 1) * stride + Fw - 2 * pad  # 出力幅
         self.config = C, Iw, M, Fw, stride, pad, Ow
+        self.col2vec = Col2vec(M, Iw, Fw, stride, Ow+2*pad)
+        self.vec2col = Vec2col(M, Ow+2*pad, Fw, stride, Iw)
+
 
     def get_parameter_size(self):
         C, Iw, M, Fw, stride, pad, Ow = self.config
@@ -635,14 +642,13 @@ class Conv1dTransposeLayer(BaseLayer):
         if None in self.config:
             print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
-        self.x_shape = x.shape 
         C, Iw, M, Fw, stride, pad, Ow = self.config
         x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
         # Affine変換 (B*Iw,C)×(C,M*Fw)->(B*Iw,M*Fw)   
         w, b, gamma = self.parameters()    
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)  　
-        y = Col2vec(M, Iw, Fw, stride)(cols)
+        y = self.col2vec(cols)
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Ow]                     # y.shape=(B,M,Ow)
         y = super().__forward__(y, train=train, dropout=dropout)
@@ -655,12 +661,12 @@ class Conv1dTransposeLayer(BaseLayer):
         #  '0'パディング
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad)])
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fw,B*Iw)に変換
-        grad_y = Vec2col(M, Ow+2*pad, Fw, stride)(grad_y)
+        grad_y = self.vec2col(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         grad_x = grad_x.reshape(-1,Iw,C).transpose(0,2,1) # (B,C,Iw)
-        grad_x = grad_x.reshape(self.x_shape)
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 
@@ -676,9 +682,9 @@ class DeConv1dLayer(Conv1dTransposeLayer):
 
 class Vec2col:
     """ vec.shape = (B, C, Iw) -> col.shape = (B*Ow, C*Fw) """
-    def __init__(self, C, Iw, Fw, stride):
+    def __init__(self, C, Iw, Fw, stride, Ow):
         # 出力画像のサイズ
-        Ow = (Iw - Fw) // stride + 1        # 出力幅
+        #Ow = (Iw - Fw) // stride + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
         self.config = (C, Iw, Fw, stride, Ow)
 
@@ -697,9 +703,9 @@ class Vec2col:
 
 class Col2vec:
     """ col.shape = (B*Iw, C*Fw) -> vec.shape = (B, C, Ow)  """
-    def __init__(self, C, Iw, Fw, stride):
+    def __init__(self, C, Iw, Fw, stride, Ow):
         # 出力画像のサイズ
-        Ow = (Iw - 1) * stride + Fw 
+        #Ow = (Iw - 1) * stride + Fw 
         # パラメータをまとめる(class内での変数受渡しのため)
         self.config = (C, Iw, Fw, stride, Ow)
 
@@ -740,6 +746,8 @@ class Conv2dLayer(BaseLayer):
         Sh, Sw = stride if isinstance(stride, (tuple, list)) else (stride, stride)
         
         self.params = self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
+        self.im2col = None
+        self.col2im = None
         super().__init__(**kwargs)
         
     def fix_configuration(self, shape):
@@ -754,6 +762,8 @@ class Conv2dLayer(BaseLayer):
         Oh = (Ih - Fh + 2*pad) // Sh + 1   # 出力高さ
         Ow = (Iw - Fw + 2*pad) // Sw + 1   # 出力幅
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
+        self.im2col = Im2col(C, Ih+2*pad, Iw+2*pad, Fh, Fw, Sh, Sw, Oh, Ow)
+        self.col2im = Col2im(C, Oh, Ow, Fh, Fw, Sh, Sw, Ih+2*pad, Iw+2*pad)
 
     def get_parameter_size(self):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
@@ -765,23 +775,20 @@ class Conv2dLayer(BaseLayer):
         if None in self.config:
             print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
-        self.x_shape = x.shape  # パディング前の形状
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
         # '0'パディング
         x = np.pad(x, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow) 
-        cols = Im2col(C, Ih+2*pad, Iw+2*pad, Fh, Fw, Sh, Sw)(x)
+        cols = self.im2col(x)
         # Affine変換: (B*Oh*Ow,C*Fh*Fw)×(C*Fh*Fw,M)->(B*Oh*Ow,M)
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
         y = super().__forward__(y, train=train, dropout=dropout)
-        self.im_shape = x.shape # パディング後の形状
         return y
     
     def __backward__(self, grad_y, flush=True):
-        x, = self.inputs
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
         grad_y = super().__backward__(grad_y)
@@ -790,12 +797,10 @@ class Conv2dLayer(BaseLayer):
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)
-        grad_x = np.zeros(self.im_shape, dtype=Config.dtype) # pad分を考慮 
-        grad_x[:,:,:(Oh-1)*Sh+Fh, :(Ow-1)*Sw+Fw] = (  # Im2colで棄てられた分を考慮 
-            Col2im(C, Oh, Ow, Fh, Fw, Sh, Sw)(grad_cols)) 
+        grad_x = self.col2im(grad_cols)
         # パディング分を外して元の画像データに戻す
         grad_x = grad_x[:,:,pad:pad+Ih,pad:pad+Iw]
-        grad_x = grad_x.reshape(self.x_shape)
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 class ConvLayer(Conv2dLayer):
@@ -824,6 +829,8 @@ class Conv2dTransposeLayer(BaseLayer):
         Sh, Sw = stride if isinstance(stride, (tuple, list)) else (stride, stride)
 
         self.params = self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
+        self.col2im = None
+        self.im2col = None
         super().__init__(**kwargs)
 
     def fix_configuration(self, shape):
@@ -834,10 +841,11 @@ class Conv2dTransposeLayer(BaseLayer):
             C  = shape[1] if len(shape)==4 else 1
         elif C is None or Ih is None or Iw is None:
             raise Exception(self.__class__.__name__ + ' cannot fix configuration.')
-            
         Oh = (Ih - 1) * Sh + Fh - 2 * pad  # 出力高さ
         Ow = (Iw - 1) * Sw + Fw - 2 * pad  # 出力幅
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
+        self.col2im = Col2im(M, Ih, Iw, Fh, Fw, Sh, Sw, Oh+2*pad, Ow+2*pad)
+        self.im2col = Im2col(M, Oh+2*pad, Ow+2*pad, Fh, Fw, Sh, Sw, Ih, Iw)
 
     def get_parameter_size(self):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
@@ -852,15 +860,11 @@ class Conv2dTransposeLayer(BaseLayer):
         self.x_shape = x.shape
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
-
-        #print('## x.shape', x.shape, '->', self.x.shape)
         # Affine変換 (B*Ih*Iw,C)×(C,M*Fh*Fw)->(B*Ih*Iw,M*Fh*Fw)
         w, b, gamma = self.parameters()    
         cols = self.dot_linear.forward(x, w, b, gamma)
-
-        #print('## cols.shape', cols.shape)
         # 行列を画像に変換 cols.T:(M*Fh*Fw,B*Ih*Iw)->(B,M,Oh,Ow)  　
-        y = Col2im(M, Ih, Iw, Fh, Fw, Sh, Sw)(cols) # 20251107AI
+        y = self.col2im(cols) # 20251107AI
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Oh,pad:pad+Ow]              # y.shape=(B,M,Oh,Ow)
         y = super().__forward__(y, train=train, dropout=dropout)
@@ -873,12 +877,12 @@ class Conv2dTransposeLayer(BaseLayer):
         #  '0'パディング
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fh*Fw,B*Ih*Iw)に変換
-        grad_y = Im2col(M, Oh+2*pad, Ow+2*pad, Fh, Fw, Sh, Sw)(grad_y)
+        grad_y = self.im2col(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         grad_x = grad_x.reshape(-1,Ih,Iw,C).transpose(0,3,1,2) # (B,C,Ih,Iw)
-        grad_x = grad_x.reshape(self.x_shape)
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 class DeConv2dLayer(Conv2dTransposeLayer):
@@ -898,10 +902,10 @@ class Im2col:
     img.shape=(B,C,Ih,Iw) → cols.shape=(B,C,Fh,Fw,Oh,Ow) -> (B*Oh*Ow, C*Fh*Fw)
 
     """
-    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw):
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
         # 出力画像のサイズ
-        Oh = (Ih - Fh) // Sh + 1        # 出力高さ
-        Ow = (Iw - Fw) // Sw + 1        # 出力幅
+        #Oh = (Ih - Fh) // Sh + 1        # 出力高さ
+        #Ow = (Iw - Fw) // Sw + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
         self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
@@ -925,10 +929,10 @@ class Col2im:
     col.shape=(B*Ih*Iw, C*Fh*Fw)->(B,Ih,Iw,C,Fh,Fw)->(B,C,Fh,Fw,Ih,Iw)→img.shape=(B,C,Oh,Ow)
 
     """
-    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw):
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
         # Im2col 側の Oh,Ow (= ここでの Ih,Iw) から復元後の画像サイズを計算
-        Oh = (Ih - 1) * Sh + Fh
-        Ow = (Iw - 1) * Sw + Fw
+        #Oh = (Ih - 1) * Sh + Fh
+        #Ow = (Iw - 1) * Sw + Fw
         self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
     def __call__(self, col):
@@ -944,6 +948,45 @@ class Col2im:
                 w_lim = fw + Sw * Iw
                 img[:, :, fh:h_lim:Sh, fw:w_lim:Sw] += col[:, :, fh, fw, :, :]
         return img
+
+class Im2colz:
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
+        #Oh = (Ih - Fh) // Sh + 1   
+        #Ow = (Iw - Fw) // Sw + 1   
+        self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
+        #print('### Im2col.config =', self.config)
+
+    def __call__(self, img):
+        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
+        B = img.size // (C*Ih*Iw)
+        col = np.zeros((B*Oh*Ow,C*Fh*Fw), dtype=Config.dtype)
+        i = 0
+        for h in range(0, Ih-Fh+1, Sh):     
+            for w in range(0, Iw-Fw+1, Sw):
+                col[i*B:(i+1)*B] = img[:,:,h:h+Fh, w:w+Fw].reshape(B, C*Fh*Fw) 
+                i += 1
+        return col           
+
+class Col2imz:
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
+        #Oh = (Ih - 1) * Sh + Fh   
+        #Ow = (Iw - 1) * Sw + Fw
+        self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
+        #print('### Col2im.config =', self.config)
+
+    def __call__(self, col):
+        C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
+        #print(col.shape)
+        B = col.size // (C*Ih*Iw*Fh*Fw)
+        #print('B =', B)
+        img = np.zeros((B,C,Oh,Ow), dtype=Config.dtype)
+        #print(img.shape)
+        i = 0
+        for h in range(0, Oh-Fh+1, Sh):
+            for w in range(0, Ow-Fw+1, Sw):
+                img[:,:,h:h+Fh, w:w+Fw] += col[i*B:(i+1)*B].reshape(B,C,Fh,Fw)
+                i += 1
+        return img        
 
 
 ### プーリング層 ####################################################
@@ -972,6 +1015,8 @@ class Pooling1dLayer(Function):
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
         self.DO = Dropout() if kwargs.pop('dropout', False) else None
+        self.pooling = None
+        self.unpooling = None
         
     def fix_configuration(self, shape):
         C, Iw, pool, pad, Ow = self.config
@@ -983,6 +1028,8 @@ class Pooling1dLayer(Function):
             raise Exception(self.__class__.__name__ + ' cannot fix configuration.')
         Ow = (Iw + 2 * pad + pool - 1) // pool # 端数は切捨て
         self.config = C, Iw, pool, pad, Ow
+        self.pooling = Pooling1d(pool, Ow, self.method)
+        self.unpooling = UnPooling1d(pool, self.method)
             
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
@@ -994,7 +1041,7 @@ class Pooling1dLayer(Function):
         pdw = Ow * pool - Iw - pad                   # サイズの端数に対応
         # 画像調整            B      C      Iw左 Iw右　ゼロパディング   
         img_pad = np.pad(x, [(0,0), (0,0), (pad, pdw)], 'constant')
-        y, self.max_index = Pooling1d(pool, Ow, self.method)(img_pad)
+        y, self.max_index = self.pooling(img_pad)
         if self.DO:
             y = self.DO.forward(y, dropout=dropout)  # 形状は(B,C,Oh,Ow)
         return y
@@ -1005,9 +1052,10 @@ class Pooling1dLayer(Function):
         self.grad_y = grad_y.reshape(B, C, Ow)       # ドロップアウトへの入力形状は順伝播時と同じ
         if self.DO:
             self.grad_y = self.DO.backward(self.grad_y)  # ドロップアウト
-        grad_x = UnPooling1d(pool, self.method)(self.grad_y, self.max_index)
+        grad_x = self.unpooling(self.grad_y, self.max_index)
         # 画像調整 トリミング
         grad_x = grad_x[:, :, pad:pad+Iw]            # grad_x.shape=(B,C,Iw) 
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 ### 逆プーリング層 ####################################################
@@ -1036,6 +1084,8 @@ class UnPooling1dLayer(Function):
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
         self.DO = Dropout() if kwargs.pop('dropout', False) else None
+        self.unpooling = None
+        self.pooling = None
         
     def fix_configuration(self, shape):
         C, Iw, pool, pad, Ow = self.config
@@ -1047,6 +1097,8 @@ class UnPooling1dLayer(Function):
             raise Exception(self.__class__.__name__ + ' cannot fix configuration.')
         Ow = Iw * pool - 2 * pad
         self.config = C, Iw, pool, pad, Ow
+        self.unpooling = UnPooling1d(pool, self.method)
+        self.pooling = Pooling1d(pool, Iw, self.method)
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
         if None in self.config:
@@ -1056,7 +1108,7 @@ class UnPooling1dLayer(Function):
         #B = x.size // (C*Iw)
         x = x.reshape(-1, C, Iw)                     # 入力の形状 ex. (C,Ih*Iw)に対応   
         #print('img_pad', img_pad.shape, self.config)
-        y = UnPooling1d(pool, self.method)(x, max_index)
+        y = self.unpooling(x, max_index)
         # 画像調整 トリミング
         y = y[:, :, pad:pad+Ow]                      # y.shape=(B,C,Oh,Ow) 
         if self.DO:
@@ -1072,7 +1124,8 @@ class UnPooling1dLayer(Function):
         pdw = Iw*pool - Ow - pad                     # 画像サイズの端数を調整
         # 画像調整                 B      C     Iw左 Iw右　 ゼロパディング   
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pdw)], 'constant')
-        grad_x, _ = Pooling1d(pool, Iw, self.method)(grad_y)
+        grad_x, _ = self.pooling(grad_y)
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 class Pooling1d:  
@@ -1148,6 +1201,8 @@ class Pooling2dLayer(Function):
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
         self.DO = Dropout() if kwargs.pop('dropout', False) else None
+        self.pooling = None
+        self.unpooling = None
         
     def fix_configuration(self, shape):
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config
@@ -1158,10 +1213,11 @@ class Pooling2dLayer(Function):
             C = shape[1] if len(shape)==4 else 1
         elif C is None or Ih is None or Iw is None:
             raise Exception(self.__class__.__name__, 'cannot fix configuration.')
-
         Oh = (Ih + 2 * pad + pool_h - 1) // pool_h # 端数は切捨て
         Ow = (Iw + 2 * pad + pool_w - 1) // pool_w # 端数は切捨て
         self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
+        self.pooling = Pooling2d(pool_h, pool_w, Oh, Ow, self.method)
+        self.unpooling = UnPooling2d(pool_h, pool_w, self.method)
             
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
@@ -1174,7 +1230,7 @@ class Pooling2dLayer(Function):
         pdw = Ow * pool_w - Iw - pad                 # 画像サイズの端数に対応
         # 画像調整            B      C     Ih上　Ih下   Iw左 Iw右　ゼロパディング   
         img_pad = np.pad(x, [(0,0), (0,0), (pad, pdh), (pad, pdw)], 'constant')
-        y, self.max_index = Pooling2d(pool_h, pool_w, Oh, Ow, self.method)(img_pad)
+        y, self.max_index = self.pooling(img_pad)
         if self.DO:
             y = self.DO.forward(y, dropout=dropout)  # 形状は(B,C,Oh,Ow)
         return y
@@ -1185,9 +1241,10 @@ class Pooling2dLayer(Function):
         self.grad_y = grad_y.reshape(B, C, Oh, Ow)   # ドロップアウトへの入力形状は順伝播時と同じ
         if self.DO:
             self.grad_y = self.DO.backward(self.grad_y)  # ドロップアウト
-        grad_x = UnPooling2d(pool_h, pool_w, self.method)(self.grad_y, self.max_index)
+        grad_x = self.unpooling(self.grad_y, self.max_index)
         # 画像調整 トリミング
         grad_x = grad_x[:, :, pad:pad+Ih, pad:pad+Iw] # grad_x.shape=(B,C,Ih,Iw) 
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 class PoolingLayer(Pooling2dLayer):
@@ -1227,6 +1284,8 @@ class UnPooling2dLayer(Function):
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
         self.DO = Dropout() if kwargs.pop('dropout', False) else None
+        self.unpooling = None
+        self.pooling = None
         
     def fix_configuration(self, shape):
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config
@@ -1241,6 +1300,8 @@ class UnPooling2dLayer(Function):
         Oh = Ih * pool_h - 2 * pad
         Ow = Iw * pool_w - 2 * pad
         self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
+        self.unpooling = UnPooling2d(pool_h, pool_w, self.method)
+        self.pooling = Pooling2d(pool_h, pool_w, Ih, Iw, self.method)
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
         if None in self.config:
@@ -1250,7 +1311,7 @@ class UnPooling2dLayer(Function):
         #B = x.size // (C*Ih*Iw)
         x = x.reshape(-1, C, Ih, Iw)                 # 入力の形状 ex. (C,Ih*Iw)に対応   
         #print('img_pad', img_pad.shape, self.config)
-        y = UnPooling2d(pool_h, pool_w, self.method)(x, max_index)
+        y = self.unpooling(x, max_index)
         # 画像調整 トリミング
         y = y[:, :, pad:pad+Oh, pad:pad+Ow]          # y.shape=(B,C,Oh,Ow) 
         if self.DO:
@@ -1267,7 +1328,8 @@ class UnPooling2dLayer(Function):
         pdw = Iw*pool_w - Ow - pad                   # 画像サイズの端数を調整
         # 画像調整            B      C     Ih上　Ih下   Iw左 Iw右　ゼロパディング   
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pdh), (pad, pdw)], 'constant')
-        grad_x, _ = Pooling2d(pool_h, pool_w, Ih, Iw, self.method)(grad_y)
+        grad_x, _ = self.pooling(grad_y)
+        grad_x = grad_x.reshape(self.inputs[0].shape)
         return grad_x
 
 class UnPoolingLayer(UnPooling2dLayer):
