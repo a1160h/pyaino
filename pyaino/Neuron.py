@@ -682,9 +682,10 @@ class DeConv1dLayer(Conv1dTransposeLayer):
 
 class Vec2col:
     """ vec.shape = (B, C, Iw) -> col.shape = (B*Ow, C*Fw) """
-    def __init__(self, C, Iw, Fw, stride, Ow):
+    def __init__(self, C, Iw, Fw, stride, Ow=None):
         # 出力画像のサイズ
-        #Ow = (Iw - Fw) // stride + 1        # 出力幅
+        if Ow is None:
+            Ow = (Iw - Fw) // stride + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
         self.config = (C, Iw, Fw, stride, Ow)
 
@@ -703,9 +704,10 @@ class Vec2col:
 
 class Col2vec:
     """ col.shape = (B*Iw, C*Fw) -> vec.shape = (B, C, Ow)  """
-    def __init__(self, C, Iw, Fw, stride, Ow):
+    def __init__(self, C, Iw, Fw, stride, Ow=None):
         # 出力画像のサイズ
-        #Ow = (Iw - 1) * stride + Fw 
+        if Ow is None:
+            Ow = (Iw - 1) * stride + Fw 
         # パラメータをまとめる(class内での変数受渡しのため)
         self.config = (C, Iw, Fw, stride, Ow)
 
@@ -902,10 +904,12 @@ class Im2col:
     img.shape=(B,C,Ih,Iw) → cols.shape=(B,C,Fh,Fw,Oh,Ow) -> (B*Oh*Ow, C*Fh*Fw)
 
     """
-    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh=None, Ow=None):
         # 出力画像のサイズ
-        #Oh = (Ih - Fh) // Sh + 1        # 出力高さ
-        #Ow = (Iw - Fw) // Sw + 1        # 出力幅
+        if Oh is None: 
+            Oh = (Ih - Fh) // Sh + 1        # 出力高さ
+        if Ow is None:    
+            Ow = (Iw - Fw) // Sw + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
         self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
@@ -929,10 +933,12 @@ class Col2im:
     col.shape=(B*Ih*Iw, C*Fh*Fw)->(B,Ih,Iw,C,Fh,Fw)->(B,C,Fh,Fw,Ih,Iw)→img.shape=(B,C,Oh,Ow)
 
     """
-    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh=None, Ow=None):
         # Im2col 側の Oh,Ow (= ここでの Ih,Iw) から復元後の画像サイズを計算
-        #Oh = (Ih - 1) * Sh + Fh
-        #Ow = (Iw - 1) * Sw + Fw
+        if Oh is None:
+            Oh = (Ih - 1) * Sh + Fh
+        if Ow is None:    
+            Ow = (Iw - 1) * Sw + Fw
         self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
 
     def __call__(self, col):
@@ -950,9 +956,11 @@ class Col2im:
         return img
 
 class Im2colz:
-    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
-        #Oh = (Ih - Fh) // Sh + 1   
-        #Ow = (Iw - Fw) // Sw + 1   
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh=None, Ow=None):
+        if Oh is None: 
+            Oh = (Ih - Fh) // Sh + 1        # 出力高さ
+        if Ow is None:    
+            Ow = (Iw - Fw) // Sw + 1        # 出力幅
         self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
         #print('### Im2col.config =', self.config)
 
@@ -968,9 +976,11 @@ class Im2colz:
         return col           
 
 class Col2imz:
-    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow):
-        #Oh = (Ih - 1) * Sh + Fh   
-        #Ow = (Iw - 1) * Sw + Fw
+    def __init__(self, C, Ih, Iw, Fh, Fw, Sh, Sw, Oh=None, Ow=None):
+        if Oh is None:
+            Oh = (Ih - 1) * Sh + Fh
+        if Ow is None:    
+            Ow = (Iw - 1) * Sw + Fw
         self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
         #print('### Col2im.config =', self.config)
 
