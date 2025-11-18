@@ -78,9 +78,10 @@ class CBOW_negative_sampling:
 
     def update(self, **kwargs):
         if self.share_weight:
-            self.embedding_layer1.grad_w += self.embedding_layer2.grad_w
+            self.embedding_layer1.parameters.grad_w \
+                                              += self.embedding_layer2.parameters.grad_w
             self.embedding_layer1.update(**kwargs)
-            self.embedding_layer2.w = self.embedding_layer1.w
+            self.embedding_layer2.parameters.w = self.embedding_layer1.parameters.w
         else:
             self.embedding_layer1.update(**kwargs)
             self.embedding_layer2.update(**kwargs)
@@ -128,8 +129,8 @@ for i in range(epoch):
 cf.graph_for_error(error_record)
 
 # -- 最終確認 --
-img1 = model.embedding_layer1.w.T
-img2 = model.embedding_layer2.w.T
+img1 = model.embedding_layer1.parameters.w.T
+img2 = model.embedding_layer2.parameters.w.T
 plt.figure(figsize=(20, 10))
 plt.subplot(2, 1, 1) # 2行2列に分割し1番目
 plt.imshow(img1.tolist(), aspect=vocab_size/word_vector_size/3)

@@ -16,7 +16,8 @@ print('初期化後　params\n', params)
 
 params10 = {}
 for k, v in params.items():
-    params10[k] = v*10
+    if v is not None:
+        params10[k] = v*10
 
 print('10倍　params10\n', params10)
 cf.import_parameters(model, params0)

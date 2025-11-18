@@ -20,6 +20,6 @@ for func in Funcs:
     print(f'func : {cf.get_obj_size(func, verbose=True)/1024**2 :8.2f} MB') 
     print(f'x    : {cf.get_obj_size(x)   /1024**2 :8.2f} MB') 
     print(f'y    : {cf.get_obj_size(y)   /1024**2 :8.2f} MB') 
-    print(f'w    : {cf.get_obj_size(func.w)/1024**2 :8.2f} MB') 
-    print(f'b    : {cf.get_obj_size(func.b)/1024**2 :8.2f} MB') 
+    print(f'w    : {cf.get_obj_size(func.parameters.w)/1024**2 :8.2f} MB') 
+    print(f'b    : {cf.get_obj_size(func.parameters.b)/1024**2 :8.2f} MB') 
     print(f'total: {cf.get_obj_size([func, x, y])/1024**2 :8.2f} MB')

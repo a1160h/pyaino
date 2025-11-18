@@ -5,8 +5,8 @@ from pyaino import Neuron
 x = np.arange(64).reshape(1, 1, 8, 8).astype(Config.dtype)
 print('img\n', x)
 
-#                      C, Ih,Iw,M, Fh,Fw,Sh,Sw
-modelc = Neuron.Im2col(1, 8, 8, 1, 2, 2, 2, 2)
+#                      C, Ih,Iw,Fh,Fw,Sh,Sw
+modelc = Neuron.Im2col(1, 8, 8, 2, 2, 2, 2)
 
 # Oh, Ow = 4, 4  
 
@@ -15,7 +15,7 @@ modelc = Neuron.Im2col(1, 8, 8, 1, 2, 2, 2, 2)
 y = modelc(x)                          
 print('col\n', y)
 
-modeld = Neuron.Col2im(1, 4, 4, 1, 2, 2, 2, 2)
+modeld = Neuron.Col2im(1, 4, 4, 2, 2, 2, 2)
 
 # (B*Ih*Iw, M*Fh*Fw) -> (B, M, Oh, Ow)
 

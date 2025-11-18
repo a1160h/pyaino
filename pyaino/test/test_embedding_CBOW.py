@@ -37,10 +37,10 @@ def backward(gy):
 
 def update(**kwargs):
     if share_weight == True:
-        embedding_layer1.grad_w += output_layer.grad_w.T
+        embedding_layer1.parameters.grad_w += output_layer.parameters.grad_w.T
         embedding_layer1.update(**kwargs)
-        embedding_layer2.w = embedding_layer1.w
-        output_layer.w = embedding_layer1.w.T
+        embedding_layer2.parameters.w = embedding_layer1.parameters.w
+        output_layer.parameters.w = embedding_layer1.parameters.w.T
     else:
         embedding_layer1.update(**kwargs)
         embedding_layer2.update(**kwargs)
@@ -122,9 +122,9 @@ cf.graph_for_error(error_record)
 # -- 最終確認 --
 generate(input_data)
 
-img1 = embedding_layer1.w.T
-img2 = embedding_layer2.w.T
-img3 = output_layer.w
+img1 = embedding_layer1.parameters.w.T
+img2 = embedding_layer2.parameters.w.T
+img3 = output_layer.parameters.w
 plt.figure(figsize=(20, 10))
 plt.subplot(2, 2, 1) # 2行2列に分割し1番目
 plt.imshow(img1.tolist(), aspect=vocab_size/word_vector_size/3)

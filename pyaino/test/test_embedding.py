@@ -1,5 +1,5 @@
 ﻿# EmbeddingLayerのテスト
-# 2022.05.16 A.Inoue
+# 2025.11.18 A.Inoue
 from pyaino.Config import *
 set_np('numpy'); np = Config.np
 print(np.__name__, 'is running in the background.', np.random.rand(1))
@@ -36,9 +36,10 @@ class TestClass:
 
     def update(self,**kwargs):
         if share_weight == True:
-            self.embedding_layer.grad_w += self.output_layer.grad_w.T
+            self.embedding_layer.parameters.grad_w \
+                                          += self.output_layer.parameters.grad_w.T
             self.embedding_layer.update(**kwargs)
-            self.output_layer.w = self.embedding_layer.w.T
+            self.output_layer.parameters.w = self.embedding_layer.parameters.w.T
         else:
             self.embedding_layer.update(**kwargs)
             self.output_layer.update(**kwargs)
@@ -121,8 +122,8 @@ cf.graph_for_error(error_record)
 # -- 最終確認 --
 model.generate(corpus)
 
-img1 = model.embedding_layer.w.T
-img2 = model.output_layer.w
+img1 = model.embedding_layer.parameters.w.T
+img2 = model.output_layer.parameters.w
 plt.figure(figsize=(12, 8))
 plt.subplot(2, 1, 1) # 2行1列に分割し1番目
 plt.imshow(img1.tolist(), aspect=vocab_size/word_vector_size/3)

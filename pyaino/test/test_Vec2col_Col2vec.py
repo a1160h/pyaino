@@ -6,8 +6,8 @@ from pyaino import Neuron
 x = np.arange(8).reshape(1, 1, 8).astype(Config.dtype)
 print('img\n', x)
 
-#                C, Iw,M, Fw,S
-modelc = Neuron.Vec2col(1, 8, 1, 2, 2)
+#                       C, Iw,Fw,S
+modelc = Neuron.Vec2col(1, 8, 2, 2)
 
 # Ow = 4  
 
@@ -16,10 +16,10 @@ modelc = Neuron.Vec2col(1, 8, 1, 2, 2)
 y = modelc(x)                          
 print('col\n', y)
 
-#                C, Iw,M, Fw,S 
-modeld = Neuron.Col2vec(1, 4, 1, 2, 2)
+#                       C, Iw,Fw,S 
+modeld = Neuron.Col2vec(1, 4, 2, 2)
 
-# (B*Iw, M*Fw) -> (B, M, Ow)
+# (B*Iw, C*Fw) -> (B, C, Ow)
 
 z = modeld(y)
 print('img\n', z)

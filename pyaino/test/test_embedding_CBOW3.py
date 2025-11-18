@@ -60,10 +60,11 @@ class CBOW:
 
     def update(self, **kwargs):
         if self.share_weight:
-            self.output_layer.grad_w += self.input_layer.grad_w.T
+            self.output_layer.parameters.grad_w \
+                              += self.input_layer.parameters.grad_w.T
             self.output_layer.update(**kwargs)
-            self.output_layer.b[...] = 0
-            self.input_layer.w = self.output_layer.w.T
+            self.output_layer.parameters.b[...] = 0
+            self.input_layer.parameters.w = self.output_layer.parameters.w.T
         else:
             self.input_layer.update(**kwargs)
             self.output_layer.update(**kwargs)
@@ -118,8 +119,8 @@ cf.graph_for_error(error_record)
 gen_data = model.generate(contexts)
 print(all(gen_data==targets))
 
-img1 = model.input_layer.w.T
-img2 = model.output_layer.w
+img1 = model.input_layer.parameters.w.T
+img2 = model.output_layer.parameters.w
 plt.figure(figsize=(20, 10))
 plt.subplot(2, 1, 1) # 2行1列に分割し1番目
 plt.imshow(img1.tolist(), aspect=vocab_size/word_vector_size/3)
