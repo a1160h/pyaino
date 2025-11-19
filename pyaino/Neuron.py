@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.11.17 A.Inoue
+# 2025.11.19 A.Inoue
 
 import copy
 import warnings
@@ -962,17 +962,15 @@ class Im2colz:
         if Ow is None:    
             Ow = (Iw - Fw) // Sw + 1        # 出力幅
         self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
-        #print('### Im2col.config =', self.config)
 
     def __call__(self, img):
         C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
         B = img.size // (C*Ih*Iw)
-        col = np.zeros((B*Oh*Ow,C*Fh*Fw), dtype=Config.dtype)
-        i = 0
-        for h in range(0, Ih-Fh+1, Sh):     
-            for w in range(0, Iw-Fw+1, Sw):
-                col[i*B:(i+1)*B] = img[:,:,h:h+Fh, w:w+Fw].reshape(B, C*Fh*Fw) 
-                i += 1
+        col = np.zeros((B,Oh,Ow,C*Fh*Fw), dtype=Config.dtype)
+        for i, h in enumerate(range(0, Ih-Fh+1, Sh)):
+            for j, w in enumerate(range(0, Iw-Fw+1, Sw)):
+                col[:,i,j,:] = img[:,:,h:h+Fh, w:w+Fw].reshape(B, C*Fh*Fw)
+        col = col.reshape(B*Oh*Ow, C*Fh*Fw)        
         return col           
 
 class Col2imz:
@@ -982,20 +980,15 @@ class Col2imz:
         if Ow is None:    
             Ow = (Iw - 1) * Sw + Fw
         self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
-        #print('### Col2im.config =', self.config)
 
     def __call__(self, col):
         C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
-        #print(col.shape)
         B = col.size // (C*Ih*Iw*Fh*Fw)
-        #print('B =', B)
         img = np.zeros((B,C,Oh,Ow), dtype=Config.dtype)
-        #print(img.shape)
-        i = 0
-        for h in range(0, Oh-Fh+1, Sh):
-            for w in range(0, Ow-Fw+1, Sw):
-                img[:,:,h:h+Fh, w:w+Fw] += col[i*B:(i+1)*B].reshape(B,C,Fh,Fw)
-                i += 1
+        col = col.reshape(B,Ih,Iw,C*Fh*Fw)
+        for i, h in enumerate(range(0, Oh-Fh+1, Sh)):
+            for j, w in enumerate(range(0, Ow-Fw+1, Sw)):
+                img[:,:,h:h+Fh, w:w+Fw] += col[:,i,j,:].reshape(B,C,Fh,Fw)
         return img        
 
 
