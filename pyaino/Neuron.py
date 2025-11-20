@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.11.19 A.Inoue
+# 2025.11.20 A.Inoue
 
 import copy
 import warnings
@@ -966,7 +966,7 @@ class Im2colz:
     def __call__(self, img):
         C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
         B = img.size // (C*Ih*Iw)
-        col = np.zeros((B,Oh,Ow,C*Fh*Fw), dtype=Config.dtype)
+        col = np.empty((B,Oh,Ow,C*Fh*Fw), dtype=Config.dtype)
         for i, h in enumerate(range(0, Ih-Fh+1, Sh)):
             for j, w in enumerate(range(0, Iw-Fw+1, Sw)):
                 col[:,i,j,:] = img[:,:,h:h+Fh, w:w+Fw].reshape(B, C*Fh*Fw)
