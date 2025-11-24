@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.11.20 A.Inoue
+# 2025.11.24 A.Inoue
 
 import copy
 import warnings
@@ -1530,7 +1530,7 @@ class LatentSampling(Function):
         self.rate = rate                            # サンプリングの広がり
         if kld and kld>0:
             self.r_kld = kld                        # 混ぜ具合 
-            self.kld = KullbackLeiblerDivergence()  # カルバック・ライブラー情報量関数
+            self.kld = KullbackLeiblerDivergenceNormal()  # カルバック・ライブラー情報量関数
         else:
             self.kld = None
         if mil and mil>0:
@@ -1546,10 +1546,10 @@ class LatentSampling(Function):
         mu = x[:, :nz]
         log_var = x[:, nz:2*nz]
         # -- epsilonを決める --
-        if epsilon is None:
-            epsilon = (self.rate * np.random.randn(*log_var.shape)).astype(Config.dtype)
+        #if epsilon is None:
+        #    epsilon = (self.rate * np.random.randn(*log_var.shape)).astype(Config.dtype)
         # -- サンプリングとカルバック・ライプラー --    
-        z = self.sampling.forward(mu, log_var, epsilon=epsilon)
+        z = self.sampling.forward(mu, log_var, epsilon=epsilon, rate=self.rate)
 
         if not (self.kld or self.mil):
             return z
@@ -1591,7 +1591,7 @@ class LatentSamplingZ:
         super().__init__()
         print('Initialize', self.__class__.__name__)
         self.sampling = MuVarSampling()         # サンプリングの関数　  
-        self.kld = KullbackLeiblerDivergence()  # カルバック・ライブラー情報量関数
+        self.kld = KullbackLeiblerDivergenceNormal()  # カルバック・ライブラー情報量関数
         self.rate = rate                        # サンプリングの広がり
         #self.r_kld = kwargs.pop('r_kld', 1.0)  # kldの混ぜ具合 
         
@@ -1611,7 +1611,10 @@ class LatentSamplingZ:
         return gmu, glog_var
 
 class MuVarSampling(Function):
-    def __forward__(self, mu, log_var, *, epsilon=None):
+    """ muとlog_varによるReparameterize """
+    def __forward__(self, mu, log_var, *, epsilon=None, rate=1.0):
+        if epsilon is None:
+            epsilon = (rate * np.random.randn(*log_var.shape)).astype(Config.dtype)
         self.epsilon = epsilon # 逆伝播に備えて覚える
         z = mu + self.epsilon * np.exp(log_var/2)
         return z
@@ -1637,7 +1640,8 @@ class MuVarSampling2(Function):
         glog_var = 0.5 * gepsilon * epsilon
         return gmu, glog_var, gepsilon
 
-class KullbackLeiblerDivergence(Function):
+class KullbackLeiblerDivergenceNormal(Function):
+    """ 標準正規分布に対する任意の正規分布のKLDの解析解 """
     def __forward__(self, mu, log_var):
         #self.inputs = mu, log_var
         kll = -0.5 * np.sum(1 + log_var - mu**2 - np.exp(log_var))
@@ -1649,7 +1653,8 @@ class KullbackLeiblerDivergence(Function):
         glog_var = gkll * (-0.5) * (1 - np.exp(log_var))
         return gmu/len(mu), glog_var/len(log_var)
 
-class KullbackLeiblerDivergence2(CompositFunction):
+class KullbackLeiblerDivergenceNormal2(CompositFunction):
+    """ 標準正規分布に対する任意の正規分布のKLDの解析解 """
     def _forward(self, mu, log_var):
         kll = -0.5 * F.sum(1 + log_var - mu**2 - F.exp(log_var))
         return kll / len(mu)
