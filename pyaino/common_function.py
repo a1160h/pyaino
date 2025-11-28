@@ -1,5 +1,5 @@
 # common_function
-# 2025.11.21 A.Inoue 
+# 2025.11.28 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1291,21 +1291,40 @@ def loss_function(loss_f, y, t):
     return float(error)
 
 ## -- 数値微分 --
-def numerical_gradient(func, x, h=1e-4): # 数値微分、変数xは配列に対応
+def numerical_gradient(func, x, gy=None, h=1e-4):
+    """ 数値微分、変数xは配列に対応、func出力がxと別形状にも対応 """
     if isinstance(x, np.ndarray):
-        pass
+        x = x.astype(np.float64, copy=True)
     else:
-        x = np.array(x, dtype=float)     # 変数xの型指定は必須(整数型だと+h, -hが上手くいかない) 
-    x_shape = x.shape ; x_size = x.size  # 変数xの形状と大きさ
-    x = x.reshape(-1)                    # 要素を順に操作するためにベクトル化
-    grad = np.zeros_like(x, dtype=Config.dtype)
+        x = np.array(x, dtype=np.float64) # 変数xの型指定は必須(整数型だと+h, -hが上手くいかない) 
+    x_shape = x.shape ; x_size = x.size   # 変数xの形状と大きさ
+    y = func(x)                           # 形状を見るため仮に出力を得る
+    if gy is None:
+        gy = np.ones_like(y, dtype=np.float64)
+    else:
+        gy = np.array(gy, dtype=np.float64, copy=False)
+    
+    x = x.reshape(-1)                     # 要素を順に操作するためにベクトル化
+    # 数値微分の計算自体は float64 で行い、結果だけ Config.dtype にキャストする
+    grad = np.zeros_like(x, dtype=Config.dtype) # 勾配もベクトル化した形状で得る
+
+    def loss(x, gy):
+        """ 勾配評価のためのスカラ損失関数 """
+        y = func(x)
+        return float(np.sum(y * gy))
+
     for i in range(x_size):
         xp = x.copy()
         xn = x.copy()
         xp[i] += h
         xn[i] -= h
-        grad[i] = (func(xp.reshape(x_shape)) - func(xn.reshape(x_shape))) / (2 * h)
-    grad = grad.reshape(x_shape)         # gradをxの形状にして返す
+        # スカラの損失関数で勾配を評価
+        g = ((loss(xp.reshape(x_shape), gy)  # 元のxの形状に戻して関数に入力
+            - loss(xn.reshape(x_shape), gy)) # 元のxの形状に戻して関数に入力
+             / (2 * h))
+        grad[i] = g                       # 結果を暗黙でキャスト
+        
+    grad = grad.reshape(x_shape)          # gradを元のxの形状にして返す
     return grad
 
 def numerical_gradient_bkup(func, xi):        # 数値微分、変数xは配列に対応　
