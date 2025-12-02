@@ -1,8 +1,9 @@
 ﻿# Neuron
-# 2025.11.24 A.Inoue
+# 2025.12.02 A.Inoue
 
 import copy
 import warnings
+import math
 from pyaino.Config import *
 from pyaino.nucleus import Function, CompositFunction
 from pyaino import Activators
@@ -1428,6 +1429,375 @@ class GlobalAveragePooling(Function):
         grad_x = np.repeat(grad_x.reshape(-1, 1), Ih*Iw, axis=1)
         grad_x = grad_x.reshape(-1, C, Ih, Iw)
         return grad_x
+
+### 2次元補完層 ############################################################
+class Interpolate2d(Function):
+    """ 統合インターフェース """
+
+    def __init__(self, scale_factor=None, size=None,
+                 mode="nearest", align_corners=False):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.size = size
+        self.mode = mode
+        self.align_corners = align_corners  # 今は使わないが保持しておく
+
+        if scale_factor is None and size is None:
+            raise ValueError(
+                f"{self.__class__.__name__}"
+                f" scale_factor か size のどちらかを指定してください。"
+                )
+
+        # ここで「どの実装を使うか」を決め打ちする
+        if self.mode == "nearest":
+            sf = self.scale_factor
+
+            # 1) size=None かつ 正の整数 scale_factor → Simple
+            if self.size is None and isinstance(sf, (int, np.integer)) and sf > 0:
+                self.impl = Interpolate2dNearestSimple(scale_factor=sf)
+
+            # 2) それ以外の nearest は General に任せる
+            else:
+                self.impl = Interpolate2dNearestGeneral(
+                    scale_factor=self.scale_factor,
+                    size=self.size,
+                )
+
+        elif self.mode == "bilinear":
+            # bilinear は最初から general 版だけ用意
+            self.impl = Interpolate2dBilinear(
+                scale_factor=self.scale_factor,
+                size=self.size,
+            )
+
+        else:
+            # 将来、ここに bilinear や general 版を追加していく
+            raise NotImplementedError(
+                f"{self.__class__.__name__}"
+                f" mode={self.mode}, size={self.size}, "
+                f"scale_factor={self.scale_factor} はまだ未実装です。"
+            )
+
+    def __forward__(self, x):
+        y = self.impl.forward(x)
+        return y
+
+    def __backward__(self, gy):
+        return self.impl.backward(gy)
+
+class Interpolate2dNearestSimple(Function):
+    """ 整数スケールの最近傍アップサンプリング """
+
+    def __init__(self, scale_factor):
+        super().__init__()
+        if isinstance(scale_factor, (int, np.integer)) and scale_factor > 0:
+            self.scale_factor = scale_factor
+        else:
+            raise ValueError(f"scale_factor must be positive integer, got {scale_factor}")
+        self.x_shape = None 
+
+        prefix, Ih, Iw, Oh, Ow = None, None, None, None, None
+        self.config = prefix, Ih, Iw, Oh, Ow
+        
+    def fix_configuration(self, shape):
+        """共通の ndim チェックと Ih,Iw,Oh,Ow の決定までを行う。"""
+        if len(shape) < 2:
+            raise ValueError(
+                f"{self.__class__.__name__}: "
+                f"input ndim must be >= 2 (got {shape}). "
+                f"最後の2軸を (H,W) として扱います。"
+            )
+
+        *prefix, Ih, Iw = shape
+
+        Oh = int(Ih * self.scale_factor)
+        Ow = int(Iw * self.scale_factor)
+
+        if Oh < 1 or Ow < 1:
+            raise ValueError(
+                f"{self.__class__.__name__}: "
+                f"scale_factor {self.scale_factor} too small for input "
+                f"shape ({Ih},{Iw}) → ({Oh},{Ow})"
+            )
+
+        self.config = prefix, Ih, Iw, Oh, Ow
+
+    def __forward__(self, x):
+        if None in self.config:
+            print(self.__class__.__name__, 'input.shape', x.shape)
+            self.fix_configuration(x.shape)
+        y = x.repeat(self.scale_factor, axis=-1) # 横方向のupsampling
+        y = y.repeat(self.scale_factor, axis=-2) # 縦方向のupsampling
+        return y
+
+    def __backward__(self, gy):
+        prefix, Ih, Iw, Oh, Ow = self.config
+        s = self.scale_factor
+        gx = gy.reshape((*prefix, Ih, s, Iw, s)).sum(axis=(-3, -1))
+        return gx
+
+class Interpolate2dGeneralBase(Function):
+    """
+    size / scale_factor / Oh,Ow の共通処理だけを持つベースクラス。
+    実際の補間ロジック（最近傍 / bilinear）は派生クラス側で実装。
+    """
+
+    def __init__(self, scale_factor=None, size=None):
+        super().__init__()
+        prefix, Ih, Iw, Oh, Ow = None, None, None, None, None
+        self.config = prefix, Ih, Iw, Oh, Ow
+        
+        if scale_factor is None and size is None:
+            raise ValueError(
+                f"{self.__class__.__name__}: "
+                f"scale_factor か size の少なくとも一方を指定してください。"
+            )
+
+        if scale_factor is None:
+            self.scale_factor = None
+        elif (isinstance(scale_factor, (int, float, np.integer, np.floating))
+            and scale_factor > 0):
+            self.scale_factor = scale_factor
+        else:
+            raise ValueError(
+                f"{self.__class__.__name__}"
+                f" invalid scale_factor specified {scale_factor}"
+            )
+
+        # size 指定ルートの妥当性チェックはここで完結
+        if size is None:
+            self.size = None
+        elif (isinstance(size, (tuple, list))
+              and len(size) == 2
+              and size[0] > 0 and size[1] > 0):
+            self.size = tuple(size)
+        else:
+            raise ValueError(
+                f"{self.__class__.__name__}: invalid size {size}"
+            )
+
+        # NearestGeneralのbackwardで使う場合有り
+        try:
+            self.add_at = np.add.at
+        except:
+            try:
+                self.add_at = np.scatter_add
+            except:
+                try:
+                    self.add_at = np._cupyx.scatter_add
+                except:
+                    def f(x, y, z): # xのyの位置にzを加算する
+                        for i, idx in enumerate(y):
+                            x[idx] += z[i]
+                    self.add_at = f        
+    
+    def fix_configuration(self, shape):
+        """共通の ndim チェックと Ih,Iw,Oh,Ow の決定までを行う。"""
+        if len(shape) < 2:
+            raise ValueError(
+                f"{self.__class__.__name__}: "
+                f"input ndim must be >= 2 (got {shape}). "
+                f"最後の2軸を (H,W) として扱います。"
+            )
+
+        *prefix, Ih, Iw = shape
+
+        if self.size is None:
+            Oh = int(Ih * self.scale_factor)
+            Ow = int(Iw * self.scale_factor)
+            if Oh < 1 or Ow < 1:
+                raise ValueError(
+                    f"{self.__class__.__name__}: "
+                    f"scale_factor {self.scale_factor} too small for input "
+                    f"shape ({Ih},{Iw}) → ({Oh},{Ow})"
+                )
+            self.size = Oh, Ow
+        Oh, Ow = self.size
+        self.config = prefix, Ih, Iw, Oh, Ow
+
+
+class Interpolate2dNearestGeneral(Interpolate2dGeneralBase):
+    def __init__(self, scale_factor=None, size=None):
+        super().__init__(scale_factor=scale_factor, size=size)
+        self.h_idx = None
+        self.w_idx = None
+
+    def __forward__(self, x):
+        if None in self.config:
+            print(self.__class__.__name__, 'input.shape', x.shape)
+            self.fix_configuration(x.shape)
+        prefix, Ih, Iw, Oh, Ow = self.config
+
+        # 出力座標 0..Oh-1, 0..Ow-1
+        # 入力側の連続座標 → 最近傍の整数インデックス
+        # ここではシンプルに Ih/Oh, Iw/Ow でスケーリング
+        scale_h = Ih / Oh
+        scale_w = Iw / Ow
+        h_idx = (np.arange(Oh) * scale_h).astype(np.int64)  # h_idx.shape=(Oh,)
+        w_idx = (np.arange(Ow) * scale_w).astype(np.int64)  # w_idx.shape=(Ow,)
+
+        # 念のためクリップ（端の丸めで Ih, Iw を超えないように）
+        h_idx = np.clip(h_idx, 0, Ih - 1)
+        w_idx = np.clip(w_idx, 0, Iw - 1)
+
+        # forward: ベクトル化参照
+        # x[..., Ih, Iw] に対し、最後の2軸に (Oh,Ow) のインデックスを食わせる
+        y = x[..., h_idx[:, None], w_idx[None, :]]
+
+        # backward 用に保存
+        self.h_idx = h_idx
+        self.w_idx = w_idx
+
+        return y
+
+    def __backward__bkup(self, gy):
+        x, = self.inputs
+        #y  = self.get_outputs()
+        *prefix, Ih, Iw = x.shape
+        Oh, Ow = self.size
+        
+        # gx をゼロ初期化
+        gx = np.zeros_like(x) # xの形と型を継承
+
+        # 先頭軸を 1 次元にまとめて扱う: N = prod(prefix)
+        N = math.prod(prefix) if prefix else 1
+        gx_flat = gx.reshape(N, Ih, Iw)
+        gy_flat = gy.reshape(N, Oh, Ow)
+
+        ih2 = self.h_idx[:, None]  # (Oh, 1)
+        iw2 = self.w_idx[None, :]  # (1,  Ow)
+
+        # N 軸だけ Python ループ、H/W は add.at に任せる
+        for n in range(N):
+            #gx_flat[n][h_idx, w_idx] += gy_flat[n]
+            self.add_at(gx_flat[n], (ih2, iw2), gy_flat[n])
+
+        return gx
+
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        #y  = self.get_outputs()
+        *prefix, Ih, Iw = x.shape
+        Oh, Ow = self.size
+
+        # 1) A, B を作る（行・列の 1-hot 行列）
+        #    A: (Oh, Ih) で A[h, h_idx[h]] = 1
+        #    B: (Ow, Iw) で B[w, w_idx[w]] = 1
+        A = np.zeros((Oh, Ih), dtype=Config.dtype)
+        B = np.zeros((Ow, Iw), dtype=Config.dtype)
+
+        A[np.arange(Oh), self.h_idx] = 1
+        B[np.arange(Ow), self.w_idx] = 1
+
+        # 2) dX = A^T · dY · B をテンソル版で計算する
+        # gy: (..., Oh, Ow)
+
+        # まず行方向（Oh → Ih）を畳み込む： tmp = dY × A で (..., Ow, Ih)
+        # axes: gy の -2(Oh) と A の 0(Oh) を縮約
+        tmp = np.tensordot(gy, A, axes=([-2], [0]))  # (..., Ow, Ih)
+
+        # 軸順を (..., Ih, Ow) に揃える
+        tmp = np.moveaxis(tmp, -1, -2)  # (..., Ih, Ow)
+
+        # 次に列方向（Ow → Iw）を畳み込む： gx = tmp × B で (..., Ih, Iw)
+        # axes: tmp の -1(Ow) と B の 0(Ow) を縮約
+        gx = np.tensordot(tmp, B, axes=([-1], [0]))  # (..., Ih, Iw)
+
+        return gx
+    
+
+class Interpolate2dBilinear(Interpolate2dGeneralBase):
+    """
+    一般形の bilinear 補間（アップ／ダウンサンプリング両方可）。
+
+    - x: (..., Ih, Iw)
+    - scale_factor: float or None
+    - size: (Oh, Ow) or None
+      → 少なくともどちらか一方は指定すること。
+    """
+
+    def __init__(self, scale_factor=None, size=None):
+        super().__init__(scale_factor=scale_factor, size=size)
+        self.A = None            # 行方向の補間行列 (Oh, Ih)
+        self.B = None            # 列方向の補間行列 (Ow, Iw)
+
+    def __forward__(self, x):
+        if None in self.config:
+            print(self.__class__.__name__, 'input.shape', x.shape)
+            self.fix_configuration(x.shape)
+        prefix, Ih, Iw, Oh, Ow = self.config
+
+        # 行方向 (H) の補間行列 A を作る
+        scale_h = Ih / Oh
+        pos_h = np.arange(Oh, dtype=Config.dtype) * scale_h  # (Oh,)
+        h0 = np.floor(pos_h).astype(np.int64)
+        h1 = np.minimum(h0 + 1, Ih - 1)
+        th = pos_h - h0.astype(Config.dtype)
+
+        A = np.zeros((Oh, Ih), dtype=Config.dtype)
+        A[np.arange(Oh), h0] += (1 - th)
+        A[np.arange(Oh), h1] += th
+
+        # 列方向 (W) の補間行列 B を作る
+        scale_w = Iw / Ow
+        pos_w = np.arange(Ow, dtype=Config.dtype) * scale_w  # (Ow,)
+        w0 = np.floor(pos_w).astype(np.int64)
+        w1 = np.minimum(w0 + 1, Iw - 1)
+        tw = pos_w - w0.astype(Config.dtype)
+
+        B = np.zeros((Ow, Iw), dtype=Config.dtype)
+        B[np.arange(Ow), w0] += (1 - tw)
+        B[np.arange(Ow), w1] += tw
+
+        # forward: Y = A · X · B^T
+        BT = B.T  # (Iw, Ow)
+        tmp = np.tensordot(x, BT, axes=([-1], [0]))   # (..., Ih, Ow)
+        y   = np.tensordot(A, tmp, axes=([1], [-2]))  # (Oh, *prefix, Ow)
+        y   = np.moveaxis(y, 0, -2)                   # (*prefix, Oh, Ow)
+
+        # backward 用に保存
+        self.A = A
+        self.B = B
+
+        return y
+
+
+    def __backward__(self, gy):
+        """
+        gy: (..., Oh, Ow)
+        戻り値 gx: (..., Ih, Iw)
+        """
+        x, = self.inputs
+        *prefix, Ih, Iw = x.shape
+        Oh, Ow = self.size
+
+        if gy.shape[-2:] != (Oh, Ow):
+            raise ValueError(
+                f"{self.__class__.__name__}"
+                f" backward: gy spatial shape {gy.shape[-2:]} "
+                f"does not match expected {(Oh, Ow)}."
+            )
+
+        A = self.A  # (Oh, Ih)
+        B = self.B  # (Ow, Iw)
+
+        # dX = A^T · dY · B
+        # まず行方向 (Oh→Ih) を縮約： gy(...,Oh,Ow) × A(Oh,Ih)
+        # → tmp(...,Ow,Ih)
+        tmp = np.tensordot(gy, A, axes=([-2], [0]))  # (..., Ow, Ih)
+
+        # 軸順を (..., Ih, Ow) に揃える
+        tmp = np.moveaxis(tmp, -1, -2)               # (..., Ih, Ow)
+
+        # 次に列方向 (Ow→Iw)： tmp(...,Ih,Ow) × B(Ow,Iw)
+        # → gx(...,Ih,Iw)
+        gx = np.tensordot(tmp, B, axes=([-1], [0]))  # (..., Ih, Iw)
+
+        return gx
+
+    
+
 
 ### マスク展開層 = 逆畳込みもどき ###########################################
 class MaskedExpansionLayer(BaseLayer):
