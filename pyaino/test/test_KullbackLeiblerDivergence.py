@@ -12,7 +12,7 @@ class KullbackLeiblerDivergence(CompositFunction):
         kll = -0.5 * F.sum(1 + log_var - mu**2 - F.exp(log_var))
         return kll / len(mu)
 
-model1 = Neuron.KullbackLeiblerDivergence()
+model1 = Neuron.KullbackLeiblerDivergenceNormal()
 model2 = KullbackLeiblerDivergence()
 
 kll1 = model1.forward(mu, log_var)
