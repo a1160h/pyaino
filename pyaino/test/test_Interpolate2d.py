@@ -21,9 +21,7 @@ x = np.random.randn(1, 3, 4, 4).astype(np.float32)
 show_image(x)
 
 # 最近傍（2倍）
-#interpolate = Neuron.Interpolate2d(scale_factor=2)
-#interpolate = Neuron.Interpolate2dNearestSimple(scale_factor=2)
-interpolate = Neuron.Interpolate2dNearestGeneral(size=(5, 10))#scale_factor=2)
+interpolate = Neuron.Interpolate2d(size=(5, 10))#scale_factor=2)
 y = interpolate(x)
 show_image(y)
 
