@@ -425,12 +425,24 @@ class BaseLayer(Function): # ニューロンの基本機能
         batchnorm       = kwargs.pop('batchnorm',    False) # バッチ正規化の適用有無
         layernorm       = kwargs.pop('layernorm',    False) # 層正規化の適用有無
 
-        if batchnorm:
-            self.Norm = BatchNormalization(**kwargs)
-        elif layernorm:
-            self.Norm = LayerNormalization(**kwargs)
+
+        if self.__class__.__name__ in (
+            'Conv2dLayer','Conv2dTransposeLayer', 'DeConv2dLayer',
+            'ConvLayer', 'DeConvLayer'):
+            if   batchnorm:
+                self.Norm = BatchNorm2d(**kwargs)
+            elif layernorm:
+                self.Norm = LayerNorm2d(**kwargs)
+            else:
+                self.Norm = None
         else:
-            self.Norm = None
+            if   batchnorm:
+                self.Norm = BatchNormalization(**kwargs)
+            elif layernorm:
+                self.Norm = LayerNormalization(**kwargs)
+            else:
+                self.Norm = None
+
 
     def fix_configuration(self, shape):
         raise NotImplementedError('fix_configuration method for BaseLayer')
@@ -4027,7 +4039,8 @@ class GeneralNormalizationBase(Function):
 
 class BatchNormalization(GeneralNormalizationBase):
     def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
-        # 正規化の軸はバッチ軸0だが、scale_and_biasの軸は特長軸すなわち0以外の軸
+        # 正規化の軸はバッチ軸0だが、
+        # scale_and_biasの軸は特長軸すなわち0以外の軸
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = 0
         kwargs['exclude']        = True
@@ -4040,6 +4053,36 @@ class batch_normalization(BatchNormalization):
     pass
 
 
+class BatchNorm1d(GeneralNormalizationBase):
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化の軸はバッチ軸0+最後の空間軸(長さ軸)-1だが、
+        # scale_and_biasの軸はこれ以外の軸
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
+        kwargs['axis']           = 0, -1
+        kwargs['exclude']        = True
+        kwargs['ppl']            = True
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+class batch_norm_1d(BatchNorm1d):
+    pass
+
+class BatchNorm2d(GeneralNormalizationBase):
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化の軸はバッチ軸0+Ih+Iwだが、
+        # scale_and_biasの軸はこれ以外の軸すなわちチャネル軸
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
+        kwargs['axis']           = 0, -2, -1
+        kwargs['exclude']        = True
+        kwargs['ppl']            = True
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+class batch_norm_2d(BatchNorm2d):
+    pass
+
 class LayerNormalization(GeneralNormalizationBase):
     def __init__(self, axis=-1, scale_and_bias=True, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
@@ -4051,6 +4094,37 @@ class LayerNormalization(GeneralNormalizationBase):
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
 
+class LayerNorm1d(GeneralNormalizationBase):
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化もscale_and_biasも同じく特長軸をaxisで指定
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
+        kwargs['axis']           = -2, -1
+        kwargs['exclude']        = False
+        kwargs['ppl']            = False
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+class LayerNorm2d(GeneralNormalizationBase):
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化もscale_and_biasも同じく特長軸をaxisで指定
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
+        kwargs['axis']           = -3, -2, -1
+        kwargs['exclude']        = False
+        kwargs['ppl']            = False
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+class InstanceNorm2d(GeneralNormalizationBase):
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化の軸はH,Wのみ
+        kwargs['axis']           = -2, -1      # H, W
+        kwargs['exclude']        = True        # ここがγ/βの軸の決め方に効く
+        kwargs['ppl']            = False       # 通常はBatchに依存しないのでrunning統計なし
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
 
 #### 層正規化 #####################################################
 class LayerNormalization_bkup(Function):
