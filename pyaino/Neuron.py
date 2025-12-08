@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.12.05 A.Inoue
+# 2025.12.15 A.Inoue
 
 import copy
 import warnings
@@ -1022,7 +1022,7 @@ class Pooling1dLayer(Function):
         elif len(configuration) == 2:
             C = None; Iw = None; pool, pad = configuration
         elif len(configuration) == 1:
-            C = None; Iw = None; pool = configuration; pad = 0
+            C = None; Iw = None; pool, = configuration; pad = 0
         else:
             C = None; Iw = None; pool = 2; pad = 0 
         Ow = None
@@ -1091,7 +1091,7 @@ class UnPooling1dLayer(Function):
         elif len(configuration) == 2:
             C = None; Iw = None; pool, pad = configuration
         elif len(configuration) == 1:
-            C = None; Iw = None; pool = configuration; pad = 0
+            C = None; Iw = None; pool, = configuration; pad = 0
         else:
             C = None; Iw = None; pool = 2; pad = 0
         Ow = None
@@ -1204,7 +1204,7 @@ class Pooling2dLayer(Function):
         elif len(configuration) == 2:    
             C = None; image_size = None; pool, pad = configuration
         elif len(configuration) == 1:
-            C = None; image_size = None; pool = configuration; pad = 0
+            C = None; image_size = None; pool, = configuration; pad = 0
         else:
             C = None; image_size = None; pool = 2; pad = 0
 
@@ -1234,6 +1234,7 @@ class Pooling2dLayer(Function):
         self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
         self.pooling = Pooling2d(pool_h, pool_w, Oh, Ow, self.method)
         self.unpooling = UnPooling2d(pool_h, pool_w, self.method)
+      
             
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
@@ -1287,7 +1288,7 @@ class UnPooling2dLayer(Function):
         elif len(configuration) == 2:    
             C = None; image_size = None; pool, pad = configuration
         elif len(configuration) == 1:
-            C = None; image_size = None; pool = configuration; pad = 0
+            C = None; image_size = None; pool, = configuration; pad = 0
         else:
             C = None; image_size = None; pool = 2; pad = 0
 
@@ -2669,6 +2670,11 @@ class PositionalEmbedding:
 
 class PositionalEncoding:
     def __init__(self, sequence_length=10000, dimension=2):
+        if dimension % 2 != 0:
+            raise ValueError(self.__class__.__name__ 
+                + f": dimension must be even (got {dimension}) "
+                   "because we use (sin, cos) pairs."
+                )
         self.dimension = dimension
         self.sequence_length = sequence_length
         self.division \
