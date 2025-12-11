@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.12.15 A.Inoue
+# 2025.12.11 A.Inoue
 
 import copy
 import warnings
@@ -546,14 +546,18 @@ class Conv1dLayer(BaseLayer):
     # w_decay:L2正則化項の係数
     
     def __init__(self, *configuration, **kwargs):
+        C, Iw, M, Fw, stride, pad, Ow = None, None, None, 3, 1, 1, None
         if len(configuration) == 6:
             C, Iw, M, Fw, stride, pad = configuration
         if len(configuration) == 4:
-            C = None; Iw = None; M, Fw, stride, pad = configuration
+            M, Fw, stride, pad = configuration
+        if len(configuration) == 3:
+            M, Fw, pad = configuration
         if len(configuration) == 2:
-            C = None; Iw = None; M, Fw = configuration; stride = 1; pad = 0 
-        Ow = None
-        self.params = self.config = C, Iw, M, Fw, stride, pad, Ow
+            M, Fw = configuration
+        if len(configuration) == 1:
+            M, = configuration
+        self.config = C, Iw, M, Fw, stride, pad, Ow
         self.vec2col = None
         self.col2vec = None
         super().__init__(**kwargs)
@@ -619,14 +623,18 @@ class Conv1dTransposeLayer(BaseLayer):
     # w_decay:L2正則化項の係数
     
     def __init__(self, *configuration, **kwargs):
+        C, Iw, M, Fw, stride, pad, Ow = None, None, None, 4, 2, 1, None 
         if len(configuration) == 6:
             C, Iw, M, Fw, stride, pad = configuration
         if len(configuration) == 4:
-            C = None; Iw = None; M, Fw, stride, pad = configuration
+            M, Fw, stride, pad = configuration
+        if len(configuration) == 3:
+            M, Fw, pad = configuration
         if len(configuration) == 2:
-            C = None; Iw = None; M, Fw = configuration; stride = 1; pad = 0 
-        Ow = None
-        self.params = self.config = C, Iw, M, Fw, stride, pad, Ow
+            M, Fw = configuration
+        if len(configuration) == 1:
+            M, = configuration
+        self.config = C, Iw, M, Fw, stride, pad, Ow
         self.col2vec = None
         self.vec2col = None
         super().__init__(**kwargs)
@@ -748,19 +756,22 @@ class Conv2dLayer(BaseLayer):
     # w_decay:L2正則化項の係数
     
     def __init__(self, *configuration, **kwargs):
+        C, image_size, M, kernel_size, stride, pad, Oh, Ow \
+            = None, None, None, 3, 1, 1, None, None
         if len(configuration) == 6:
             C, image_size, M, kernel_size, stride, pad = configuration
         if len(configuration) == 4:
-            C = None; image_size = None; M, kernel_size, stride, pad = configuration
+            M, kernel_size, stride, pad = configuration
+        if len(configuration) == 3:
+            M, kernel_size, pad = configuration
         if len(configuration) == 2:
-            C = None; image_size = None; M, kernel_size = configuration; stride = 1; pad = 0 
-        Oh = None; Ow = None
-
+            M, kernel_size = configuration
+        if len(configuration) == 1:
+            M, = configuration
         Ih, Iw = image_size if isinstance(image_size, (tuple, list)) else (image_size, image_size)
         Fh, Fw = kernel_size if isinstance(kernel_size, (tuple, list)) else (kernel_size, kernel_size)
         Sh, Sw = stride if isinstance(stride, (tuple, list)) else (stride, stride)
-        
-        self.params = self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
+        self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
         self.im2col = None
         self.col2im = None
         super().__init__(**kwargs)
@@ -831,19 +842,22 @@ class Conv2dTransposeLayer(BaseLayer):
     # w_decay:L2正則化項の係数
     
     def __init__(self, *configuration, **kwargs):
+        C, image_size, M, kernel_size, stride, pad, Oh, Ow \
+            = None, None, None, 4, 2, 1, None, None 
         if len(configuration) == 6:
             C, image_size, M, kernel_size, stride, pad = configuration
         if len(configuration) == 4:
-            C = None; image_size = None; M, kernel_size, stride, pad = configuration
+            M, kernel_size, stride, pad = configuration
+        if len(configuration) == 3:
+            M, kernel_size, pad = configuration
         if len(configuration) == 2:
-            C = None; image_size = None; M, kernel_size = configuration; stride = 1; pad = 0 
-        Oh = None; Ow = None
-
+            M, kernel_size = configuration
+        if len(configuration) == 1:
+            M, = configuration
         Ih, Iw = image_size if isinstance(image_size, (tuple, list)) else (image_size, image_size)
         Fh, Fw = kernel_size if isinstance(kernel_size, (tuple, list)) else (kernel_size, kernel_size)
         Sh, Sw = stride if isinstance(stride, (tuple, list)) else (stride, stride)
-
-        self.params = self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
+        self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
         self.col2im = None
         self.im2col = None
         super().__init__(**kwargs)
@@ -924,7 +938,7 @@ class Im2col:
         if Ow is None:    
             Ow = (Iw - Fw) // Sw + 1        # 出力幅
         # パラメータをまとめる(class内での変数受渡しのため)
-        self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
+        self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
 
     def __call__(self, img):
         C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
@@ -952,7 +966,7 @@ class Col2im:
             Oh = (Ih - 1) * Sh + Fh
         if Ow is None:    
             Ow = (Iw - 1) * Sw + Fw
-        self.config = (C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow)
+        self.config = C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow
 
     def __call__(self, col):
         C, Ih, Iw, Fh, Fw, Sh, Sw, Oh, Ow = self.config
@@ -1012,21 +1026,18 @@ class Pooling1dLayer(Function):
     # C:出力チャンネル数, Ow:出力幅
     def __init__(self, *configuration, **kwargs):
         super().__init__()
-        method = None
-        if   len(configuration) == 5:
+        C, Iw, pool, pad, method, Ow = None, None, 2, 0, None, None
+        if len(configuration) == 5:
             C, Iw, pool, pad, method = configuration
-        elif len(configuration) == 4:
+        if len(configuration) == 4:
             C, Iw, pool, pad = configuration
-        elif len(configuration) == 3:
-            C = None; Iw = None; pool, pad, method = configuration
-        elif len(configuration) == 2:
-            C = None; Iw = None; pool, pad = configuration
-        elif len(configuration) == 1:
-            C = None; Iw = None; pool, = configuration; pad = 0
-        else:
-            C = None; Iw = None; pool = 2; pad = 0 
-        Ow = None
-        self.params = self.config = C, Iw, pool, pad, Ow
+        if len(configuration) == 3:
+            pool, pad, method = configuration
+        if len(configuration) == 2:
+            pool, pad = configuration
+        if len(configuration) == 1:
+            pool, = configuration
+        self.config = C, Iw, pool, pad, Ow
         self.method = kwargs.pop('method', 'max') if method is None else method
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
@@ -1081,21 +1092,18 @@ class UnPooling1dLayer(Function):
     # C:出力チャンネル数, Ow:出力幅
     def __init__(self, *configuration, **kwargs):
         super().__init__()
-        method = None
-        if   len(configuration) == 5:
+        C, Iw, pool, pad, method, Ow = None, None, 2, 0, None, None
+        if len(configuration) == 5:
             C, Iw, pool, pad, method = configuration
-        elif len(configuration) == 4:
+        if len(configuration) == 4:
             C, Iw, pool, pad = configuration
-        elif len(configuration) == 3:
-            C = None; Iw = None; pool, pad, method = configuration
-        elif len(configuration) == 2:
-            C = None; Iw = None; pool, pad = configuration
-        elif len(configuration) == 1:
-            C = None; Iw = None; pool, = configuration; pad = 0
-        else:
-            C = None; Iw = None; pool = 2; pad = 0
-        Ow = None
-        self.params = self.config = C, Iw, pool, pad, Ow
+        if len(configuration) == 3:
+            pool, pad, method = configuration
+        if len(configuration) == 2:
+            pool, pad = configuration
+        if len(configuration) == 1:
+            pool, = configuration
+        self.config = C, Iw, pool, pad, Ow
         self.method = kwargs.pop('method', 'max') if method is None else method
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
@@ -1190,29 +1198,24 @@ class Pooling2dLayer(Function):
     # C:出力チャンネル数, Oh:出力高さ, Ow:出力幅
     def __init__(self, *configuration, **kwargs):
         super().__init__()
-        method = None
-        if   len(configuration) == 5:
+        C, image_size, pool, pad, method, Oh, Ow = None, None, 2, 0, None, None, None
+        if len(configuration) == 5:
             C, image_size, pool, pad, method = configuration
-        elif len(configuration) == 4:
+        if len(configuration) == 4:
             C, image_size, pool, pad = configuration
-        elif len(configuration) == 3 and isinstance(configuration[-1], str):
-            C = None; image_size = None; pool, pad, method = configuration
+        if len(configuration) == 3 and isinstance(configuration[-1], str):
+            pool, pad, method = configuration
         elif len(configuration) == 3:
-            C, image_size, pool = configuration; pad = 0
-        elif len(configuration) == 2 and isinstance(configuration[-1], str):
-            C = None; image_size = None; pool, method = configuration; pad = 0
+            C, image_size, pool = configuration
+        if len(configuration) == 2 and isinstance(configuration[-1], str):
+            pool, method = configuration
         elif len(configuration) == 2:    
-            C = None; image_size = None; pool, pad = configuration
-        elif len(configuration) == 1:
-            C = None; image_size = None; pool, = configuration; pad = 0
-        else:
-            C = None; image_size = None; pool = 2; pad = 0
-
+            pool, pad = configuration
+        if len(configuration) == 1:
+            pool, = configuration
         Ih, Iw = image_size if isinstance(image_size, (tuple, list)) else (image_size, image_size)
         pool_h, pool_w = pool if isinstance(pool, (tuple, list)) else (pool, pool)
-        Oh = Ow = None
-
-        self.params = self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
+        self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
         self.method = kwargs.pop('method', 'max') if method is None else method
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
@@ -1274,29 +1277,24 @@ class UnPooling2dLayer(Function):
     # C:出力チャンネル数, Oh:出力高さ, Ow:出力幅
     def __init__(self, *configuration, **kwargs):
         super().__init__()
-        method = None
-        if   len(configuration) == 5:
+        C, image_size, pool, pad, method, Oh, Ow = None, None, 2, 0, None, None, None
+        if len(configuration) == 5:
             C, image_size, pool, pad, method = configuration
-        elif len(configuration) == 4:
+        if len(configuration) == 4:
             C, image_size, pool, pad = configuration
-        elif len(configuration) == 3 and isinstance(configuration[-1], str):
-            C = None; image_size = None; pool, pad, method = configuration
+        if len(configuration) == 3 and isinstance(configuration[-1], str):
+            pool, pad, method = configuration
         elif len(configuration) == 3:
-            C, image_size, pool = configuration; pad = 0
-        elif len(configuration) == 2 and isinstance(configuration[-1], str):
-            C = None; image_size = None; pool, method = configuration; pad = 0
+            C, image_size, pool = configuration
+        if len(configuration) == 2 and isinstance(configuration[-1], str):
+            pool, method = configuration
         elif len(configuration) == 2:    
-            C = None; image_size = None; pool, pad = configuration
-        elif len(configuration) == 1:
-            C = None; image_size = None; pool, = configuration; pad = 0
-        else:
-            C = None; image_size = None; pool = 2; pad = 0
-
+            pool, pad = configuration
+        if len(configuration) == 1:
+            pool, = configuration
         Ih, Iw = image_size if isinstance(image_size, (tuple, list)) else (image_size, image_size)
         pool_h, pool_w = pool if isinstance(pool, (tuple, list)) else (pool, pool)
-        Oh = Ow = None
-
-        self.params = self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
+        self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
         self.method = kwargs.pop('method', 'max') if method is None else method
         print('Initialize', self.__class__.__name__, self.config, self.method)
         self.max_index = None
@@ -1506,7 +1504,8 @@ class Interpolate2d(Function):
                 f"input ndim must be >= 2 (got {shape}). "
                 f"最後の2軸を (H,W) として扱います。"
             )
-        *prefix, Ih, Iw = shape
+        B = shape[0]
+        *prefix, Ih, Iw = shape[1:]
 
         if self.size is None:
             Oh = int(Ih * self.scale_factor[0])
@@ -1540,6 +1539,11 @@ class Interpolate2d(Function):
     def __backward__(self, gy):
         return self.impl.backward(gy)
 
+class Interpolate2dLayer(Interpolate2d):
+    def __forward__(self, x, *args, **kwargs):
+        return super().__forward__(x)
+    
+
 class Interpolate2dNearestSimple:
     """ 整数スケールの最近傍アップサンプリング """
     def __init__(self, config):
@@ -1553,7 +1557,7 @@ class Interpolate2dNearestSimple:
 
     def backward(self, gy):
         prefix, Ih, Iw, Oh, Ow, mode = self.config
-        gx = gy.reshape((*prefix, Ih, Oh//Ih, Iw, Ow//Iw)).sum(axis=(-3, -1))
+        gx = gy.reshape((-1, *prefix, Ih, Oh//Ih, Iw, Ow//Iw)).sum(axis=(-3, -1))
         return gx
 
 class Interpolate2dGeneral:
@@ -1685,6 +1689,7 @@ class Interpolate2dNearest(Interpolate2d):
 
     def __backward__(self, gy):
         x, = self.inputs
+        B = x.shape[0]
         prefix, Ih, Iw, Oh, Ow, mode = self.config
 
         # gx をゼロ初期化
@@ -1692,14 +1697,14 @@ class Interpolate2dNearest(Interpolate2d):
 
         # 先頭軸を 1 次元にまとめて扱う: N = prod(prefix)
         N = math.prod(prefix) if prefix else 1
-        gx_flat = gx.reshape(N, Ih, Iw)
-        gy_flat = gy.reshape(N, Oh, Ow)
+        gx_flat = gx.reshape(B*N, Ih, Iw)
+        gy_flat = gy.reshape(B*N, Oh, Ow)
 
         ih2 = self.h0[:, None]  # (Oh, 1)
         iw2 = self.w0[None, :]  # (1,  Ow)
 
         # N 軸だけ Python ループ、H/W は add.at に任せる
-        for n in range(N):
+        for n in range(B*N):
             #gx_flat[n][h0, w0] += gy_flat[n]
             self.add_at(gx_flat[n], (ih2, iw2), gy_flat[n])
 
