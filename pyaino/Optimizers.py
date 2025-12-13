@@ -1,5 +1,5 @@
 # Optimizers
-# 2025.10.17 A.Inoue
+# 2025.12.13 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -22,7 +22,7 @@ class OptimizerBase:
         self.bias = kwargs.pop('bias', False)         
         
         # weight decay : 0で無効
-        self.w_decay = 0 if self.bias else kwargs.pop('w_decay', 0)  
+        self.w_decay = None if self.bias else kwargs.pop('w_decay', None)  
         
         # 勾配クリッピングは更新の際の指定による
         self.gradient_clipping = GradientClipping() 
@@ -69,7 +69,7 @@ class OptimizerBase:
             
     def update(self, parameter, gradient, eta=0.001, **kwargs): # parameter追加
         # w_decay操作を勾配による更新とは独立に行う
-        if self.w_decay!=0:
+        if self.w_decay is not None:
             parameter *= (1 - eta * self.w_decay)
 
         # 勾配クリッピング 無指定では__call__()しない
