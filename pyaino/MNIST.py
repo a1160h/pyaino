@@ -137,7 +137,9 @@ def show_multi_samples(data=None, target=None): # data, targetは対応する複
         m = min(n, n_data - j)      # n個以上残っていればn個、n個に満たない時はその端数
         for i in range(m):
             plt.subplot(5, 10, i+1) # 5行10列のi+1番目
-            plt.imshow(x[i].tolist(), cmap='gray')
+            max_picel = np.max(x[i]); min_picel = np.min(x[i])
+            rx = (x[i] - min_picel)/(max_picel - min_picel)
+            plt.imshow(rx.tolist(), cmap='gray')
             if target is not None:
                 plt.title(int(t[i]))
             plt.axis('off')
