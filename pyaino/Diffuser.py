@@ -1,5 +1,8 @@
-from pyaino.Config import *
+# Diffuser
+# 20251224 A.Inoue
 
+from pyaino.Config import *
+from pyaino import Functions as F
 
 class Diffuser:
     def __init__(self, num_timesteps=1000, beta_start=0.0001, beta_end=0.02):
@@ -47,7 +50,7 @@ class Diffuser:
         """ DDPM posterior mean/var """
         # eta: noise scale. eta=1.0 -> standard DDPM,
         #                   eta=0.0 -> "mean-only" (tends to average/whiten)
-
+        #print('eta =', eta)
         # サンプリングでは t はスカラ（または全要素同一の (N,)）とする
         t = self.fix_t(t, 1)
         
@@ -57,6 +60,7 @@ class Diffuser:
         alpha_bar_prev = self.alpha_bars[t - 1] if t >= 1 else 1.0
 
         eps = model(x, t)
+        #print('eps_hat.std', np.std(eps))
 
         # x0_pre（clip前）
         x0_pre = (x - np.sqrt(1 - alpha_bar) * eps) / np.sqrt(alpha_bar)
@@ -172,5 +176,20 @@ class Diffuser:
             x = numpy.asarray(x.get())  # cupyもnumpyに揃える
         x = x.astype(numpy.uint8).transpose(1,2,0)
         return x
+
+    def loss(self, eps_pred, eps, weighting=False, t=None, gamma=1.0):
+        """ 時刻に応じた重み付け可能な平均2乗誤差 """
+        # gammaが小さい：減衰はゆるい。高 SNR もそこそこ学習させたいとき。
+        # gammaが大きい：高 SNR の損失が一気に軽くなる。終盤の復元（低 SNR）を重視
+        l = (eps_pred - eps)**2
+        if weighting:
+            t = self.fix_t(t, 0, eps.ndim)
+            alpha_bar = self.alpha_bars[t]
+            snr = alpha_bar / (1 - alpha_bar) # 信号雑音比
+            w = (snr + 1)**(-gamma)
+            l = l * w
+            #print(l.shape, w.shape)
+        return F.Mean()(l)
+
 
 
