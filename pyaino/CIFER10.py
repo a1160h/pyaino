@@ -89,7 +89,7 @@ def get_data(path = path, **kwargs):
 # CNNで扱う場合は C, Ih, Iw が良く　
 # 画像表示には　　Ih, Iw, C が良い
 # NNで扱う場合はベクトルだが C*Ih*Iw Ih*Iw*C どちらか不明
-def show_sample(data, label):
+def show_sample(data, label=None):
     #print('### debug', data.shape)
     rdata = data[0] if data.ndim==4 else data
     rdata = data.reshape(3, 32, 32) if data.ndim<=2 else rdata
@@ -97,11 +97,13 @@ def show_sample(data, label):
     max_picel = np.max(rdata); min_picel = np.min(rdata) # 画素データを0～1に補正
     rdata = (rdata - min_picel)/(max_picel - min_picel)
     plt.imshow(rdata.tolist())
-    plt.title(label)
+    if label:
+        plt.title(label)
     plt.show()
 
 # -- 複数サンプルを表示(端数にも対応) --
-def show_multi_samples(data, target, label_list): # data, targetは対応する複数のもの
+def show_multi_samples(data, target=None, label_list=None):
+    # data, targetは対応する複数のもの
     rdata = data.transpose(0, 2, 3, 1) if data.shape[1]==3 else data
     max_picel = np.max(rdata); min_picel = np.min(rdata) # 画素データを0～1に補正
     rdata = (rdata - min_picel)/(max_picel - min_picel)
@@ -109,13 +111,15 @@ def show_multi_samples(data, target, label_list): # data, targetは対応する�
     n = 50 # 一度に表示する画像数
     for j in range(0, n_data, n):   # はじめのn個、次のn個と進める
         x = rdata[j:]
-        t = target[j:]
+        if target:
+            t = target[j:]
         plt.figure(figsize=(18, 10))
         m = min(n, n_data - j)      # n個以上残っていればn個、n個に満たない時はその端数
         for i in range(m):
             plt.subplot(5, 10, i+1) # 5行10列のi+1番目
             plt.imshow(x[i].tolist())
-            plt.title(label_list[int(t[i])])
+            if target and label_list:
+                plt.title(label_list[int(t[i])])
             plt.axis('off')
         plt.show()        
 
