@@ -111,14 +111,14 @@ def show_multi_samples(data, target=None, label_list=None):
     n = 50 # 一度に表示する画像数
     for j in range(0, n_data, n):   # はじめのn個、次のn個と進める
         x = rdata[j:]
-        if target:
+        if target is not None:
             t = target[j:]
         plt.figure(figsize=(18, 10))
         m = min(n, n_data - j)      # n個以上残っていればn個、n個に満たない時はその端数
         for i in range(m):
             plt.subplot(5, 10, i+1) # 5行10列のi+1番目
             plt.imshow(x[i].tolist())
-            if target and label_list:
+            if target is not None and label_list is not None:
                 plt.title(label_list[int(t[i])])
             plt.axis('off')
         plt.show()        
