@@ -102,7 +102,10 @@ def show_sample(data, label=None):
     plt.show()
 
 # -- 複数サンプルを表示(端数にも対応) --
-def show_multi_samples(data, target=None, label_list=None):
+def show_multi_samples(data=None, target=None, label_list=None):
+    if data is None:
+        data = get_data(image=True)
+        data = data[0][:100]
     # data, targetは対応する複数のもの
     rdata = data.transpose(0, 2, 3, 1) if data.shape[1]==3 else data
     max_picel = np.max(rdata); min_picel = np.min(rdata) # 画素データを0～1に補正
@@ -153,4 +156,4 @@ if __name__=='__main__':
             break
         show_sample(pick_data, pick_label)
     #'''#
-
+    show_multi_samples() 
