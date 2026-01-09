@@ -51,6 +51,7 @@ class ConvBlock:
         return self.forward(*args, **kwargs)
 
     def update(self, eta=0.001, **kwargs):
+        #print('### mlp.used =', self.mlp_used)
         self.convs.update(eta=eta, **kwargs)
         if self.mlp_used:
             self.mlp.update(eta=eta, **kwargs)
@@ -179,9 +180,12 @@ class UNet:
         if self.pos_encoding is None or timesteps is None:
             v = None
         else:
-            t0 = timesteps - 1   # Diffuser(1..T) → PosEnc(0..T-1)
+            t0 = timesteps
+            #t0 -= 1   # Diffuser(1..T) → PosEnc(0..T-1)
             t0 = self.normalize_t(t0, x.shape[0]) # バッチサイズだけ合わせる
             v = self.pos_encoding(t0)
+            if (t0 < 0).any() or (t0 >= 1000).any(): # 仮20260107AI
+                print('###debug t0', t0)
 
         zs = []    
 
