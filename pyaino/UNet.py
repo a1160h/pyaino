@@ -1,3 +1,6 @@
+# UNet
+# 20260117 A.Inoue
+
 from pyaino.Config import *
 #set_derivative(True)
 from pyaino import Neuron as neuron
@@ -187,27 +190,32 @@ class UNet:
             if (t0 < 0).any() or (t0 >= 1000).any(): # 仮20260107AI
                 print('###debug t0', t0)
 
+        shapes = []
         zs = []    
 
         # Down
         for i in range(self.depth):
+            shapes.append(x.shape) # Down前の元の形状を記録
             z = self.down[i](x, v, train=train)      # H, W
             x  = self.pool[i](z)                     # H/2, W/2
-            zs.append(z)
+            zs.append(z)           # 中間結果を記録 
 
         # Bottleneck
-        x  = self.bot(x, v, train=train)       # H/8, W/8
+        x  = self.bot(x, v, train=train)             # H/8, W/8
 
         # Up
         for i in range(self.depth):
+            shape = shapes.pop()   # 元の形状=Up変換後の形状　 
             z = zs.pop()
-            x = self.upsample[i](x)           # H/4, W/4
+            x = self.upsample[i](x)                   # H/4, W/4
+            if x.shape[-2:] != shape[-2:]:            # 形状が違う場合 
+                x = x[:, :, 0:shape[-2], 0:shape[-1]] # 元の形状にトリミング
             x = self.concat[i](x, z, axis=1)          # C4 + C3
-            x = self.up[i](x, v, train=train)    # -> C3
+            x = self.up[i](x, v, train=train)         # -> C3
 
         assert not zs 
         # Output
-        y  = self.out(x, train=train)       # (B, in_ch, H, W)
+        y  = self.out(x, train=train)                 # (B, in_ch, H, W)
         return y
 
     def __call__(self, *args, **kwargs):
