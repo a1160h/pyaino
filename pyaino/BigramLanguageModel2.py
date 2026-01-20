@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20251008 A.Inoue
+# 20260120 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -37,15 +37,19 @@ class FeedForward:
 class Block:
     """ Transformer block: communication followed by computation """
 
-    def __init__(self, emb_dim=64, n_head=4, block_size=500, **kwargs):
+    def __init__(self, emb_dim=64, n_head=4, block_size=500, rms=False, **kwargs):
         # emb_dim: embedding dimension, n_head: the number of heads we'd like
         self.sa = Neuron.MultiHeadSelfAttention(emb_dim, emb_dim//n_head, n_head,
                                                 **kwargs) # entropy制御はkwargsで指定
         self.ffwd = FeedForward(emb_dim, n_head, **kwargs)
         #self.ln1 = Neuron.Normalization(axis=-1, mask_enable=True) # layer normalization
         #self.ln2 = Neuron.Normalization(axis=-1, mask_enable=True) # layer normalization
-        self.ln1 = Neuron.LayerNormalization(**kwargs) # 20250515AI
-        self.ln2 = Neuron.LayerNormalization(**kwargs) # 20250515AI
+        if rms:
+            self.ln1 = Neuron.RMSNormalization(**kwargs)
+            self.ln2 = Neuron.RMSNormalization(**kwargs)
+        else:    
+            self.ln1 = Neuron.LayerNormalization(**kwargs) # 20250515AI
+            self.ln2 = Neuron.LayerNormalization(**kwargs) # 20250515AI
             
     def forward(self, x, mask=None, dropout=0.0):
         z = self.ln1.forward(x)
@@ -78,10 +82,13 @@ class Block:
 
 class LmHead:
     """ 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築 """
-    def __init__(self, emb_dim, vocab_size, matmul=True, unify=True,
+    def __init__(self, emb_dim, vocab_size, matmul=True, unify=True, rms=False, 
                        tile_size=200, optimize='AdamT', ignore=-1):
 
-        self.ln_f = Neuron.LayerNormalization(optimize=optimize) #mask_enable=True) 
+        if rms:
+            self.ln_f = Neuron.RMSNormalization(optimize=optimize)
+        else:    
+            self.ln_f = Neuron.LayerNormalization(optimize=optimize) #mask_enable=True) 
         if unify: # 損失関数までの一体処理
             self.linear_layer = Neuron.LinearLayerCrossEntropy(
                 emb_dim, vocab_size, matmul=matmul, tile_size=tile_size, optimize=optimize)#, **kwargs)
@@ -122,7 +129,7 @@ class LmHead:
 class ModelBase:
     """ 共通ベース """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=True,
+                 unify=True, rms=False,
                  optimize='AdamT',
                  #decayrate=0.999,
                  w_decay=0.01,
@@ -136,11 +143,12 @@ class ModelBase:
         self.embed = Neuron.PositionalEmbedding(
             vocab_size, block_size, emb_dim, **kwargs)
         self.blocks = Neuron.Sequential(
-            *[Block(emb_dim, n_head, block_size, **kwargs) for _ in range(n_layer)]
+            *[Block(emb_dim, n_head, block_size, rms, **kwargs)
+              for _ in range(n_layer)]
             )
         matmul = True                   
         tile_size = 1000 if vocab_size > 1000 else None 
-        self.lm_head = LmHead(emb_dim, vocab_size, matmul, unify, tile_size, optimize)
+        self.lm_head = LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, optimize)
 
         if not unify: # 以下2項は明示的に見せる必要がある
             self.softmax = Activators.Softmax()
@@ -236,12 +244,15 @@ class BigramLanguageModel(ModelBase):
 class BigramLanguageModel2(ModelBase):
     """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+                 unify=True, rms=False,
+                 optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
         super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, optimize, w_decay, ignore, **kwargs)
-        
-        self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
+                     unify, rms, optimize, w_decay, ignore, **kwargs)
+        if rms:
+            self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
+        else:    
+            self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
         self.pffwd = FeedForward(emb_dim, n_head, optimize=optimize, w_decay=w_decay, **kwargs)
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
@@ -271,22 +282,24 @@ class BigramLanguageModel2(ModelBase):
 class BigramLanguageModel3(BigramLanguageModel2):
     """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+                 unify=True, rms=False, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
         ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, optimize, w_decay, ignore, **kwargs)
-        
-        self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
+                     unify, rms, optimize, w_decay, ignore, **kwargs)
+        if rms:
+            self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
+        else:    
+            self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
                                         matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
    
 class BigramLanguageModel4(BigramLanguageModel2):
     """ GPT4：Embedding と最初の Block の間に 簡易LN + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+                 unify=True, rms=False, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
         ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, optimize, w_decay, ignore, **kwargs)
+                     unify, rms, optimize, w_decay, ignore, **kwargs)
         
         self.ln_pf = Neuron.Normalization(axis=-1)
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
@@ -295,10 +308,10 @@ class BigramLanguageModel4(BigramLanguageModel2):
 class BigramLanguageModel5(ModelBase):
     """ GPT5：Embedding と最初の Block の間に単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=True, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+                 unify=True, rms=False, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
 
         super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, optimize, w_decay, ignore, **kwargs)
+                     unify, rms, optimize, w_decay, ignore, **kwargs)
 
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
                                         matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
