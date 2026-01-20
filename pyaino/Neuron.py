@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2025.12.11 A.Inoue
+# 2026.01.20 A.Inoue
 
 import copy
 import warnings
@@ -3859,19 +3859,18 @@ class Normalization(Function):
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.init_parameters(x.shape)
         #y = x if self.inplace else x.copy() # inplaceではyはxと同一
-        mu = np.mean(x, axis=self.axis, keepdims=True)
-        sigma = np.std(x, axis=self.axis, keepdims=True)
-        self.sigma = sigma
-        self.mu = mu
-        if self.ppl and not train:
-            mu = self.mu_ppl 
-            sigma = self.sigma_ppl
+        self.mu = np.mean(x, axis=self.axis, keepdims=True)
+        mu = self.mu_ppl if self.ppl and not train else self.mu
         if self.inplace:
             y = x
             y -= mu
         else:
             y = x - mu          
-        y /= (sigma + self.eps)
+        var = np.mean(y*y, axis=self.axis, keepdims=True)
+        self.sigma = np.sqrt(var + self.eps) # 極小分散に対応
+        sigma = self.sigma_ppl if self.ppl and not train else self.sigma
+        y /= sigma
+
         if not self.mask_enable:
             return y
         self.mask = sigma < self.eps # sigmaが極小値の場合には正規化しない
@@ -3882,18 +3881,22 @@ class Normalization(Function):
         return y 
    
     def __backward__(self, gy):
-        gx = gy if self.inplace else gy.copy() # inplaceではyはxと同一
         x, = self.inputs
         y = self.get_outputs()       # inplaceではxと同一
-        sigma = self.sigma + self.eps
-        n = x.size//sigma.size       # 畳んだ大きさ
-        gsigma = np.sum(-gy * y, axis=self.axis, keepdims=True) / sigma # gyが書き変わる前に
-        gx /= sigma
+        n = x.size//self.sigma.size  # 畳んだ大きさ
+        gsigma = np.sum(-gy * y, axis=self.axis, keepdims=True) / self.sigma # gyが書き変わる前に
+
+        if self.inplace:
+            gx = gy
+            gx /= self.sigma     # gyを上書き
+        else:    
+            gx = gy / self.sigma # gyは壊さない
+        
         #print('\n# backward_1 gx\n', gx)
-        gmu = - np.sum(gx, axis=self.axis, keepdims=True) / n
-        gx += gmu
+        gmu = np.sum(gx, axis=self.axis, keepdims=True)
+        gx -= gmu / n
         #print('# backward_2 gx\n', gx, '\ny\n', y, '\ngsigma\n', gsigma)
-        gx += gsigma * y / n
+        gx += y * (gsigma / n)
         #print('# backward_3 gx\n', gx)
         if not self.mask_enable:
             return gx
@@ -4013,6 +4016,116 @@ class ScalarScale(Function):
 
 #### 正規化の汎用ベース #### 
 class GeneralNormalizationBase(Function):
+    def __init__(self, axis=None, ppl=False, scale_and_bias=False, exclude=False,
+                 eps=1e-12, inplace=False, 
+                 **kwargs):
+        super().__init__()
+        self.ppl = ppl
+        self.sb = scale_and_bias     
+        self.axis = axis
+        self.eps = eps
+        self.mu = None
+        self.sigma = None
+        self.inplace = inplace
+        if ppl: # 非訓練時に移動平均を使用(バッチノーマライゼーション)
+            self.mu_ppl = None
+            self.sigma_ppl = None
+            self.OFm = cf.eval_in_module('SGD', Optimizers) # 最適化関数は固定 
+            self.OFs = cf.eval_in_module('SGD', Optimizers) # 最適化関数は固定
+        if self.sb:
+            self.remain_axis = None
+            self.exclude = exclude   # 処理がaxisの指定に沿うのか否か
+            optimize = kwargs.pop('optimize',     'AdaGrad') # 勾配降下法
+            self.OFg = cf.eval_in_module(optimize, Optimizers) # 最適化関数
+            self.OFb = cf.eval_in_module(optimize, Optimizers) # 最適化関数
+            self.gamma = None
+            self.beta  = None
+
+    def init_parameters(self, shape):
+        if self.ppl:
+            """ 軸の指定に従いmuとsigmaの形状を決めて初期化 """
+            mu_sigma_shape, _ = set_axis_and_shape(shape, self.axis, True)
+            self.mu_ppl   = np.zeros(mu_sigma_shape, dtype=Config.dtype) # 全体平均
+            self.sigma_ppl = np.ones(mu_sigma_shape, dtype=Config.dtype) # 全体分散
+          
+        if self.sb:
+            """ 軸の指定に従いparameterの形状を決めて初期化、指定外の軸も設定 """
+            parameter_shape, remain_axis = set_axis_and_shape(shape, self.axis, self.exclude)
+            self.gamma = np.ones(parameter_shape, dtype=Config.dtype)    # 広がり                    
+            self.beta = np.zeros(parameter_shape, dtype=Config.dtype)    # オフセット                    
+            self.remain_axis = remain_axis # 逆伝播に必要
+
+    def update(self, eta=0.001, **kwargs):
+        if self.ppl:
+            self.OFm.update(self.mu_ppl,    self.mu_ppl    - self.mu,    eta=0.1)
+            self.OFs.update(self.sigma_ppl, self.sigma_ppl - self.sigma, eta=0.1)
+
+        if self.sb:
+            self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
+            self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
+
+    def __forward__(self, x, *, train=False):
+        if (self.ppl and self.mu_ppl is None) or (self.sb and self.gamma is None):
+            self.init_parameters(x.shape)
+            
+        self.mu = np.mean(x, axis=self.axis, keepdims=True)
+        mu = self.mu_ppl if self.ppl and not train else self.mu
+        y = x - mu                           # xは逆伝播のために温存
+        var = np.mean(y*y, axis=self.axis, keepdims=True) # 分散
+        self.sigma = np.sqrt(var + self.eps) # 極小分散に対応
+        sigma = self.sigma_ppl if self.ppl and not train else self.sigma
+
+        if self.sb:
+            y *= (self.gamma/sigma)          # Norm/sbの除乗算を同時に
+            y += self.beta
+        else:
+            y /= sigma
+           
+        return y        
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        #y = self.get_outputs()
+        n = x.size // self.sigma.size        # 正規化対象の要素数
+        z = (x - self.mu) / self.sigma       # 中間値：Norm出力=Scale&Bias入力
+
+        if self.sb:
+            self.gbeta  = np.sum(gy, axis=self.remain_axis, keepdims=True)
+            self.ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
+            gx = gy * self.gamma
+        else:
+            gx = gy if self.inplace else gy.copy()
+
+        gsigma = np.sum(-gx * z, axis=self.axis, keepdims=True) / self.sigma 
+        gx /= self.sigma
+        gmu = np.sum(gx, axis=self.axis, keepdims=True) 
+        gx -= (gmu / n)
+        gx += z * (gsigma / n)
+        return gx 
+
+    def __backward__bkup(self, gy):
+        x, = self.inputs
+        #y = self.get_outputs()
+        n = x.size // self.sigma.size        # 正規化対象の要素数
+        z = (x - self.mu) / self.sigma       # Norm出力=Scale&Bias入力
+
+        if self.sb:
+            self.gbeta  = np.sum(gy, axis=self.remain_axis, keepdims=True)
+            self.ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
+            gx = gy * self.gamma
+        else:
+            gx = gy
+
+        sum_gx = np.sum(gx, axis=self.axis, keepdims=True)
+        sum_gx_y = np.sum(gx * z, axis=self.axis, keepdims=True)
+        gx = (gx - sum_gx / n - z * (sum_gx_y / n)) / self.sigma
+
+        return gx
+
+
+
+#### 正規化の汎用ベース #### 
+class GeneralNormalizationBase2(Function):
     def __init__(self, axis=None, ppl=False, scale_and_bias=False, exclude=False,
                        inplace=False, **kwargs):
         super().__init__()
@@ -4136,6 +4249,207 @@ class InstanceNorm2d(GeneralNormalizationBase):
         kwargs['inplace']        = inplace
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
+
+#### RMS正規化の汎用ベース #### 
+class RootMeanSquareNormalization(Function):
+    def __init__(self, axis=None, ppl=False, scale_and_bias=False, exclude=False,
+                 eps=1e-12, inplace=False, 
+                 **kwargs):
+        super().__init__()
+        self.ppl = ppl
+        self.sb = scale_and_bias     
+        self.axis = axis
+        self.eps = eps
+        self.sigma = None
+        self.inplace = inplace
+        if ppl: # 非訓練時に移動平均を使用(バッチノーマライゼーション)
+            self.sigma_ppl = None
+            self.OFs = cf.eval_in_module('SGD', Optimizers) # 最適化関数は固定
+        if self.sb:
+            self.remain_axis = None
+            self.exclude = exclude   # 処理がaxisの指定に沿うのか否か
+            optimize = kwargs.pop('optimize',     'AdaGrad') # 勾配降下法
+            self.OFg = cf.eval_in_module(optimize, Optimizers) # 最適化関数
+            self.OFb = cf.eval_in_module(optimize, Optimizers) # 最適化関数
+            self.gamma = None
+            self.beta  = None
+
+    def init_parameters(self, shape):
+        if self.ppl:
+            """ 軸の指定に従いmuとsigmaの形状を決めて初期化 """
+            mu_sigma_shape, _ = set_axis_and_shape(shape, self.axis, True)
+            self.sigma_ppl = np.ones(mu_sigma_shape, dtype=Config.dtype) # 全体分散
+          
+        if self.sb:
+            """ 軸の指定に従いparameterの形状を決めて初期化、指定外の軸も設定 """
+            parameter_shape, remain_axis = set_axis_and_shape(shape, self.axis, self.exclude)
+            self.gamma = np.ones(parameter_shape, dtype=Config.dtype)    # 広がり                    
+            self.beta = np.zeros(parameter_shape, dtype=Config.dtype)    # オフセット                    
+            self.remain_axis = remain_axis # 逆伝播に必要
+
+    def update(self, eta=0.001, **kwargs):
+        if self.ppl:
+            self.OFs.update(self.sigma_ppl, self.sigma_ppl - self.sigma, eta=0.1)
+
+        if self.sb:
+            self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
+            self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
+
+    def __forward__(self, x, *, train=False):
+        if (self.ppl and self.sigma_ppl is None) or (self.sb and self.gamma is None):
+            self.init_parameters(x.shape)
+            
+        meansquare = np.mean(x*x, axis=self.axis, keepdims=True) # 二乗平均
+        self.sigma = np.sqrt(meansquare + self.eps) # 極小値に対応
+        sigma = self.sigma_ppl if self.ppl and not train else self.sigma
+
+        if self.sb:
+            y = x * (self.gamma/sigma)          # Norm/sbの除乗算を同時に
+            y += self.beta
+        else:
+            y = x / sigma
+           
+        return y        
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        #y = self.get_outputs()
+        n = x.size // self.sigma.size        # 正規化対象の要素数
+        z = x / self.sigma                   # 中間値：Norm出力=Scale&Bias入力
+
+        if self.sb:
+            self.gbeta  = np.sum(gy, axis=self.remain_axis, keepdims=True)
+            self.ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
+            gx = gy * self.gamma
+        else:
+            gx = gy if self.inplace else gy.copy()
+
+        gsigma = np.sum(-gx * z, axis=self.axis, keepdims=True) / self.sigma 
+        gx /= self.sigma
+        gx += z * (gsigma / n)
+        return gx 
+
+# ============================================
+# RMSNorm wrappers (RootMeanSquareNormalization)
+# ============================================
+
+class RMSNormalization(RootMeanSquareNormalization):
+    """
+    いわゆる RMSNorm（Transformerの標準用途）
+    - 正規化軸と gamma/beta の軸は同じ（exclude=False）
+    - 推論時に統計固定しない（ppl=False）
+    """
+    def __init__(self, axis=-1, scale_and_bias=True, inplace=False, **kwargs):
+        kwargs['axis']           = axis
+        kwargs['exclude']        = False
+        kwargs['ppl']            = False
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+
+class rms_normalization(RMSNormalization):
+    pass
+
+
+class RMSNorm1d(RootMeanSquareNormalization):
+    """
+    1D系列向けのRMSNorm（例: (B, T, C) の T,C をまとめて正規化）
+    - LayerNorm1d の設計と揃える（axis=-2,-1）
+    """
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        kwargs['axis']           = -2, -1
+        kwargs['exclude']        = False
+        kwargs['ppl']            = False
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+
+class rms_norm_1d(RMSNorm1d):
+    pass
+
+
+class RMSNorm2d(RootMeanSquareNormalization):
+    """
+    2D画像向けのRMSNorm（例: (B, C, H, W) の C,H,W をまとめて正規化）
+    - LayerNorm2d の設計と揃える（axis=-3,-2,-1）
+    """
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        kwargs['axis']           = -3, -2, -1
+        kwargs['exclude']        = False
+        kwargs['ppl']            = False
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+
+class rms_norm_2d(RMSNorm2d):
+    pass
+
+
+# --------------------------------------------
+# (Optional) "RMSBatchNorm" 系：ppl=True を使いたい場合
+# ※ 通常はRMSNormに running統計は要らないが、
+#    あなたの ppl 実装を活かす用途があるなら用意しておく
+# --------------------------------------------
+
+class RMSBatchNormalization(RootMeanSquareNormalization):
+    """
+    BatchNormalization相当の「RMS版」。
+    - 正規化軸はバッチ軸
+    - gamma/beta はバッチ以外（exclude=True）
+    - ppl=True で推論時に sigma_ppl を使用（移動平均） :contentReference[oaicite:3]{index=3}
+    """
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        kwargs['axis']           = 0
+        kwargs['exclude']        = True
+        kwargs['ppl']            = True
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+
+class rms_batch_normalization(RMSBatchNormalization):
+    pass
+
+
+class RMSBatchNorm1d(RootMeanSquareNormalization):
+    """
+    BatchNorm1d相当の「RMS版」。
+    - 正規化軸: batch + length
+    - gamma/beta: それ以外（通常はチャネル）
+    """
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        kwargs['axis']           = 0, -1
+        kwargs['exclude']        = True
+        kwargs['ppl']            = True
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+
+class rms_batch_norm_1d(RMSBatchNorm1d):
+    pass
+
+
+class RMSBatchNorm2d(RootMeanSquareNormalization):
+    """
+    BatchNorm2d相当の「RMS版」。
+    - 正規化軸: batch + H + W
+    - gamma/beta: それ以外（通常はチャネル）
+    """
+    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        kwargs['axis']           = 0, -2, -1
+        kwargs['exclude']        = True
+        kwargs['ppl']            = True
+        kwargs['inplace']        = inplace
+        kwargs['scale_and_bias'] = scale_and_bias
+        super().__init__(**kwargs)
+
+
+class rms_batch_norm_2d(RMSBatchNorm2d):
+    pass
 
 #### 層正規化 #####################################################
 class LayerNormalization_bkup(Function):
