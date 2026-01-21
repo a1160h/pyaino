@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.01.20 A.Inoue
+# 2026.01.21 A.Inoue
 
 import copy
 import warnings
@@ -201,7 +201,7 @@ class LinearLayer(Function):
 
     def __forward__(self, x, **kwargs):           # kwargsは使わない
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(x, w, b, gamma)
@@ -229,7 +229,7 @@ class LinearLayerCrossEntropy(LinearLayer):
     def __forward__(self, x, t=None, **kwargs):       # kwargsは使わない
         
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         w, b, gamma = self.parameters()
 
@@ -509,7 +509,7 @@ class NeuronLayer(BaseLayer): # ニューロンの基本機能
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         w, b, gamma = self.parameters()
             
@@ -583,7 +583,7 @@ class Conv1dLayer(BaseLayer):
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Iw, M, Fw, stride, pad, Ow = self.config
         x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
@@ -661,7 +661,7 @@ class Conv1dTransposeLayer(BaseLayer):
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Iw, M, Fw, stride, pad, Ow = self.config
         x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
@@ -799,7 +799,7 @@ class Conv2dLayer(BaseLayer):
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
@@ -884,7 +884,7 @@ class Conv2dTransposeLayer(BaseLayer):
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         self.x_shape = x.shape
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
@@ -1060,7 +1060,7 @@ class Pooling1dLayer(Function):
             
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Iw, pool, pad, Ow = self.config
         #B = x.size // (C*Ih*Iw)
@@ -1126,7 +1126,7 @@ class UnPooling1dLayer(Function):
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Iw, pool, pad, Ow = self.config
         #B = x.size // (C*Iw)
@@ -1241,7 +1241,7 @@ class Pooling2dLayer(Function):
             
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config
         #B = x.size // (C*Ih*Iw)
@@ -1320,7 +1320,7 @@ class UnPooling2dLayer(Function):
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config
         #B = x.size // (C*Ih*Iw)
@@ -1417,7 +1417,7 @@ class GlobalAveragePooling(Function):
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         y = np.mean(x, axis=(2, 3))
         if self.DO:
@@ -1531,7 +1531,7 @@ class Interpolate2d(Function):
 
     def __forward__(self, x):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         y = self.impl.forward(x)
         return y
@@ -1662,7 +1662,7 @@ class Interpolate2dNearest(Interpolate2d):
 
     def __forward__(self, x):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         prefix, Ih, Iw, Oh, Ow, mode = self.config
 
@@ -1756,7 +1756,7 @@ class MaskedExpansionLayer(BaseLayer):
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         B = x.size // (C*Ih*Iw)                        # B = x.shape[0] = len(x)
@@ -1983,7 +1983,7 @@ class LatentLayer(BaseLayer):
 
     def forward(self, x, train=False, kl_loss=False):
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         m, n = self.config
         self.x = x
@@ -2177,7 +2177,7 @@ class RnnBaseLayer(Function):
 
         """
         if None in self.config:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
 
         w, v, b = self.parameters()
@@ -3050,7 +3050,7 @@ class SelfAttention(Function):
 
     def __forward__(self, x, *, mask=None, dropout=0.0):
         if None in (*self.config, *self.linear_i.config, *self.linear_o.config):
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         z = self.linear_i.forward(x)
         key, query, value = np.split(z, 3, axis=-1)
@@ -3131,7 +3131,7 @@ class MultiHeadSelfAttention2(Function):
                     *self.linear_k.config,
                     *self.linear_q.config,
                     *self.linear_o.config):
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         emb_dim, head_dim, n_head = self.config    
         value = self.linear_v.forward(x)
@@ -3298,7 +3298,7 @@ class ContextualSelfAttention(Function):
 
     def __forward__(self, x):
         if None in self.config or self.q is None:
-            print(self.__class__.__name__, '.input.shape', x.shape)
+            #print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
         m, n = self.config
         B, _, _ = x.shape
@@ -3361,7 +3361,7 @@ class ContextualSelfAttention_bkup(Function):
 
     def __forward__(self, x):
         if None in self.config:
-            print(self.__class__.__name__, '.input.shape', x.shape)
+            #print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
 
         w, b, q = self.parameters()    
@@ -3403,7 +3403,7 @@ class ContextualSelfAttentionZ1(ContextualSelfAttention):
 
     def __forward__(self, x):
         if None in self.config:
-            print(self.__class__.__name__, '.input.shape', x.shape)
+            #print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
 
         w, b, q = self.parameters()     
@@ -3493,7 +3493,7 @@ class ContextualSelfAttentionZ2(ContextualSelfAttention):
 
     def __forward__(self, x):
         if None in self.config:
-            print(self.__class__.__name__, '.input.shape', x.shape)
+            #print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
         if self.w is None or self.b is None or self.q is None:
             self.init_parameter()
@@ -3585,7 +3585,7 @@ class ContextualSelfAttentionZ4(ContextualSelfAttention):
 
     def __forward__(self, x):
         if None in self.config:
-            print(self.__class__.__name__, '.input.shape', x.shape)
+            #print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
         if self.w is None or self.b is None or self.q is None:
             self.init_parameter()
@@ -4329,17 +4329,10 @@ class RootMeanSquareNormalization(Function):
         gx += z * (gsigma / n)
         return gx 
 
-# ============================================
-# RMSNorm wrappers (RootMeanSquareNormalization)
-# ============================================
-
 class RMSNormalization(RootMeanSquareNormalization):
-    """
-    いわゆる RMSNorm（Transformerの標準用途）
-    - 正規化軸と gamma/beta の軸は同じ（exclude=False）
-    - 推論時に統計固定しない（ppl=False）
-    """
     def __init__(self, axis=-1, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化もscale_and_biasも同じく特長軸をaxisで指定
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = axis
         kwargs['exclude']        = False
         kwargs['ppl']            = False
@@ -4347,17 +4340,13 @@ class RMSNormalization(RootMeanSquareNormalization):
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
 
-
 class rms_normalization(RMSNormalization):
     pass
 
-
 class RMSNorm1d(RootMeanSquareNormalization):
-    """
-    1D系列向けのRMSNorm（例: (B, T, C) の T,C をまとめて正規化）
-    - LayerNorm1d の設計と揃える（axis=-2,-1）
-    """
     def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化もscale_and_biasも同じく特長軸をaxisで指定
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = -2, -1
         kwargs['exclude']        = False
         kwargs['ppl']            = False
@@ -4365,17 +4354,13 @@ class RMSNorm1d(RootMeanSquareNormalization):
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
 
-
 class rms_norm_1d(RMSNorm1d):
     pass
 
-
 class RMSNorm2d(RootMeanSquareNormalization):
-    """
-    2D画像向けのRMSNorm（例: (B, C, H, W) の C,H,W をまとめて正規化）
-    - LayerNorm2d の設計と揃える（axis=-3,-2,-1）
-    """
     def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化もscale_and_biasも同じく特長軸をaxisで指定
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = -3, -2, -1
         kwargs['exclude']        = False
         kwargs['ppl']            = False
@@ -4383,25 +4368,14 @@ class RMSNorm2d(RootMeanSquareNormalization):
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
 
-
 class rms_norm_2d(RMSNorm2d):
     pass
 
-
-# --------------------------------------------
-# (Optional) "RMSBatchNorm" 系：ppl=True を使いたい場合
-# ※ 通常はRMSNormに running統計は要らないが、
-#    あなたの ppl 実装を活かす用途があるなら用意しておく
-# --------------------------------------------
-
 class RMSBatchNormalization(RootMeanSquareNormalization):
-    """
-    BatchNormalization相当の「RMS版」。
-    - 正規化軸はバッチ軸
-    - gamma/beta はバッチ以外（exclude=True）
-    - ppl=True で推論時に sigma_ppl を使用（移動平均） :contentReference[oaicite:3]{index=3}
-    """
     def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化の軸はバッチ軸0だが、
+        # scale_and_biasの軸は特長軸すなわち0以外の軸
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = 0
         kwargs['exclude']        = True
         kwargs['ppl']            = True
@@ -4409,18 +4383,14 @@ class RMSBatchNormalization(RootMeanSquareNormalization):
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
 
-
 class rms_batch_normalization(RMSBatchNormalization):
     pass
 
-
 class RMSBatchNorm1d(RootMeanSquareNormalization):
-    """
-    BatchNorm1d相当の「RMS版」。
-    - 正規化軸: batch + length
-    - gamma/beta: それ以外（通常はチャネル）
-    """
     def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化の軸はバッチ軸0+最後の空間軸(長さ軸)-1だが、
+        # scale_and_biasの軸はこれ以外の軸
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = 0, -1
         kwargs['exclude']        = True
         kwargs['ppl']            = True
@@ -4428,25 +4398,20 @@ class RMSBatchNorm1d(RootMeanSquareNormalization):
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
 
-
 class rms_batch_norm_1d(RMSBatchNorm1d):
     pass
 
-
 class RMSBatchNorm2d(RootMeanSquareNormalization):
-    """
-    BatchNorm2d相当の「RMS版」。
-    - 正規化軸: batch + H + W
-    - gamma/beta: それ以外（通常はチャネル）
-    """
     def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+        # 正規化の軸はバッチ軸0+Ih+Iwだが、
+        # scale_and_biasの軸はこれ以外の軸すなわちチャネル軸
+        # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = 0, -2, -1
         kwargs['exclude']        = True
         kwargs['ppl']            = True
         kwargs['inplace']        = inplace
         kwargs['scale_and_bias'] = scale_and_bias
         super().__init__(**kwargs)
-
 
 class rms_batch_norm_2d(RMSBatchNorm2d):
     pass
@@ -4516,7 +4481,7 @@ class batch_normalization2(Function):
                
     def __forward__(self, x, *, train=False):
         if self.mu_ppl is None:
-            print(self.__class__.__name__, 'input.shape', x.shape)
+            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.init_parameters(x.shape[1:])
         '''
         画像の周辺の背景部分などではバッチ内で同一値となるのは当然起きる
