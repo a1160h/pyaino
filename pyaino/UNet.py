@@ -1,5 +1,5 @@
 # UNet
-# 20260122 A.Inoue
+# 20260123 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -10,55 +10,41 @@ from pyaino import common_function as cf
 import warnings
 
 class ConvBlock:
-    def __init__(self, in_ch, out_ch, mlp_dim=None, **kwargs):
-        print('__init__', self.__class__.__name__, in_ch, out_ch,
-              mlp_dim, kwargs)
-
+    def __init__(self, in_ch, out_ch, proj=False,
+                 **kwargs):
+        print('__init__', self.__class__.__name__, in_ch, out_ch, kwargs)
         self.in_ch = in_ch
         self.out_ch = out_ch
-        self.mlp_dim = mlp_dim
-       
         # Conv 本体（bottleneck 構造）
-        self.convs = neuron.Sequential(
-            neuron.Conv2dLayer(out_ch, 3, 1, **kwargs),
-            neuron.Conv2dLayer(out_ch, 3, 1, **kwargs),
-        )
-
-        # embedding 用 MLP
-        if mlp_dim is not None:
-            opt_mlpn = {'batchnorm': kwargs.get('batchnorm'),
-                        'layernorm': kwargs.get('layernorm'),
-                        'activate':  kwargs.get('activate'),
-                        'optimize':  kwargs.get('optimize', 'SGD'),
+        self.convs = [neuron.Conv2dLayer(out_ch, 3, 1, **kwargs),
+                      neuron.Conv2dLayer(out_ch, 3, 1, **kwargs)]
+        # embedding からのベクトル加算用
+        if proj:
+            opt_proj = {'optimize':  kwargs.get('optimize', 'SGD'),
                         'w_decay':   kwargs.get('w_decay')}
-            opt_mlpo = {'optimize':  kwargs.get('optimize', 'SGD'),
-                        'w_decay':   kwargs.get('w_decay')}
-            self.mlp = neuron.Sequential(
-                neuron.NeuronLayer(mlp_dim, **opt_mlpn),
-                neuron.LinearLayer(in_ch, **opt_mlpo),
-            )
+            self.proj = neuron.LinearLayer(out_ch, **opt_proj) # 出力幅未定
         else:
-            self.mlp = None
-        self.mlp_used = False      
+            self.proj = None
+        self.proj_used = False      
 
     def forward(self, x, v=None, train=True):
-        self.mlp_used = False
-        if self.mlp is None or v is None:
-            return self.convs(x, train=train)
-        B, C, _, _ = x.shape
-        v = self.mlp(v)
-        v = v.reshape(B,C,1,1)
-        self.mlp_used = True  
-        return self.convs(x + v, train=train)
+        self.proj_used = False
+        y = self.convs[0](x, train=train)
+        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
+            z = self.proj(v, train=train)               # projで形状を合わせて
+            y = y + z[:,:,None,None]                    # 加算注入
+            self.proj_used = True  
+        y = self.convs[1](y, train=train)   
+        return y
         
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
     def update(self, eta=0.001, **kwargs):
-        #print('### mlp.used =', self.mlp_used)
-        self.convs.update(eta=eta, **kwargs)
-        if self.mlp_used:
-            self.mlp.update(eta=eta, **kwargs)
+        if self.proj is not None and self.proj_used:
+            self.proj.update(eta=eta, **kwargs)
+        for conv in self.convs:
+            conv.update(eta=eta, **kwargs)    
         
 class ConvBlockBottleneck(ConvBlock):
     """
@@ -67,49 +53,48 @@ class ConvBlockBottleneck(ConvBlock):
     - mid_ch -> mid_ch (3x3)
     - mid_ch -> out_ch (1x1)
     """
-    def __init__(self, in_ch, out_ch, mlp_dim=None, 
+    def __init__(self, in_ch, out_ch, proj=False, 
                  bottleneck_ratio=0.5, min_mid_ch=16,
                  **kwargs):
         print('__init__', self.__class__.__name__, in_ch, out_ch,
-              mlp_dim, bottleneck_ratio, min_mid_ch, kwargs)
-        
+              proj, bottleneck_ratio, min_mid_ch, kwargs)
         self.in_ch = in_ch
         self.out_ch = out_ch
-        self.mlp_dim = mlp_dim
        
         # mid_ch を下限を設けて決定
         mid_ch = max(int(in_ch * bottleneck_ratio), min_mid_ch)
 
         # Conv 本体（bottleneck 構造）
-        self.convs = neuron.Sequential(
+        self.convs = [
             neuron.Conv2dLayer(mid_ch, 1, 0, **kwargs), # 1x1: in_ch  -> mid_ch
             neuron.Conv2dLayer(mid_ch, 3, 1, **kwargs), # 3x3: mid_ch -> mid_ch（padding=1 前提）
             neuron.Conv2dLayer(out_ch, 1, 0, **kwargs), # 1x1: mid_ch -> out_ch
-        )
-
-        # embedding 用 MLP
-        if mlp_dim is not None:
-            opt_mlpn = {'batchnorm': kwargs.get('batchnorm'),
-                        'layernorm': kwargs.get('layernorm'),
-                        'activate':  kwargs.get('activate'),
-                        'optimize':  kwargs.get('optimize', 'SGD'),
+        ]
+        # embedding からのベクトル加算用
+        if proj:
+            opt_proj = {'optimize':  kwargs.get('optimize', 'SGD'),
                         'w_decay':   kwargs.get('w_decay')}
-            opt_mlpo = {'optimize':  kwargs.get('optimize', 'SGD'),
-                        'w_decay':   kwargs.get('w_decay')}
-            self.mlp = neuron.Sequential(
-                neuron.NeuronLayer(mlp_dim, **opt_mlpn),
-                neuron.LinearLayer(in_ch, **opt_mlpo),
-            )
+            self.proj = neuron.LinearLayer(mid_ch, **opt_proj)
         else:
-            self.mlp = None
-        self.mlp_used = False      
+            self.proj = None
+        self.proj_used = False      
 
+    def forward(self, x, v=None, train=True):
+        self.proj_used = False
+        y = self.convs[0](x, train=train)
+        y = self.convs[1](y, train=train)
+        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
+            z = self.proj(v, train=train)               # projで形状を合わせて
+            y = y + z[:,:,None,None]                    # 加算注入
+            self.proj_used = True  
+        y = self.convs[2](y, train=train)   
+        return y
 
 class UNet:
     """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
 
     def __init__(self, depth=3, in_ch=1,
-                 time_embed=False, num_labels=None, embed_dim=128, mlp_dim=None, 
+                 time_embed=False, num_labels=None, embed_dim=128,  
                  base_ch=32, bottleneck=True, bottleneck_ratio=0.5, 
                  batchnorm=None, layernorm=None, activate='ReLU', 
                  optimize='AdamT', w_decay=0.01):
@@ -127,28 +112,46 @@ class UNet:
         self.bottleneck_ratio = bottleneck_ratio
 
         # timeおよびlabelのembeddingとその次元変換用のmlp
-        if time_embed:
-            self.pos_encoding = neuron.PositionalEncoding(dimension=embed_dim)
-            if mlp_dim is None:
-                mlp_dim = in_ch
+        if time_embed or (num_labels is not None):
+            options_for_mlpn = {'batchnorm' : batchnorm,
+                                'layernorm' : layernorm,
+                                'activate' : activate,
+                                'optimize' : optimize,
+                                'w_decay'  : w_decay}
+            options_for_mlpo = {'optimize' : optimize,
+                                'w_decay'  : w_decay}
+            proj = True  # Convのprojを有効に
         else:
-            self.pos_encoding = None
+            proj = False # Convのprojを無効に
+
+        if time_embed:
+            self.time_mlp = neuron.Sequential(
+                neuron.PositionalEncoding(dimension=embed_dim),
+                neuron.NeuronLayer(base_ch*4, **options_for_mlpn),
+                neuron.LinearLayer(embed_dim, **options_for_mlpo))
+        else:
+            self.time_mlp = None
 
         if num_labels is not None:
-            self.label_embed = neuron.Embedding(num_labels, embed_dim, optimize=optimize)
-            if mlp_dim is None:
-                mlp_dim = in_ch
+            self.label_mlp = neuron.Sequential(
+                neuron.Embedding(num_labels, embed_dim, optimize=optimize),
+                neuron.NeuronLayer(base_ch*4, **options_for_mlpn),
+                neuron.LinearLayer(embed_dim, **options_for_mlpo))
         else:
-            self.label_embed = None
+            self.label_mlp = None
 
+        self.time_mlp_used = None
+        self.label_mlp_used = None
+
+        # 本体＝畳込みブロック
         if bottleneck:
             Conv = ConvBlockBottleneck
         else:
             Conv = ConvBlock
 
-        options_for_blocks = {'mlp_dim' : mlp_dim,
-                              'batchnorm' : batchnorm,
-                              'layernorm' : layernorm,
+        options_for_blocks = {'proj'     : proj,      # projの有効無効を指定
+                              'batchnorm': batchnorm,
+                              'layernorm': layernorm,
                               'activate' : activate,
                               'optimize' : optimize,
                               'w_decay'  : w_decay}
@@ -156,8 +159,8 @@ class UNet:
             options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
 
         options_for_ol     = {'optimize' : optimize,
-                              'batchnorm' : batchnorm,
-                              'layernorm' : layernorm,
+                              'batchnorm': batchnorm,
+                              'layernorm': layernorm,
                               'w_decay'  : w_decay}
 
         print(options_for_blocks, options_for_ol)
@@ -188,25 +191,31 @@ class UNet:
     def forward(self, x, timesteps=None, labels=None, train=True):
         assert x.shape[1] == self.in_ch, \
                              f"input C={x.shape[1]} but model in_ch={self.in_ch}"
-
+        self.time_mlp_used = False
+        self.label_mlp_used = False
         v = None
-        if self.pos_encoding is None or timesteps is None:
-            pass
+        # time/label embedding -> mlp
+        if self.time_mlp is None or timesteps is None:
+            time_ctx = 0
         else:
             t0 = timesteps
-            #t0 -= 1   # Diffuser(1..T) → PosEnc(0..T-1)
-            t0 = self.normalize_t(t0, x.shape[0]) # バッチサイズだけ合わせる
-            v = self.pos_encoding(t0)
+            t0 = self.normalize_t(t0, x.shape[0])    # バッチサイズだけ合わせる
             if (t0 < 0).any() or (t0 >= 1000).any(): # 仮20260107AI
                 print('###debug t0', t0)
+            time_ctx = self.time_mlp(t0, train=train)
+            self.time_mlp_used = True
 
-        if self.label_embed is None or labels is None:
-            pass
-        elif v is None:
-            v = self.label_embed(labels)
+        if self.label_mlp is None or labels is None:
+            label_ctx = 0
         else:
-            v += self.label_embed(labels)
+            label_ctx = self.label_mlp(labels, train=train)
+            self.label_mlp_used = True
 
+        v = time_ctx + label_ctx
+        
+        if isinstance(v, (int, float)) and v == 0:   # 仮処置20260123AI
+            v = None
+            
         shapes = []
         zs = []    
 
@@ -239,6 +248,11 @@ class UNet:
         return self.forward(*args, **kwargs)
 
     def update(self, eta=0.001, **kwargs):
+        if self.time_mlp is not None and self.time_mlp_used:
+            self.time_mlp.update(eta=eta, **kwargs)     
+        if self.label_mlp is not None and self.label_mlp_used:
+            self.label_mlp.update(eta=eta, **kwargs)     
+
         for i in range(self.depth):
             self.down[i].update(eta=eta, **kwargs)
         self.bot.update(eta=eta, **kwargs)
@@ -250,23 +264,23 @@ class UNet:
         """
         x: (B,C,H,W)
         t: int (scalar) or array-like (B,)
-        returns: t_vec (B,) int64
+        returns: t_vec (B,) int32
         """
 
         # スカラ int の場合
         if isinstance(t, (int,)):
-            return np.full((B,), t, dtype=np.int64)
+            return np.full((B,), t, dtype=np.int32)
 
-        # numpy/cupy scalar の場合（np.int64(5) 等）
+        # numpy/cupy scalar の場合（np.int32(5) 等）
         t_arr = np.asarray(t)
         if getattr(t_arr, "ndim", 0) == 0:
-            return np.full((B,), int(t_arr), dtype=np.int64)
+            return np.full((B,), int(t_arr), dtype=np.int32)
 
         # ベクトルの場合
         if t_arr.shape != (B,):
             raise ValueError(f"t must be scalar or shape (B,), got {t_arr.shape}, B={B}")
 
-        return t_arr.astype(np.int64, copy=False)
+        return t_arr.astype(np.int32, copy=False)
 
 
 
@@ -287,10 +301,10 @@ if __name__=='__main__':
 
     # -- モデルの生成 -- 
     model = UNet(in_ch=3,
-                 depth=1,time_embed=True,
+                 depth=1,
+                 time_embed=True,
                  num_labels=10,
-                 mlp_dim=128,
-                 bottleneck=False,#True,
+                 bottleneck=False, #True,
                  )
     loss_func = lf.MeanSquaredError()   # 再構成誤差
 
@@ -311,9 +325,10 @@ if __name__=='__main__':
             t = target_train[mb_index]
 
             # 順伝播と逆伝播→更新
-            y = model.forward(x, labels=t)#, train=True, dropout=0.3)
+            y = model.forward(x, labels=t, train=True)#, dropout=0.3)
             l = loss_func(y, x) 
             l.backtrace()
+            
             model.update(eta=0.0003)#, g_clip=2.5)
             acc = cf.get_accuracy(y, x)  
             errors.append(float(l)) 

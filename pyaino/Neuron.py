@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.01.21 A.Inoue
+# 2026.01.23 A.Inoue
 
 import copy
 import warnings
@@ -351,7 +351,7 @@ class TileTargetScanner:
         if not t_in_tile.any():
             return zt
         coords = np.where(t_in_tile)         # 対象バッチ番号
-        idx_in_tile = (t[coords] - start).astype(np.int64)
+        idx_in_tile = (t[coords] - start).astype(np.int32)
 
         #print(start, '->', end, 'zt =', zt, 't =', t,
         #      'coords =', coords, '\ntile_z\n', tile_z, '\n', tile_z[coords])
@@ -370,7 +370,7 @@ class TileTargetScanner:
         if not t_in_tile.any():
             return zt
         coords = np.where(t_in_tile)                # 先行軸の座標タプル
-        idx_in_tile = (t[coords] - start).astype(np.int64)
+        idx_in_tile = (t[coords] - start).astype(np.int32)
         zt[coords] = tile_z[coords + (idx_in_tile,)] # 多次元インデクスとして結合
         return zt
 
@@ -382,7 +382,7 @@ class TileTargetScanner:
         if not t_in_tile.any():
             return tile_gz
         coords = np.where(t_in_tile)
-        idx_in_tile = (t[coords] - start).astype(np.int64)
+        idx_in_tile = (t[coords] - start).astype(np.int32)
         index_tuple = coords + (idx_in_tile,)
         self.add_at(tile_gz, index_tuple, value)
         return tile_gz
@@ -395,7 +395,7 @@ class TileTargetScanner:
         if not t_in_tile.any():
             return tile_gz
         coords = np.where(t_in_tile)
-        idx_in_tile = (t[coords] - start).astype(np.int64)
+        idx_in_tile = (t[coords] - start).astype(np.int32)
         tile_gz[coords + (idx_in_tile,)] += value
         return tile_gz
 
@@ -1576,8 +1576,8 @@ class Interpolate2dGeneral:
         pos_w = np.arange(Ow, dtype=Config.dtype) * scale_w  # (Ow,)
         pos_hi = np.floor(pos_h)  
         pos_wi = np.floor(pos_w)  
-        h0 = pos_hi.astype(np.int64)
-        w0 = pos_wi.astype(np.int64)
+        h0 = pos_hi.astype(np.int32)
+        w0 = pos_wi.astype(np.int32)
         h1 = h0 + 1
         w1 = w0 + 1
         h0 = np.clip(h0, 0, Ih - 1)
@@ -1672,8 +1672,8 @@ class Interpolate2dNearest(Interpolate2d):
         scale_h = Ih / Oh
         scale_w = Iw / Ow
         
-        h0 = (np.arange(Oh) * scale_h).astype(np.int64)  # h0.shape=(Oh,)
-        w0 = (np.arange(Ow) * scale_w).astype(np.int64)  # w0.shape=(Ow,)
+        h0 = (np.arange(Oh) * scale_h).astype(np.int32)  # h0.shape=(Oh,)
+        w0 = (np.arange(Ow) * scale_w).astype(np.int32)  # w0.shape=(Ow,)
         h0 = np.clip(h0, 0, Ih - 1)
         w0 = np.clip(w0, 0, Iw - 1)
 
@@ -2615,11 +2615,12 @@ class Embedding(Function):
     def accommodate(self):
         self.parameters.accommodate()
         
-    def __forward__(self, x, *, mask=None, dropout=0.0):
+    def __forward__(self, x, *, mask=None, dropout=0.0, **kwargs):
         """
         入力 x は w のどの行を抽出するかを示し
         yはxの指すwの行、xの形状(B,T)に対し、yの形状は(B, T, n)
         即ち長さnのベクトルがバッチ数×展開時間だけ並ぶ
+        kwargsは使わないが、他の層と併せて呼ばれる際の引数対応
         
         """
         w = self.parameters()
@@ -2697,6 +2698,9 @@ class PositionalEncoding:
         pe[:, 1::2] = np.cos(positions * self.division) # 奇数次元に対するコサイン関数の適用
         pe = pe.reshape(positions_shape + (self.dimension,)) # 元の次元に末尾を加えた形状
         return pe
+
+    def forward(self, positions, **kwargs): # kwargsは使わない
+        return self.__call__(positions)
 
 class PositionalEmbedding2: # 逆伝播が書けない
     """ 入力の値に対する埋め込みと、その位置インデクスに対する埋め込みを合せて出力する """

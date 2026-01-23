@@ -22,7 +22,7 @@ class Diffuser:
 
     def fix_t(self, t, min_t=0, ndim=None):  # ndimはブロードキャストが必要な場合のみ
         T = self.num_timesteps
-        t_arr = np.asarray(t, dtype=np.int64)
+        t_arr = np.asarray(t, dtype=np.int32)
         assert (t_arr >= min_t).all() and (t_arr < T).all()
         if ndim is None:
             return t_arr
@@ -37,11 +37,11 @@ class Diffuser:
         if steps < 2:
             raise ValueError("steps must be >= 2")
 
-        ts = np.linspace(1, T-1, steps, dtype=np.int64)
+        ts = np.linspace(1, T-1, steps, dtype=np.int32)
         ts = np.unique(ts)          # 重複除去（stepsが大きいと重複し得る）
         ts = ts[::-1]               # 降順: T -> ... -> 1
 
-        t_prev = np.concatenate([ts[1:], np.array([0], dtype=np.int64)])
+        t_prev = np.concatenate([ts[1:], np.array([0], dtype=np.int32)])
         return ts, t_prev
 
 
