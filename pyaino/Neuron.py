@@ -1,9 +1,10 @@
 ﻿# Neuron
-# 2026.01.23 A.Inoue
+# 2026.01.24 A.Inoue
 
 import copy
 import warnings
 import math
+import inspect
 from pyaino.Config import *
 from pyaino.nucleus import Function, CompositFunction
 from pyaino import Activators
@@ -15,10 +16,89 @@ from pyaino.nucleus import HDArray
 from pyaino import Regularizers
 from pyaino.Initializer import init_weight
 
+def wrap_layer_instance(layer): # 作りかけ200260124AI　
+    base_cls = layer.__class__
+
+    if hasattr(base_cls, 'forward'):
+        print('Already has forward method.')
+        return layer
+
+    # 追加機能を定義する辞書
+    extra_methods = {}
+
+    def wrapped_forward(self, *args, **kwargs):
+        return super(Wrapped, self).__call__(*args, **kwargs)
+
+    extra_methods['forward'] = wrapped_forward
+
+    # base_cls を継承した新しいクラスを動的に作成
+    Wrapped = type(
+        f"Wrapped{base_cls.__name__}",
+        (base_cls,),
+        extra_methods
+    )
+
+    # 新しいインスタンスを作り、元の __dict__ をコピー
+    new_obj = Wrapped.__new__(Wrapped)
+    new_obj.__dict__ = layer.__dict__.copy()
+
+    return new_obj
+
+class WrapForSequential:
+    ''' Sequentialの要件を満たさない層の手当をするラッパー '''
+    def __init__(self, layer):
+        self.layer = layer
+        # layerの素性の表示
+        print(f'start {layer.__class__.__name__}')
+        methods = inspect.getmembers(layer, predicate=inspect.ismethod)
+        self.exclude = 'train'
+        for m in methods:
+            #print(m[0])
+            sig = inspect.signature(m[1])  
+            sigdic = sig.parameters # 引数のOrderedDict
+            print(f' {m[0]}{sig}')
+
+            if m[0] in ('forward', '__call__'):  
+                if self.exclude in sig.parameters:
+                    self.sig_exclude = False # 除外しなくてよい
+                else:
+                    self.sig_exclude = True  # 除外する必要あり
+                print(f' exclude {self.exclude} {self.sig_exclude}')
+        print(f'end   {layer.__class__.__name__}')   
+
+    def forward(self, x, **kwargs):
+        if self.sig_exclude: # kwargsからself.excludedを除外したものを用意　
+            kwargs_n = {k: v for k, v in kwargs.items() if k not in self.exclude}
+        else:                # そのままkwargsを渡す 
+            kwargs_n = kwargs
+        if hasattr(self.layer, 'forward'):
+            return self.layer.forward(x, **kwargs_n)
+        elif hasattr(self.layer, '__call__'):
+            return self.layer(x, **kwargs_n)
+
+    def backward(self, gy):
+        if hasattr(self.layer, 'backward'):
+            return self.layer.backward()
+
+    def update(self, eta=0.001, **kwargs):
+        if hasattr(self.layer, 'update'):
+            return self.layer.update(eta=eta, **kwargs)
+    
 class Sequential:
     """ 複数の層を積み上げて一括して扱う """
-    def __init__(self, *layers, **kwargs):
+    def __init__bkup(self, *layers, **kwargs):
         self.layers = [l for l in layers]
+        print(self.layers)
+
+    def __init__(self, *layers, **kwargs):
+        self.layers = []
+        for l in layers:
+            if hasattr(l, 'forward') and hasattr(l, 'backward') and hasattr(l, 'update'):
+                self.layers.append(l)
+            else: # Sequentialに必要なメソッドを備えていない場合
+                l = WrapForSequential(l) # ラッパーでごまかす
+                #l = wrap_layer_instance(l)
+                self.layers.append(l)
         print(self.layers)
 
     def forward(self, x, **kwargs):
@@ -2698,9 +2778,6 @@ class PositionalEncoding:
         pe[:, 1::2] = np.cos(positions * self.division) # 奇数次元に対するコサイン関数の適用
         pe = pe.reshape(positions_shape + (self.dimension,)) # 元の次元に末尾を加えた形状
         return pe
-
-    def forward(self, positions, **kwargs): # kwargsは使わない
-        return self.__call__(positions)
 
 class PositionalEmbedding2: # 逆伝播が書けない
     """ 入力の値に対する埋め込みと、その位置インデクスに対する埋め込みを合せて出力する """
