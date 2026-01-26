@@ -1,5 +1,5 @@
 # common_function
-# 2025.11.28 A.Inoue 
+# 2026.01.26 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -739,17 +739,23 @@ def load_parameters_cpb(file_name):
 
 # -- 標準化 --
 class Normalize:
-    def __init__(self, method='standard'):
+    def __init__(self, method='standard', message=False, dtype=Config.dtype):
         self.method = method
         self.shift = None
         self.base = None
+        self.message = message
+        self.dtype = dtype
 
     def __call__(self, data, adapt=True):
         return self.normalize(data, adapt=adapt)
 
+    def print_message(self, message=None):
+        if self.message:
+            print(message)
+
     def normalize(self, data, adapt=True):
         method = self.method
-        data = np.array(data)
+        data = np.array(data, dtype=self.dtype)
         if method is None: # Noneでそのまま通過
             shift = 0
             base  = 1
@@ -760,21 +766,21 @@ class Normalize:
             data_min = np.min(data); data_max = np.max(data)
             shift = data_min
             base  = data_max - data_min
-            print('データは最小値=0,最大値=1に標準化されます')
+            self.print_message('データは最小値=0,最大値=1に標準化されます')
         elif method in('-1to1', 'minmax-11','range-1to1'):
             data_min = np.min(data); data_max = np.max(data)
             shift = (data_max + data_min)/2
             base  = (data_max - data_min)/2
-            print('データは最小値=-1,最大値=1に標準化されます')
+            self.print_message('データは最小値=-1,最大値=1に標準化されます')
         elif method in('l2', 'l2n','norm', 'l2norm'):
             l2n = np.sum(data**2)**0.5
             shift = 0
             base  = l2n
-            print('データはl2ノルムが1になるように標準化されます')
+            self.print_message('データはl2ノルムが1になるように標準化されます')
         else: # standard
             shift = np.average(data)
             base  = np.std(data)
-            print('データは平均値=0,標準偏差=1に標準化されます')
+            self.print_message('データは平均値=0,標準偏差=1に標準化されます')
         if adapt:
             self.shift = shift
             self.base  = base
@@ -789,8 +795,8 @@ class Normalize:
         data = data * self.base + self.shift
         return data       
 
-def normalize(data, method='standard'):
-    return Normalize(method)(data)
+def normalize(data, method='standard', message=False):
+    return Normalize(method, message)(data)
 
 class NormalizeMulti:
     """ 列方向に複数項目が並んだデータを、それぞれ行方向で正規化する """
