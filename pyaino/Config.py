@@ -1,5 +1,5 @@
 # Config
-# 20250817 A.Inoue
+# 20260127 A.Inoue
 try:
     import cupy as np
 except:
@@ -8,7 +8,8 @@ except:
 
 class Config:
     np    = None
-    dtype = 'f4'
+    #dtype = 'f4'     # getattr(np, 'dtype') -> NG
+    dtype = 'float32' # getattr(np, 'dtype') -> OK
     inf = 1e30   # 初めはスカラ、後でset_np()の際に np.array(inf, dtype=Config.dtype)
     seed  = None
     derivative = False
