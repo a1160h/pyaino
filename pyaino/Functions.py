@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20251016 A.Inoue
+# 20260127 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -350,12 +350,14 @@ def broadcast_to(x, shape):
 
 class SumMeanVar(Function):
     """ 配列操作を担う共通クラス """
-    def __init__(self, axis=None, keepdims=False):
+    def __init__(self, axis=None, dtype=None, out=None, keepdims=False):
         super().__init__()
         self.keepdims = keepdims
         self.axis = axis
         self.n = None
         self.gy_shape = None
+        self.dtype = dtype # 仮処置20260127AI
+        self.out = out     # 仮処置20260127AI
     
     def set_axis_and_shape(self, shape):
         """ 畳まれる軸と残る軸を明らかにする """
@@ -405,7 +407,7 @@ class Sum(SumMeanVar):
         return y
 
 def sum(x, axis=None, keepdims=False):
-    return Sum(axis, keepdims)(x)
+    return Sum(axis=axis, keepdims=keepdims)(x)
 
 class Mean(SumMeanVar):
     """ 平均 """
@@ -419,8 +421,8 @@ class Mean(SumMeanVar):
         gx = gy * (1/self.n) 
         return gx
 
-def mean(x, axis=None, keepdims=False):
-    return Mean(axis, keepdims)(x)
+def mean(x, axis=None, dtype=None, out=None, keepdims=False):
+    return Mean(axis=axis, dtype=dtype, out=out, keepdims=keepdims)(x)
 
 class Var(SumMeanVar):
     """ 分散 """
@@ -437,7 +439,7 @@ class Var(SumMeanVar):
         return gx
 
 def var(x, axis=None, keepdims=False):
-    return Var(axis, keepdims)(x)
+    return Var(axis=axis, keepdims=keepdims)(x)
 
 class Std(SumMeanVar):
     """ 標準偏差 """
@@ -458,7 +460,7 @@ class Std(SumMeanVar):
         return gx
 
 def std(x, axis=None, keepdims=False):
-    return Std(axis, keepdims)(x)
+    return Std(axis=axis, keepdims=keepdims)(x)
 
 class SquareSum(SumMeanVar):
     """ 二乗和 """
