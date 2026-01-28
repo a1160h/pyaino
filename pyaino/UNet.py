@@ -1,5 +1,5 @@
 # UNet
-# 20260123 A.Inoue
+# 20260128 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -97,7 +97,7 @@ class UNet:
                  time_embed=False, num_labels=None, embed_dim=128,  
                  base_ch=32, bottleneck=True, bottleneck_ratio=0.5, 
                  batchnorm=None, layernorm=None, activate='ReLU', 
-                 optimize='AdamT', w_decay=0.01):
+                 optimize='AdamT', w_decay=0.01, bias_last=False):
         warnings.warn(self.__class__.__name__
                       +"Use this module with 'set_derivative(True)'.")
         
@@ -158,7 +158,8 @@ class UNet:
         if bottleneck:
             options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
 
-        options_for_ol     = {'optimize' : optimize,
+        options_for_ol     = {'bias'     : bias_last,
+                              'optimize' : optimize,
                               'batchnorm': batchnorm,
                               'layernorm': layernorm,
                               'w_decay'  : w_decay}

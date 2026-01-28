@@ -1,5 +1,5 @@
 # Diffuser
-# 20260122 A.Inoue
+# 20260128 A.Inoue
 
 from pyaino.Config import *
 from pyaino import Functions as F
@@ -44,6 +44,20 @@ class Diffuser:
         t_prev = np.concatenate([ts[1:], np.array([0], dtype=np.int32)])
         return ts, t_prev
 
+    def schedule_time_steps2(self, steps=None):
+        T = self.num_timesteps
+        if steps is None or int(steps) == T:
+            ts = np.arange(T-1, 0, -1, dtype=np.int32)        # 999,998,...,1
+            t_prev = np.arange(T-2, -1, -1, dtype=np.int32)   # 998,...,0
+            return ts, t_prev
+        steps = int(steps)
+        if steps < 2:
+            raise ValueError("steps must be >= 2")
+
+        ts = np.linspace(1, T-1, steps, dtype=np.int32)
+        ts = np.unique(ts)[::-1]
+        t_prev = np.concatenate([ts[1:], np.array([0], dtype=np.int32)])
+        return ts, t_prev
 
     def add_noise(self, x_0, t, noise=None):
         t = self.fix_t(t, 0, x_0.ndim) # x_0 に次元を合わせる
@@ -88,7 +102,7 @@ class Diffuser:
         return x0, s
 
     def denoise_ddpm(self, model, x, t, t_prev, labels=None, 
-                     eta=1.0, gamma=None, clip_denoised=False,
+                     eta=1.0, gamma=None, clip_denoised=False, dc_removal=False,
                      dt_p=0.995, denom_floor=1e-4,
                      x0_target=None, guide=0.0):
         """ DDPM posterior mean/var """
@@ -112,7 +126,8 @@ class Diffuser:
             eps = model(x, t, labels)
 
         #print('eps_hat.std', np.std(eps))
-
+        if dc_removal:    
+            eps -= eps.mean(axis=(-2, -1), keepdims=True) # DC除去
         #print(t,
         #      "eps_hat batch-std(mean)=", float(np.std(eps, axis=0).mean()),
         #      "x batch-std(mean)=", float(np.std(x, axis=0).mean()))
@@ -148,7 +163,7 @@ class Diffuser:
             x0_hat = (1.0 - g) * x0_hat + g * tgt
 
             # ガイド後は eps と整合させ直すと安定
-            denom = np.sqrt(max(1.0 - alpha_bar, denom_floor))
+            denom = np.sqrt(np.maximum(1.0 - alpha_bar, denom_floor))
             eps = (x - np.sqrt(alpha_bar) * x0_hat) / denom
         # ここまで
             
@@ -174,7 +189,7 @@ class Diffuser:
         return mu + eta * std * noise
 
     def denoise_ddpm_bkup(self, model, x, t, t_prev, labels=None,
-                          eta=1.0, gamma=None, clip_denoised=False,
+                          eta=1.0, gamma=None, clip_denoised=False, dc_removal=False,
                           dt_p=0.995, denom_floor=1e-4):
         """ DDPM posterior mean/var """
         # eta: noise scale. eta=1.0 -> standard DDPM,
@@ -235,7 +250,7 @@ class Diffuser:
         return mu + eta * std * noise
 
     def denoise_ddim(self, model, x, t, t_prev, labels=None,
-                     eta=0.0, gamma=None, clip_denoised=False,
+                     eta=0.0, gamma=None, clip_denoised=False, dc_removal=False,
                      dt_p=0.995, denom_floor=1e-4):
         t = self.fix_t(t, 1)
         t_prev = self.fix_t(t_prev, 0)
@@ -249,6 +264,11 @@ class Diffuser:
             eps = eps_uncond + gamma * (eps - eps_uncond)
         else:
             eps = model(x, t, labels)
+
+        #eps -= model.out.parameters.b.reshape(1,3,1,1)
+
+        if dc_removal:    
+            eps -= eps.mean(axis=(-2, -1), keepdims=True) # DC除去
 
         # x0 推定
         x0_hat = (x - np.sqrt(1.0 - alpha_bar) * eps) / np.sqrt(alpha_bar)
@@ -285,7 +305,8 @@ class Diffuser:
         return x_prev
 
     def sample(self, model, x_shape=(20, 1, 28, 28), x=None, labels=None,
-               sampler=None, eta=1.0, gamma=None, steps=None, clip_denoised=False, dt_p=0.995,
+               sampler=None, eta=1.0, gamma=None, steps=None, clip_denoised=False,
+               dc_removal=False, dt_p=0.995,
                start=None, halt=None,
                x0_target=None, guide=0.0):
         batch_size = x_shape[0]
@@ -294,9 +315,11 @@ class Diffuser:
         #if labels is None:
         #    labels = np.random.randint()
 
-        if steps is None: # 無指定では1時刻ずつ全て
-            steps = self.num_timesteps
+        #if steps is None: # 無指定では1時刻ずつ全て
+        #    steps = self.num_timesteps
         ts, t_prev_list = self.schedule_time_steps(steps=steps)
+        #print(ts)
+        #print(t_prev_list)
 
         if sampler is None:
             for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
@@ -320,7 +343,8 @@ class Diffuser:
                 
                 x = self.denoise_ddpm(model, x, t, t_prev,
                                       eta=eta, labels=labels, gamma=gamma,
-                                      clip_denoised=clip_denoised, dt_p=dt_p,
+                                      clip_denoised=clip_denoised,
+                                      dc_removal=dc_removal, dt_p=dt_p,
                                       x0_target=x0_target, guide=guide)
 
                 #print(t, t_prev)    
@@ -337,7 +361,8 @@ class Diffuser:
                 
                 x = self.denoise_ddim(model, x, t=int(t), t_prev=int(t_prev),
                                       eta=eta, labels=labels, gamma=gamma,
-                                      clip_denoised=clip_denoised, dt_p=dt_p)
+                                      clip_denoised=clip_denoised,
+                                      dc_removal=dc_removal, dt_p=dt_p)
 
                 #print(t, t_prev)    
 
