@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.01.24 A.Inoue
+# 2026.01.29 A.Inoue
 
 import copy
 import warnings
@@ -2021,7 +2021,31 @@ class KullbackLeiblerDivergenceNormal2(CompositFunction):
         kll = -0.5 * F.sum(1 + log_var - mu**2 - F.exp(log_var))
         return kll / len(mu)
 
-class MutualInformationLoss(CompositFunction):
+class MutualInformationLoss(Function):
+    def __forward__(self, z, mu, log_var):
+        log_qz_cond_x = self.log_normal_density(z, mu, log_var)
+        log_pz = self.log_standard_normal(z)
+        mi_loss = np.mean(log_qz_cond_x - log_pz, axis=-1)
+        return mi_loss
+
+    def log_normal_density(self, z, mu, log_var):
+        normalization = -0.5 * (F.log(2 * np.pi) + log_var)
+        log_density = normalization - 0.5 * ((z - mu) ** 2 / F.exp(log_var))
+        return F.sum(log_density, axis=-1)
+
+    def log_standard_normal(self, z):
+        log_density = -0.5 * z ** 2 - 0.5 * F.log(2 * np.pi)
+        return F.sum(log_density, axis=-1)
+
+    def __backward__(self, gmil=1):
+        z, mu, log_var = self.inputs
+        var = np.exp(log_var)
+        dz = gmil * (-(z - mu) / var + z)
+        dmu = gmil * ((z - mu) / var)
+        dlog_var = gmil * 0.5 * ((z - mu)**2 / var - 1)
+        return dz/len(z), dmu/len(mu), dlog_var/len(log_var)
+
+class MutualInformationLoss2(CompositFunction):
     def _forward(self, z, mu, log_var):
         log_qz_cond_x = self.log_normal_density(z, mu, log_var)
         log_pz = self.log_standard_normal(z)

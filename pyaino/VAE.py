@@ -84,7 +84,7 @@ class VAEBase():
         l = self.loss_function.forward(y, x.reshape(*y.shape))
         rec_error = float(l)        # rec_errorはdecoder出力のxとの隔たり        　
         reg_error = float(kll)      # reg_errorはsamplingで得られたKullback_Leibler divergence
-        loss = float(l + kll + mi)  # lossは上記をr_kldに応じて合わせた値
+        loss = l + kll + mi         # lossは上記をr_kldに応じて合わせた値
         #self.r_kld = r_kld
         return y, loss, rec_error, reg_error
 
