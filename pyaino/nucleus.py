@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20250817 A.Inoue
+# 20260129 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -566,11 +566,18 @@ class CompositFunction:
     def __init__(self):
         self.inputs = None
         self.outputs = None
+        print(f'derivative={Config.derivative}',
+              f'higher_derivative={Config.higher_derivative}',
+              f'create_graph{Config.create_graph}')
    
     def forward(self, *inputs):
         debug_print(self.__class__.__name__)
         self.inputs = [i if isinstance(i, HDArray) and hasattr(i, 'generation')
                        else HDArray(i) for i in inputs]
+
+        if Config.create_graph: # 自動微分有効な場合は通常関数として実行
+            return self._forward(*inputs) 
+
         with using_config('create_graph', True):
             with OperatorOverload(True):
                 ys = self._forward(*self.inputs)
@@ -587,6 +594,10 @@ class CompositFunction:
 
     def backward(self, *goutputs):
         """ 変数のバックトレースで求めるので、合成関数の内容によらず共通 """
+
+        if Config.create_graph:
+            raise NotImplementedError(f'backward() method of {self.__class__.__name__}')
+        
         if len(goutputs)==0:
             goutputs = [None for o in self.outputs]
         elif len(goutputs)!=len(self.outputs):
