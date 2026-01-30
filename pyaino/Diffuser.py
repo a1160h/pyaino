@@ -1,5 +1,5 @@
 # Diffuser
-# 20260128 A.Inoue
+# 20260130 A.Inoue
 
 from pyaino.Config import *
 from pyaino import Functions as F
@@ -19,6 +19,8 @@ class Diffuser:
         if step_log: # 時刻毎のエラー記録
             self.stat_sum = np.zeros(num_timesteps, dtype=float)
             self.stat_cnt = np.zeros(num_timesteps, dtype=np.int32)
+        self.log = []          # sampleとdenoiseのログ
+        self.debug_info = None # sampleとdenoiseのデバグ情報のやりとり用
 
     def fix_t(self, t, min_t=0, ndim=None):  # ndimはブロードキャストが必要な場合のみ
         T = self.num_timesteps
@@ -67,8 +69,13 @@ class Diffuser:
         x_t = np.sqrt(alpha_bar) * x_0 + np.sqrt(1 - alpha_bar) * noise
         return x_t, noise
 
-    def denoise(self, model, x, t, t_prev, labels=None, eta=1.0, gamma=None):
+    def denoise(self, model, x, t, t_prev, **kwargs):
         """ 基本のDDPM """
+        eta           = kwargs.pop('eta', 1.0) # eta=1が基本　
+        labels        = kwargs.pop('labels', None)  
+        gamma         = kwargs.pop('gamma', None)
+        debug         = kwargs.pop('debug', False)
+        
         t = self.fix_t(t, 1)
         t_prev = self.fix_t(t_prev, 0)
 
@@ -101,11 +108,19 @@ class Diffuser:
         x0 = np.clip(x0, -clip_val, clip_val)
         return x0, s
 
-    def denoise_ddpm(self, model, x, t, t_prev, labels=None, 
-                     eta=1.0, gamma=None, clip_denoised=False, dc_removal=False,
-                     dt_p=0.995, denom_floor=1e-4,
-                     x0_target=None, guide=0.0):
+    def denoise_ddpm(self, model, x, t, t_prev, **kwargs):
         """ DDPM posterior mean/var """
+        eta           = kwargs.pop('eta', 1.0) # eta=1が基本　
+        labels        = kwargs.pop('labels', None)  
+        gamma         = kwargs.pop('gamma', None)
+        clip_denoised = kwargs.pop('clip_denoised' , False)
+        dc_removal    = kwargs.pop('dc_removal' , False)
+        dt_p          = kwargs.pop('dt_p' , 0.995)
+        denom_floor   = kwargs.pop('denom_floor' , 1e-4)
+        x0_target     = kwargs.pop('x0_target' , None)
+        guide         = kwargs.pop('guide' , 0.0)
+        debug         = kwargs.pop('debug', False)
+
         # eta: noise scale. eta=1.0 -> standard DDPM,
         #                   eta=0.0 -> "mean-only" (tends to average/whiten)
         #print('eta =', eta)
@@ -128,21 +143,18 @@ class Diffuser:
         #print('eps_hat.std', np.std(eps))
         if dc_removal:    
             eps -= eps.mean(axis=(-2, -1), keepdims=True) # DC除去
-        #print(t,
-        #      "eps_hat batch-std(mean)=", float(np.std(eps, axis=0).mean()),
-        #      "x batch-std(mean)=", float(np.std(x, axis=0).mean()))
 
-        # x0_pre（clip前）
-        x0_pre = (x - np.sqrt(1 - alpha_bar) * eps) / np.sqrt(alpha_bar)
-        oor = (((x0_pre < -1.0) | (x0_pre > 1.0))).astype(np.float32).mean()
-
-        # x0_hat（clip後）
+        # x0 推定
+        x0_hat = (x - np.sqrt(1 - alpha_bar) * eps) / np.sqrt(alpha_bar)
+        
+        if debug:
+            x0_pre = x0_hat.copy() # 差分ログ用
+            
+        # x0_hatをクリップするとともにepsをそれに合わせて再計算
         if clip_denoised:
-            x0_hat, s = self.dynamic_thresholding(x0_pre, p=dt_p, clip_val=1.0)
+            x0_hat, s = self.dynamic_thresholding(x0_hat, p=dt_p, clip_val=1.0)
             denom = np.sqrt(max(1.0 - alpha_bar, denom_floor))
             eps = (x - np.sqrt(alpha_bar) * x0_hat) / denom
-        else:
-            x0_hat = x0_pre
 
         # 以下、仮実装20260116AI
         # ---------------------------------------
@@ -166,10 +178,6 @@ class Diffuser:
             denom = np.sqrt(np.maximum(1.0 - alpha_bar, denom_floor))
             eps = (x - np.sqrt(alpha_bar) * x0_hat) / denom
         # ここまで
-            
-
-        delta = (np.abs(x0_hat - x0_pre)).astype(np.float32).mean()
-        #print("t", int(t), "mean|clip_delta|", delta)
 
         # posterior mean / std
         coef1 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
@@ -177,10 +185,9 @@ class Diffuser:
         mu = coef1 * x0_hat + coef2 * x
         std = np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
 
-        # ログ（std 定義後に出す）
-        #print("t", int(t), "x0_pre min/max", x0_pre.min(), x0_pre.max(), "oor", oor)
-        #print("t", int(t), "x0_hat min/max", x0_hat.min(), x0_hat.max())
-        #print("t", int(t), "std mean/max", std.mean(), std.max())
+        # ログ情報収集
+        if debug:
+            self.debug_info = {'x0_pre' : x0_pre, 'x0_hat' : x0_hat, 'eps' : eps} 
 
         noise = np.random.randn(*x.shape).astype(x.dtype)
         if int(t_prev) == 0:
@@ -188,70 +195,17 @@ class Diffuser:
 
         return mu + eta * std * noise
 
-    def denoise_ddpm_bkup(self, model, x, t, t_prev, labels=None,
-                          eta=1.0, gamma=None, clip_denoised=False, dc_removal=False,
-                          dt_p=0.995, denom_floor=1e-4):
-        """ DDPM posterior mean/var """
-        # eta: noise scale. eta=1.0 -> standard DDPM,
-        #                   eta=0.0 -> "mean-only" (tends to average/whiten)
-        #print('eta =', eta)
-        # サンプリングでは t はスカラ（または全要素同一の (N,)）とする
-        t = self.fix_t(t, 1)
-        t_prev = self.fix_t(t_prev, 0)
-        
-        # 係数はスカラのまま（broadcast は演算時に自動で効く）
-        alpha = self.alphas[t]
-        alpha_bar = self.alpha_bars[t]
-        alpha_bar_prev = self.alpha_bars[t_prev]
+    def denoise_ddim(self, model, x, t, t_prev, **kwargs):
+        """ ddim(Denoising Diffusion Implicit Model) """
+        eta           = kwargs.pop('eta', 0.0) # eta=0が基本
+        labels        = kwargs.pop('labels', None)  
+        gamma         = kwargs.pop('gamma', None)
+        clip_denoised = kwargs.pop('clip_denoised' , False)
+        dc_removal    = kwargs.pop('dc_removal' , False)
+        dt_p          = kwargs.pop('dt_p' , 0.995)
+        denom_floor   = kwargs.pop('denom_floor' , 1e-4)
+        debug         = kwargs.pop('debug', False)
 
-        if gamma is not None:
-            eps = model(x, t, labels)
-            eps_uncond = model(x, t)
-            eps = eps_uncond + gamma * (eps - eps_uncond)
-        else:
-            eps = model(x, t, labels)
-
-        #print('eps_hat.std', np.std(eps))
-
-        #print(t,
-        #      "eps_hat batch-std(mean)=", float(np.std(eps, axis=0).mean()),
-        #      "x batch-std(mean)=", float(np.std(x, axis=0).mean()))
-
-        # x0_pre（clip前）
-        x0_pre = (x - np.sqrt(1 - alpha_bar) * eps) / np.sqrt(alpha_bar)
-        oor = (((x0_pre < -1.0) | (x0_pre > 1.0))).astype(np.float32).mean()
-
-        # x0_hat（clip後）
-        if clip_denoised:
-            x0_hat, s = self.dynamic_thresholding(x0_pre, p=dt_p, clip_val=1.0)
-            denom = np.sqrt(max(1.0 - alpha_bar, denom_floor))
-            eps = (x - np.sqrt(alpha_bar) * x0_hat) / denom
-        else:
-            x0_hat = x0_pre
-
-        delta = (np.abs(x0_hat - x0_pre)).astype(np.float32).mean()
-        #print("t", int(t), "mean|clip_delta|", delta)
-
-        # posterior mean / std
-        coef1 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
-        coef2 = (np.sqrt(alpha) * (1 - alpha_bar_prev)) / (1 - alpha_bar)
-        mu = coef1 * x0_hat + coef2 * x
-        std = np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
-
-        # ログ（std 定義後に出す）
-        #print("t", int(t), "x0_pre min/max", x0_pre.min(), x0_pre.max(), "oor", oor)
-        #print("t", int(t), "x0_hat min/max", x0_hat.min(), x0_hat.max())
-        #print("t", int(t), "std mean/max", std.mean(), std.max())
-
-        noise = np.random.randn(*x.shape).astype(x.dtype)
-        if int(t_prev) == 0:
-            noise[:] = 0
-
-        return mu + eta * std * noise
-
-    def denoise_ddim(self, model, x, t, t_prev, labels=None,
-                     eta=0.0, gamma=None, clip_denoised=False, dc_removal=False,
-                     dt_p=0.995, denom_floor=1e-4):
         t = self.fix_t(t, 1)
         t_prev = self.fix_t(t_prev, 0)
 
@@ -273,19 +227,14 @@ class Diffuser:
         # x0 推定
         x0_hat = (x - np.sqrt(1.0 - alpha_bar) * eps) / np.sqrt(alpha_bar)
 
-        if clip_denoised:
-            # hard clip ではなく dynamic thresholding 推奨
-            x0_hat, s = self.dynamic_thresholding(x0_hat, p=dt_p, clip_val=1.0)
+        if debug:
+            x0_pre = x0_hat.copy() # 差分ログ用
 
-            # ★整合 eps 再計算（分母が小さい領域の数値事故を避ける）
+        # x0_hatをクリップするとともにepsをそれに合わせて再計算
+        if clip_denoised: 
+            x0_hat, s = self.dynamic_thresholding(x0_hat, p=dt_p, clip_val=1.0)
             denom = np.sqrt(max(1.0 - alpha_bar, denom_floor))
             eps = (x - np.sqrt(alpha_bar) * x0_hat) / denom
-
-            # ログ！
-            #print(t, "s med/mean/max",
-            #      float(np.median(s)), float(np.mean(s)), float(np.max(s)),
-            #      "max|x0_hat|", float(np.max(np.abs(x0_hat))),
-            #      "max|x|", float(np.max(np.abs(x))))
 
         # eta=0（決定的）なら sigma=0 でOK
         if eta == 0.0:
@@ -296,6 +245,10 @@ class Diffuser:
                         * np.sqrt(max(1.0 - alpha_bar / alpha_bar_prev, 0.0)))
             dir_coef = np.sqrt(max(1.0 - alpha_bar_prev - sigma * sigma, 0.0))
 
+        # ログ情報収集
+        if debug:
+            self.debug_info = {'x0_pre' : x0_pre, 'x0_hat' : x0_hat, 'eps' : eps} 
+
         # 終端は x0 を返すのが安定（eta=0なら特に）
         if int(t_prev) == 0:
             return x0_hat
@@ -304,136 +257,69 @@ class Diffuser:
         x_prev = np.sqrt(alpha_bar_prev) * x0_hat + dir_coef * eps + sigma * noise
         return x_prev
 
-    def sample(self, model, x_shape=(20, 1, 28, 28), x=None, labels=None,
-               sampler=None, eta=1.0, gamma=None, steps=None, clip_denoised=False,
-               dc_removal=False, dt_p=0.995,
-               start=None, halt=None,
-               x0_target=None, guide=0.0):
-        batch_size = x_shape[0]
-        if x is None:
-            x = np.random.randn(*x_shape).astype(Config.dtype)
-        #if labels is None:
-        #    labels = np.random.randint()
+    def sample(self, model, x_shape=(20, 1, 28, 28), x=None, sampler=None,
+               steps=None, start=None, halt=None, debug=False, **kwargs):
 
-        #if steps is None: # 無指定では1時刻ずつ全て
-        #    steps = self.num_timesteps
-        ts, t_prev_list = self.schedule_time_steps(steps=steps)
-        #print(ts)
-        #print(t_prev_list)
-
-        if sampler is None:
-            for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
-                if start is not None and t > start:
-                    continue
-                
-                x = self.denoise(model, x, t, t_prev, labels=labels, gamma=gamma)
-
-                #print(t, t_prev)    
-                
-                #print(f'{t:4d} / {self.num_timesteps}'
-                #      + f'{np.min(x):7.3f} {np.max(x):7.3f}')
-                if halt is not None and t==(self.num_timesteps-halt):
-                    break
-            return x    
-
-        if sampler == "ddpm":
-            for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
-                if start is not None and t > start:
-                    continue
-                
-                x = self.denoise_ddpm(model, x, t, t_prev,
-                                      eta=eta, labels=labels, gamma=gamma,
-                                      clip_denoised=clip_denoised,
-                                      dc_removal=dc_removal, dt_p=dt_p,
-                                      x0_target=x0_target, guide=guide)
-
-                #print(t, t_prev)    
-
-                if halt is not None and t==(self.num_timesteps-halt):
-                    break
-            return x
-
-        elif sampler == "ddim":
-            metrics_log = []
-            for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
-                if start is not None and t > start:
-                    continue
-                
-                x = self.denoise_ddim(model, x, t=int(t), t_prev=int(t_prev),
-                                      eta=eta, labels=labels, gamma=gamma,
-                                      clip_denoised=clip_denoised,
-                                      dc_removal=dc_removal, dt_p=dt_p)
-
-                #print(t, t_prev)    
-
-                if halt is not None and t<=(self.num_timesteps-halt):
-                    print(__class__.__name__, 'halt at', t)
-                    break
-            return x
-
-        else:
-            raise ValueError(f"Unknown sampler: {sampler}")
-
-
-    def sample_bkup(self, model, x_shape=(20, 1, 28, 28), x=None,
-               sampler=None, eta=1.0, steps=None, clip_denoised=False, dt_p=0.995,
-               start=None, halt=None):
-        batch_size = x_shape[0]
         if x is None:
             x = np.random.randn(*x_shape).astype(Config.dtype)
 
-        if steps is None: # 無指定では1時刻ずつ全て
-            steps = self.num_timesteps
         ts, t_prev_list = self.schedule_time_steps(steps=steps)
 
         if sampler is None:
-            for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
-                if start is not None and t > start:
-                    continue
-                
-                x = self.denoise(model, x, t, t_prev)
-
-                #print(t, t_prev)    
-                
-                #print(f'{t:4d} / {self.num_timesteps}'
-                #      + f'{np.min(x):7.3f} {np.max(x):7.3f}')
-                if halt is not None and t==(self.num_timesteps-halt):
-                    break
-            return x    
-
-        if sampler == "ddpm":
-            for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
-                if start is not None and t > start:
-                    continue
-                
-                x = self.denoise_ddpm(model, x, t, t_prev,
-                                      eta=eta, clip_denoised=clip_denoised, dt_p=dt_p)
-
-                #print(t, t_prev)    
-
-                if halt is not None and t==(self.num_timesteps-halt):
-                    break
-            return x
-
+            denoise_fn = self.denoise
+        elif sampler == "ddpm":
+            denoise_fn = self.denoise_ddpm
         elif sampler == "ddim":
-            metrics_log = []
-            for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
-                if start is not None and t > start:
-                    continue
-                
-                x = self.denoise_ddim(model, x, t=int(t), t_prev=int(t_prev),
-                                      eta=eta, clip_denoised=clip_denoised, dt_p=dt_p)
-
-                #print(t, t_prev)    
-
-                if halt is not None and t<=(self.num_timesteps-halt):
-                    print(__class__.__name__, 'halt at', t)
-                    break
-            return x
-
+            denoise_fn = self.denoise_ddim
         else:
             raise ValueError(f"Unknown sampler: {sampler}")
 
+        if debug:
+            self.log = []
+            self.debug_info = None
+
+        for i, (t, t_prev) in enumerate(zip(ts, t_prev_list)):
+            if start is not None and t > start:
+                continue
+            
+            x = denoise_fn(model, x, t, t_prev, debug=debug, **kwargs)
+
+            if debug: # ログの収集
+                mu_xt = x.mean(axis=(2,3), keepdims=True)
+                mu_x0_pre = self.debug_info['x0_pre'].mean(axis=(2,3), keepdims=True)
+                mu_x0_hat = self.debug_info['x0_hat'].mean(axis=(2,3), keepdims=True)
+                std_xt = x.std(axis=(2,3), keepdims=True)
+                std_eps = self.debug_info['eps'].std(axis=(2,3), keepdims=True)
+                self.log.append({'t': t, 't_prev' : t_prev, 'mu_xt': mu_xt,
+                                 'mu_x0_pre': mu_x0_pre, 'mu_x0_hat': mu_x0_hat,
+                                 'std_xt' : std_xt, 'std_eps' : std_eps
+                                 })
+                
+            if halt is not None and t<=(self.num_timesteps-halt):
+                break
+        return x    
+ 
+    def logs_garbage(): # デバグ用のゴミを集めたもの（後日削除）　 
+        oor = (((x0_hat < -1.0) | (x0_hat > 1.0))).astype(np.float32).mean()
+
+        g_t = np.sqrt((1-alpha_bar)/alpha_bar)
+
+        log['mu_x0_pre'] = x0_pre.mean()
+        log['mu_x0_hat'] = x0_hat.mean()
+        log['std_eps'] = eps.std()  
+        print(f't = {t}',
+              f'mu_xt = {x.mean():7.4f}',
+              f'g_t * mu_eps = {g_t * eps.mean(axis=(2,3)).mean():7.4f}',
+              f'mu_x0 = {x0_hat.mean():7.4f}')
+
+        
+        print("t", int(t), "x0_pre min/max", x0_pre.min(), x0_pre.max(), "oor", oor)
+        print("t", int(t), "x0_hat min/max", x0_hat.min(), x0_hat.max())
+        print("t", int(t), "std mean/max", std.mean(), std.max())
+
+        print(t,
+              "eps_hat batch-std(mean)=", float(np.std(eps, axis=0).mean()),
+              "x batch-std(mean)=", float(np.std(x, axis=0).mean()))
 
     def reverse_to_img(self, x):
         import numpy
@@ -444,7 +330,7 @@ class Diffuser:
         x = x.astype(numpy.uint8).transpose(1,2,0)
         return x
 
-    def loss(self, eps_pred, eps, t=None, gamma=1.0):
+    def loss(self, eps_pred, eps, t=None, gamma=1.0, dc_reg=False, lam=0.1):
         """ 時刻に応じたエラー集計と時刻に応じた重み付け可能な平均2乗誤差 """
         l = (eps_pred - eps)**2
         # 時刻tはstep_log,weightingの両方に使う
@@ -461,6 +347,10 @@ class Diffuser:
             w = (snr + 1)**(-gamma)
             l = l * w
             #print(l.shape, w.shape)
+        if dc_reg:    
+            dc = eps_pred.mean(axis=(-2,-1), keepdims=True) # B,Cごと
+            dc_l = (dc**2).mean()  
+            l += lam * dc_l
         return F.Mean()(l)
 
     def ddim_inversion(self, model, x0,
