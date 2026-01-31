@@ -1,8 +1,9 @@
 # Diffuser
-# 20260130 A.Inoue
+# 20260131 A.Inoue
 
 from pyaino.Config import *
 from pyaino import Functions as F
+from pyaino import LossFunctions as lf
 
 class Diffuser:
     def __init__(self, num_timesteps=1000, beta_start=0.0001, beta_end=0.02,
@@ -330,13 +331,15 @@ class Diffuser:
         x = x.astype(numpy.uint8).transpose(1,2,0)
         return x
 
-    def loss(self, eps_pred, eps, t=None, gamma=1.0, dc_reg=False, lam=0.1):
-        """ 時刻に応じたエラー集計と時刻に応じた重み付け可能な平均2乗誤差 """
-        l = (eps_pred - eps)**2
+    def loss(self, eps_hat, eps, t=None, gamma=1.0, dc_reg=False, lam=1e-3):
+        """ 与えたノイズと予測したノイズの隔たりで、
+          　時刻に応じたエラー集計と時刻に応じた重み付け可能な平均2乗誤差 """
+        l = lf.MeanSquaredError()(eps_hat, eps) 
+        #(eps_hat - eps)**2
         # 時刻tはstep_log,weightingの両方に使う
         if self.step_log and t is not None: # 時刻毎のエラー集計
             t = self.fix_t(t, 0, None)
-            np.add.at(self.stat_sum, t, l.mean(axis=(1,2,3)))
+            np.add.at(self.stat_sum, t, ((eps_hat-eps)**2).mean(axis=(1,2,3))) 
             np.add.at(self.stat_cnt, t, 1)
         if self.weighting and t is not None:     # 時刻に応じた重付け
             # gammaが小さい：減衰はゆるい。高 SNR もそこそこ学習させたいとき。
@@ -348,10 +351,10 @@ class Diffuser:
             l = l * w
             #print(l.shape, w.shape)
         if dc_reg:    
-            dc = eps_pred.mean(axis=(-2,-1), keepdims=True) # B,Cごと
-            dc_l = (dc**2).mean()  
-            l += lam * dc_l
-        return F.Mean()(l)
+            dc = F.Mean(axis=(2,3), keepdims=True)(eps_hat) # B,Cごと
+            dc_l = F.Mean()(dc**2)  
+            l = l + lam * dc_l
+        return l
 
     def ddim_inversion(self, model, x0,
                        tend=500,
