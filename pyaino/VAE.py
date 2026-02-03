@@ -1,5 +1,5 @@
 # VAE 各種
-# 20251121 A.Inoue　
+# 20260203 A.Inoue　
 from pyaino.Config import *
 import matplotlib.pyplot as plt
 from pyaino import Neuron as neuron
@@ -217,7 +217,7 @@ class VAEBase():
         y = self.encoder.forward(x)
         y = self.normalize.forward(y)
         z_etc = self.sampling.forward(y, epsilon=epsilon) # zも表示する
-        z = z_etc[0] if type(z_etc) is tuple else z_etc
+        z = z_etc[0] if isinstance(z_etc, (tuple, list)) else z_etc # 20260203AI
         y = self.decoder.forward(z)
         # 表示用に値の範囲を補正
         x = (x - np.min(x))/(np.max(x) - np.min(x))

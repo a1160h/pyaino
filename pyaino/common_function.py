@@ -1,5 +1,5 @@
 # common_function
-# 2026.01.26 A.Inoue 
+# 2026.02.02 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -739,23 +739,17 @@ def load_parameters_cpb(file_name):
 
 # -- 標準化 --
 class Normalize:
-    def __init__(self, method='standard', message=False, dtype=Config.dtype):
+    def __init__(self, method='standard'):
         self.method = method
         self.shift = None
         self.base = None
-        self.message = message
-        self.dtype = dtype
 
     def __call__(self, data, adapt=True):
         return self.normalize(data, adapt=adapt)
 
-    def print_message(self, message=None):
-        if self.message:
-            print(message)
-
     def normalize(self, data, adapt=True):
         method = self.method
-        data = np.array(data, dtype=self.dtype)
+        data = np.array(data)
         if method is None: # Noneでそのまま通過
             shift = 0
             base  = 1
@@ -766,21 +760,21 @@ class Normalize:
             data_min = np.min(data); data_max = np.max(data)
             shift = data_min
             base  = data_max - data_min
-            self.print_message('データは最小値=0,最大値=1に標準化されます')
+            print('データは最小値=0,最大値=1に標準化されます')
         elif method in('-1to1', 'minmax-11','range-1to1'):
             data_min = np.min(data); data_max = np.max(data)
             shift = (data_max + data_min)/2
             base  = (data_max - data_min)/2
-            self.print_message('データは最小値=-1,最大値=1に標準化されます')
+            print('データは最小値=-1,最大値=1に標準化されます')
         elif method in('l2', 'l2n','norm', 'l2norm'):
             l2n = np.sum(data**2)**0.5
             shift = 0
             base  = l2n
-            self.print_message('データはl2ノルムが1になるように標準化されます')
+            print('データはl2ノルムが1になるように標準化されます')
         else: # standard
             shift = np.average(data)
             base  = np.std(data)
-            self.print_message('データは平均値=0,標準偏差=1に標準化されます')
+            print('データは平均値=0,標準偏差=1に標準化されます')
         if adapt:
             self.shift = shift
             self.base  = base
@@ -795,8 +789,8 @@ class Normalize:
         data = data * self.base + self.shift
         return data       
 
-def normalize(data, method='standard', message=False):
-    return Normalize(method, message)(data)
+def normalize(data, method='standard'):
+    return Normalize(method)(data)
 
 class NormalizeMulti:
     """ 列方向に複数項目が並んだデータを、それぞれ行方向で正規化する """
@@ -2529,7 +2523,9 @@ def plot_latent_variables(func, x, t, axis=(0,1)):
         xi = x[i:i+n2]
         ti = t[i:i+n2]
         zi = func(xi)
+        zi = zi[0] if type(zi) in (tuple, list) else zi # 20260202AI
         for j in range(min_t, max_t+1):
+            #zt  = zi[np.array(ti==int(j))]  # z から t==i の要素を抽出
             zt  = zi[ti==j]          # z から t==i の要素を抽出
             z_1 = zt[:, axis[0]]     # y軸
             z_2 = zt[:, axis[1]]     # x軸
