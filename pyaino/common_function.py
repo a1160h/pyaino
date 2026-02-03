@@ -418,7 +418,7 @@ def search_obj_path2(obj, target, name=None, seen=None):
             
     return None
 
-def search_obj_path(obj, target, name=None):
+def search_obj_path_bkup(obj, target, name=None): # 長く使ってきたもの20260204AI　
     """ 対象objからtargetを再帰的に探索し、そのpathをnameと結合して返す """
     if obj is target:
         return name or "<?>" # nameがNoneなら"<?>"さもなくばname
@@ -450,6 +450,55 @@ def search_obj_path(obj, target, name=None):
             if path:
                 return path
             
+    return None
+
+def search_obj_path(obj, target, name=None, visited=None):
+    """対象objからtargetを再帰的に探索し、そのpathを返す（循環参照対応版）"""
+
+    # visited セットの初期化
+    if visited is None:
+        visited = set()
+
+    # oid(objのid)をvisitedに登録、もし登録済みなら終了
+    oid = id(obj)
+    if oid in visited:
+        return None
+    visited.add(oid)
+
+    # 一致したらパスを返す
+    if obj is target:
+        return name or "<?>"
+
+    # HDArrayやXArrayは探索しない
+    if type(obj) in (nucleus.HDArray, nucleus.XArray):
+        return None
+
+    # リスト
+    if isinstance(obj, list):
+        for i, item in enumerate(obj):
+            path = search_obj_path(item, target, f"{name}[{i}]", visited)
+            if path:
+                return path
+
+    # 辞書
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            name_to = key if name is None else f"{name}.{key}"
+            path = search_obj_path(value, target, name_to, visited)
+            if path:
+                return path
+
+    # 属性
+    if hasattr(obj, '__dict__') and type(obj).__module__ != 'builtins':
+        for attr in obj.__dict__:
+            try:
+                child = getattr(obj, attr)
+            except Exception:
+                continue  # 安全のため
+            path = search_obj_path(child, target, f"{name}.{attr}", visited)
+            if path:
+                return path
+
     return None
 
 def is_recursive_type(obj):
@@ -898,6 +947,7 @@ def test_sample(show, func, x, t, label_list=None, label_list2=None):
         except:
             y = func(sample_data.reshape(-1)) # 順伝播(入力をベクトル化)
 
+        y = y[0] if isinstance(y, (tuple, list)) else y 
         print(y.shape, sample_data.shape)
 
         if y.shape==sample_data.shape:
@@ -905,8 +955,12 @@ def test_sample(show, func, x, t, label_list=None, label_list2=None):
             show(y, sample_label)
 
         else:    
+            if y.size==1:
+                estimation = int(y)
+            else:
+                estimation = int(np.argmax(np.array(y.tolist()))) # ニューラルネットワークの判定結果        
+            
             print('ニューラルネットワークの出力\n', y)
-            estimation = int(np.argmax(np.array(y.tolist()))) # ニューラルネットワークの判定結果        
         
             # Noneの判定には == / != ではなく is / is not が良い(判定がうまくいく)
             if       label_list is     None and label_list2 is None:
