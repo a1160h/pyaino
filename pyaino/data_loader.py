@@ -115,9 +115,12 @@ class CelebALoader(ImageLoader):
 
     def __init__(self, file_path, batch_size=64, prefetch=8, shuffle=True,
                  resize=False, transpose=False, normalize=False,
-                 ):
+                 data_size=None):
         rawpath  = os.path.normpath(file_path + os.sep + "*")
         file_list = glob.glob(rawpath)
+        if data_size is not None:
+            file_list = file_list[:data_size]
+        self.data_size = data_size
         super().__init__(file_list, batch_size, prefetch, shuffle,
                          resize, transpose, normalize)
 
