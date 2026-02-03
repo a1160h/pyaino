@@ -62,11 +62,13 @@ class Diffuser:
         t_prev = np.concatenate([ts[1:], np.array([0], dtype=np.int32)])
         return ts, t_prev
 
-    def add_noise(self, x_0, t, noise=None):
+    def add_noise(self, x_0, t, noise=None, dc_removal=False):
         t = self.fix_t(t, 0, x_0.ndim) # x_0 に次元を合わせる
         alpha_bar = self.alpha_bars[t]
         if noise is None:
             noise = np.random.randn(*x_0.shape).astype(x_0.dtype)
+        if dc_removal:    
+            noise = noise - noise.mean(axis=(2,3), keepdims=True) # DC抑止 20260131AI　
         x_t = np.sqrt(alpha_bar) * x_0 + np.sqrt(1 - alpha_bar) * noise
         return x_t, noise
 
