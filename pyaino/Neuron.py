@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.02.03 A.Inoue
+# 2026.02.05 A.Inoue
 
 import copy
 import warnings
@@ -52,6 +52,122 @@ class Sequential:
         else:
             print('\n')
 
+def wrap_layer_instance(layer): # 作りかけ200260124AI　
+    base_cls = layer.__class__
+
+    if hasattr(base_cls, 'forward'):
+        print('Already has forward method.')
+        return layer
+
+    # 追加機能を定義する辞書
+    extra_methods = {}
+
+    def wrapped_forward(self, *args, **kwargs):
+        return super(Wrapped, self).__call__(*args, **kwargs)
+
+    extra_methods['forward'] = wrapped_forward
+
+    # base_cls を継承した新しいクラスを動的に作成
+    Wrapped = type(
+        f"Wrapped{base_cls.__name__}",
+        (base_cls,),
+        extra_methods
+    )
+
+    # 新しいインスタンスを作り、元の __dict__ をコピー
+    new_obj = Wrapped.__new__(Wrapped)
+    new_obj.__dict__ = layer.__dict__.copy()
+
+    return new_obj
+
+class WrapForSequential:
+    ''' Sequentialの要件を満たさない層の手当をするラッパー '''
+    def __init__(self, layer):
+        self.layer = layer
+        # layerの素性の表示
+        print(f'start {layer.__class__.__name__}')
+        methods = inspect.getmembers(layer, predicate=inspect.ismethod)
+        self.exclude = 'train'
+        for m in methods:
+            #print(m[0])
+            sig = inspect.signature(m[1])  
+            sigdic = sig.parameters # 引数のOrderedDict
+            print(f' {m[0]}{sig}')
+
+            if m[0] in ('forward', '__call__'):  
+                if self.exclude in sig.parameters:
+                    self.sig_exclude = False # 除外しなくてよい
+                else:
+                    self.sig_exclude = True  # 除外する必要あり
+                print(f' exclude {self.exclude} {self.sig_exclude}')
+        print(f'end   {layer.__class__.__name__}')   
+
+    def forward(self, x, **kwargs):
+        if self.sig_exclude: # kwargsからself.excludedを除外したものを用意　
+            kwargs_n = {k: v for k, v in kwargs.items() if k not in self.exclude}
+        else:                # そのままkwargsを渡す 
+            kwargs_n = kwargs
+        if hasattr(self.layer, 'forward'):
+            return self.layer.forward(x, **kwargs_n)
+        elif hasattr(self.layer, '__call__'):
+            return self.layer(x, **kwargs_n)
+
+    def backward(self, gy):
+        if hasattr(self.layer, 'backward'):
+            return self.layer.backward()
+
+    def update(self, eta=0.001, **kwargs):
+        if hasattr(self.layer, 'update'):
+            return self.layer.update(eta=eta, **kwargs)
+    
+class Sequential2:
+    """ 複数の層を積み上げて一括して扱う """
+    def __init__bkup(self, *layers, **kwargs):
+        self.layers = [l for l in layers]
+        print(self.layers)
+
+    def __init__(self, *layers, **kwargs):
+        self.layers = []
+        for l in layers:
+            if hasattr(l, 'forward') and hasattr(l, 'backward') and hasattr(l, 'update'):
+                self.layers.append(l)
+            else: # Sequentialに必要なメソッドを備えていない場合
+                l = WrapForSequential(l) # ラッパーでごまかす
+                #l = wrap_layer_instance(l)
+                self.layers.append(l)
+        print(self.layers)
+
+    def forward(self, x, **kwargs):
+        y = x
+        for l in self.layers:
+            y = l.forward(y, **kwargs)
+        return y
+
+    def backward(self, gy=None):
+        if gy is None:
+            gx = self.layers[-1].backward()
+        else:
+            gx = self.layers[-1].backward(gy)
+        for l in reversed(self.layers[:-1]):
+            gx = l.backward(gx)
+        return gx
+
+    def update(self, eta=0.001, **kwargs):
+        for l in self.layers:
+            if hasattr(l, 'update'): 
+                l.update(eta=eta, **kwargs)
+                
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def summary(self):
+        for l in self.layers:
+            print(l.__class__.__name__, end=' ')
+        if hasattr(l, 'config'):
+            print(l.config)
+        else:
+            print('\n')
+
 #### ニューロンの基本機能 ##############################################
 class AffineParameters:
     """ Affine変換のパラメータ管理 """
@@ -70,9 +186,11 @@ class AffineParameters:
 
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)  # 最適化関数
         if self.bias:
-            self.optimizer_b = cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs)
+            self.optimizer_b = \
+                cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs) # w_decayなどの対象外
         if self.scale:
-            self.optimizer_g = cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs)
+            self.optimizer_g = \
+                cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs) # w_decayなどの対象外
 
     def __call__(self):
         if self.w is None:
@@ -131,16 +249,19 @@ class AffineParameters:
     def accommodate(self):
         if self.config[1] <= self.w.shape[1]:
             return
-        print(self.__class__.__name__, 'expand the size of w to accommodate new vocabulary.')
+        print(self.__class__.__name__,
+              'expand the size of w to accommodate new vocabulary.')
         m, n = self.config
         xpcn = n - self.w.shape[1] # 拡張する列数
         center_w = np.mean(self.w, axis=1, keepdims=True)
-        new_colums = center_w + np.random.normal(0, 0.01, size=(m, xpcn), dtype=Config.dtype)
+        new_colums = center_w \
+                   + np.random.normal(0, 0.01, size=(m, xpcn), dtype=Config.dtype)
         print('new colums of w =', new_colums.shape)
         self.w = np.concatenate([self.w, new_colums], axis=1)
         if self.bias:
             center_b = np.mean(self.b)
-            new_bias = center_b + np.random.normal(0, 0.01, size=(xpcn,), dtype=Config.dtype)
+            new_bias = center_b \
+                     + np.random.normal(0, 0.01, size=(xpcn,), dtype=Config.dtype)
             print('new bias =', new_bias.shape)
             self.b = np.concatenate([self.b, new_bias])
 
@@ -185,9 +306,11 @@ class LinearLayer(Function):
         self.scale      = kwargs.get('scale',      False) # ReParameteraization
         self.parameters = AffineParameters(self, **kwargs)
         self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
+        self.prephase   = PrePhase(self, **kwargs) 
 
     def update(self, eta=0.001, **kwargs):
         self.parameters.update(eta=eta, **kwargs) 
+        self.prephase.update(eta=eta, **kwargs)
         
     def fix_configuration(self, shape):
         if self.dot_linear.__class__.__name__=='MatMulLinear':
@@ -203,14 +326,16 @@ class LinearLayer(Function):
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
+        x = self.prephase.forward(x)
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(x, w, b, gamma)
         return y 
         
-    def __backward__(self, gy):
-        gx, gw, gb, ggamma = self.dot_linear.backward(gy)
-        self.parameters.set_gradient(gw, gb, ggamma) 
-        return gx
+    def __backward__(self, grad_y):
+        grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma) 
+        grad_x = self.prephase.backward(grad_x)
+        return grad_x
 
     def get_parameter_size(self):
         return self.config
@@ -227,10 +352,10 @@ class LinearLayerCrossEntropy(LinearLayer):
         self.selector = TileTargetScanner()
        
     def __forward__(self, x, t=None, **kwargs):       # kwargsは使わない
-        
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
+        x = self.prephase.forward(x)
         w, b, gamma = self.parameters()
 
         m, n = self.config
@@ -245,9 +370,9 @@ class LinearLayerCrossEntropy(LinearLayer):
         # 全体の最大logits値とその位置の初期値(バッチサイズ分並べる)
         max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype) # 現時点の最大logit
         max_index = np.full(leading_shape, -1)                     # その語彙ID
-        sum_exp = np.zeros(leading_shape, dtype=x.dtype)        # 逐次 exp 累積
+        sum_exp = np.zeros(leading_shape, dtype=x.dtype)           # 逐次 exp 累積
         if t is not None:
-            zt = np.zeros(leading_shape, dtype=x.dtype)    # 正解値の指すlogitのロジット
+            zt = np.zeros(leading_shape, dtype=x.dtype)            # 正解値の指すlogit
 
         for start in range(0, n, self.tile_size):
             # タイル毎にlogitsを算出
@@ -260,8 +385,8 @@ class LinearLayerCrossEntropy(LinearLayer):
 
             # タイル内の最大位置を求め、そのlogits値を得る
             tile_max_index = np.argmax(tile_z, axis=-1)            # (B,)
-            tile_max_logit = (np.take_along_axis(tile_z, tile_max_index[..., None], axis=-1)
-                              .squeeze(-1))
+            tile_max_logit = (
+              np.take_along_axis(tile_z,tile_max_index[...,None],axis=-1).squeeze(-1))
 
             # 全体最大を更新(タイルの最大が全体の最大より大きいものについて処理)
             mask = tile_max_logit > max_logit
@@ -270,7 +395,7 @@ class LinearLayerCrossEntropy(LinearLayer):
                 max_index[mask] = start + tile_max_index[mask]  # 全体での位置=語彙ID 
             # 最新と以前の最大値の補正をしながらsum_exp を更新
             sum_exp = (sum_exp * np.exp(last_max_logit - max_logit) # 補正項　
-                     + np.sum(np.exp(tile_z - max_logit[..., None]), axis=-1)) # 更新値
+                    + np.sum(np.exp(tile_z - max_logit[..., None]), axis=-1)) # 更新値
             # tがtileに含まれる場合だけztを更新(zt:正解値tの指すlogit)
             if t is not None:
                 zt = self.selector.gather(zt, t, tile_z, (start, end))
@@ -308,7 +433,7 @@ class LinearLayerCrossEntropy(LinearLayer):
             tile_z = self.dot_linear.forward(x, tile_w, tile_b, gamma) # (B, Vt)
 
             # Softmaxでlogit->確率 
-            tile_y = np.exp(tile_z - self.max_logit[..., None]) / self.sum_exp[..., None]
+            tile_y = np.exp(tile_z - self.max_logit[...,None]) / self.sum_exp[...,None]
 
             tile_gz = self.selector.scatter_add(tile_y.copy(), (start, end))   
             tile_gz /= self.leading_size    # 順伝播のloss/leading_sizeに合わせる
@@ -323,6 +448,7 @@ class LinearLayerCrossEntropy(LinearLayer):
                 ggamma += tile_gg
                 
         self.parameters.set_gradient(grad_w, grad_b, ggamma)        
+        grad_x = self.prephase.backward(grad_x)
         return grad_x
 
 class TileTargetScanner:
@@ -343,6 +469,30 @@ class TileTargetScanner:
                             x[idx] += z[i]
                     self.add_at = f        
     
+    def gather(self, zt, t, tile_z, window):
+        """ tが処理窓内の時、tile_zからtに対応するlogitを選んでztにセットする """
+        start, end = window
+        t_in_tile = (start <= t) & (t < end)
+        self.t = t
+        if not t_in_tile.any():
+            return zt
+        coords = np.where(t_in_tile)                # 先行軸の座標タプル
+        idx_in_tile = (t[coords] - start).astype(np.int32)
+        zt[coords] = tile_z[coords + (idx_in_tile,)] # 多次元インデクスとして結合
+        return zt
+
+    def scatter_add(self, tile_gz, window, value=-1):
+        """ tが処理窓内の時、tile_gzのtに対応する場所に値を加える """
+        t = self.t
+        start, end = window
+        t_in_tile = (start <= t) & (t < end)
+        if not t_in_tile.any():
+            return tile_gz
+        coords = np.where(t_in_tile)
+        idx_in_tile = (t[coords] - start).astype(np.int32)
+        tile_gz[coords + (idx_in_tile,)] += value
+        return tile_gz
+
     def gather2(self, zt, t, tile_z, window):
         """ tが処理窓内の時、tile_zからtに対応するlogitを選んでztにセットする """
         start, end = window
@@ -362,18 +512,6 @@ class TileTargetScanner:
         self.t = t
         return zt
 
-    def gather(self, zt, t, tile_z, window):
-        """ tが処理窓内の時、tile_zからtに対応するlogitを選んでztにセットする """
-        start, end = window
-        t_in_tile = (start <= t) & (t < end)
-        self.t = t
-        if not t_in_tile.any():
-            return zt
-        coords = np.where(t_in_tile)                # 先行軸の座標タプル
-        idx_in_tile = (t[coords] - start).astype(np.int32)
-        zt[coords] = tile_z[coords + (idx_in_tile,)] # 多次元インデクスとして結合
-        return zt
-
     def scatter_add2(self, tile_gz, window, value=-1):
         """ tが処理窓内の時、tile_gzのtに対応する場所に値を加える """
         t = self.t
@@ -387,25 +525,28 @@ class TileTargetScanner:
         self.add_at(tile_gz, index_tuple, value)
         return tile_gz
 
-    def scatter_add(self, tile_gz, window, value=-1):
-        """ tが処理窓内の時、tile_gzのtに対応する場所に値を加える """
-        t = self.t
-        start, end = window
-        t_in_tile = (start <= t) & (t < end)
-        if not t_in_tile.any():
-            return tile_gz
-        coords = np.where(t_in_tile)
-        idx_in_tile = (t[coords] - start).astype(np.int32)
-        tile_gz[coords + (idx_in_tile,)] += value
-        return tile_gz
-
 
 
 #### ニューロン関連共通部分 ##############################################
-# NeuronLayer(Affine),
-# ConvLayer, DeconvLayer, MaskedExpansionLayer
-# LatentLayer
-class BaseLayer(Function): # ニューロンの基本機能 
+
+class BaseLayer(Function):
+    """ ニューロンの基本機能 """
+    
+    # 派生クラスの分類一覧を文字列で与える
+    category_names = {
+        0: ("NeuronLayer",),
+        1: ("Conv1dLayer", "Conv1dTransposeLayer", "DeConv1dLayer"),
+        2: ("Conv2dLayer", "Conv2dTransposeLayer", "ConvLayer",
+            "DeConvLayer", "DeConv2dLayer"),
+    }
+    categories = {} # 実際のクラスオブジェクトの格納場所
+
+    @classmethod
+    def resolve_categories(cls, namespace):
+        """文字列 → クラスオブジェクトに変換"""
+        for typeid, names in cls.category_names.items():
+            cls.categories[typeid] = tuple(namespace[name] for name in names)
+
     def __init__(self, **kwargs):
         super().__init__()
         print('Initialize', self.__class__.__name__, self.config)
@@ -414,8 +555,29 @@ class BaseLayer(Function): # ニューロンの基本機能
         self.scale      = kwargs.get('scale',        False) # ReParameteraization
         self.parameters = AffineParameters(self, **kwargs)
         self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
+        self.full_cnnt  = kwargs.pop('full_connection', False) # 全結合層を明示
+
+        # カテゴリ辞書はここで作る
+        if not BaseLayer.categories:
+            BaseLayer.resolve_categories(globals())
+
+        # 自分がどの分類に属するか判定
+        for typeid, classes in BaseLayer.categories.items():
+            if isinstance(self, classes):
+                self.typeid = typeid
+                print(f"{self.__class__.__name__} is a subclass of BaseLayer",
+                      f"and typeid={typeid}.")
+                break
+        else:
+            raise Exception("Unsupported class uses BaseLayer.")
+
+        # 自分のtypeid確定後にインスタンス化
         self.prephase   = PrePhase(self, **kwargs) 
-        self.postphase  = PostPhase(self, **kwargs) 
+        self.postphase  = PostPhase(self, **kwargs)
+
+        self.x_shape = None
+        self.rsx_flag = None
+        self.rsy_flag = None
 
     def fix_configuration(self, shape):
         raise NotImplementedError('fix_configuration method for BaseLayer')
@@ -434,121 +596,178 @@ class BaseLayer(Function): # ニューロンの基本機能
     def recover(self):
         self.parameters.recover()
         
+    def align_config_and_input(self, x):
+        if None in self.config:
+            self.fix_configuration(x.shape)
+
+        if self.x_shape is None:
+            if self.typeid == 0:  
+                self.x_shape = self.config[0:1] # (m,n)の(m,)
+            elif self.typeid == 1:
+                self.x_shape = self.config[0:2] # (C,Iw, ...)の(C,Iw)
+            elif self.typeid == 2:
+                self.x_shape = self.config[0:3] # (C,Ih,Iw,...)の(C,Ih,Iw) 
+            else:
+                raise ValueError(f'Bad typeid {self.typeid}')
+
+        self.rsx_flag = False
+        if x.shape[1:] == self.x_shape: # 合致していればそのまま
+            return x
+        else:
+            self.rsx_flag = True 
+            return x.reshape(-1, *self.x_shape)
+
+    def align_output(self, x, y):
+        self.rsy_flag = False
+        if self.typeid == 0 and not self.full_cnnt: # NNのそのままの出力形状ではない
+            m, n = self.config
+            y = y.reshape((-1,) + x.shape[1:-1] + (n,)) # 形状を入力と合致
+            self.rsy_flag = True
+        return y     
+        
+
     def __forward__(self, x, *, train=False, dropout=0.0):
+        
+        #print('###', self.__class__.__name__, 'forward x =', x.shape)
+        #if hasattr(self, 'full_cnnt'):
+        #    print('full_connection =', self.full_cnnt)
+
+        x = self.align_config_and_input(x)
         # 前処理
         x = self.prephase.forward(x)
         # コアの順伝播
-        raise NotImplementedError()
-        y = None
+        y = self._forward(x)
         # 後処理
         y = self.postphase.forward(y, train=train, dropout=dropout)
+
+        y = self.align_output(x, y)
+        #print('### forward y =', y.shape)
         return y    
-        
+            
+
     def __backward__(self, grad_y, **kwargs):
+        #print('###', self.__class__.__name__, 'backward grad_y =', grad_y.shape)
+        if self.rsy_flag: 
+            m, n = self.config
+            grad_y = grad_y.reshape(-1, n)
+
         # 後処理の逆伝播
         grad_y = self.postphase.backward(grad_y, **kwargs)
         # コアの逆伝播
-        raise NotImplementedError()
-        grad_x = None
+        grad_x = self._backward(grad_y)
         # 前処理の逆伝播
         grad_x = self.prephase.backward(grad_x)
-        return grad_x
+        
+        #print('### backward grad_x =', grad_x.shape)
+        #return grad_x
+
+        if self.rsx_flag:
+            x, = self.inputs 
+            return grad_x.reshape(*x.shape)
+        else:
+            return grad_x
+
+
+    def _forward(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def _backward(self, *args, **kwargs):
+        raise NotImplementedError()
 
     def get_parameter_size(self):    
         raise Exception('Invalid configuration')
     
-class PrePhase(Function):
+class PrePhase:
     def __init__(self, layer=None, **kwargs):
-        super().__init__()
-        print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
+        #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
         self.layer = layer
         layernorm  = kwargs.pop('layernorm', False) # 層正規化の適用有無
         normdim    = kwargs.pop('normdim',    None) # 正規化の軸指定(2d)
 
-        if layer is not None \
-                and layer.__class__.__name__ in (
-                 'Conv2dLayer','Conv2dTransposeLayer', 'DeConv2dLayer',
-                 'ConvLayer', 'DeConvLayer') \
-                or normdim == '2d':
-            if layernorm == 'pre':
+        if layer is None:
+            self.Norm = None
+
+        elif layernorm == 'pre':
+            if layer.typeid == 2 or normdim == '2d': 
                 self.Norm = LayerNorm2d(**kwargs)
-            else:
-                self.Norm = None
-        else:
-            if layernorm == 'pre':
+            elif layer.typeid == 1 or normdim == '1d':
+                self.Norm = LayerNorm1d(**kwargs)
+            else: # layer.typeid == 0 or normdim == '0d') 
                 self.Norm = LayerNormalization(**kwargs)
-            else:
-                self.Norm = None
+
+        else:
+            self.Norm = None
         
-    def __forward__(self, x, *, train=False):
-        if None in self.layer.config:
-            print(self.layer.__class__.__name__, 'input.shape', x.shape)
-            self.layer.fix_configuration(x.shape)
+    def forward(self, x, *, train=False):
+        #print('    prephase f', x.shape)
         if self.Norm:
-            x = self.Norm.forward(x, train=train)          # バッチor層ノーマライゼーション
+            x = self.Norm.forward(x, train=train)      # バッチor層ノーマライゼーション
         return x
         
-    def __backward__(self, grad_x, **kwargs):
+    def backward(self, grad_x, **kwargs):
+        #print('    prephase b', grad_x.shape)
         if self.Norm:
-            grad_x = self.Norm.backward(grad_x)            # バッチor層ノーマライゼーション
+            grad_x = self.Norm.backward(grad_x)        # バッチor層ノーマライゼーション
         return grad_x
 
     def update(self, eta=0.001, **kwargs):
         if self.Norm:
             self.Norm.update(**kwargs)
-    
-class PostPhase(Function):  
+
+class PostPhase:  
     def __init__(self, layer=None, **kwargs):
-        super().__init__()
-        print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
+        #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
         activate        = kwargs.pop('activate','Identity') # 恒等関数
         activate_option = kwargs.copy()                     # 残りは活性化のオプション
         self.activator  = cf.eval_in_module(activate, Activators, **activate_option)  # 活性化関数
-
         dropout         = kwargs.pop('dropout',      False) # ドロップアウト可否(forwardで指定)
         self.DO = Dropout() if dropout else None
-
         batchnorm       = kwargs.pop('batchnorm',    False) # バッチ正規化の適用有無
         layernorm       = kwargs.pop('layernorm',    False) # 層正規化の適用有無
         normdim         = kwargs.pop('normdim',       None) # 正規化の軸指定(2d)
 
-        if layer is not None \
-                and layer.__class__.__name__ in (
-                'Conv2dLayer','Conv2dTransposeLayer', 'DeConv2dLayer',
-                'ConvLayer', 'DeConvLayer') \
-                or normdim == '2d':
-            if   batchnorm:
+        if layer is None:
+            self.Norm = None
+            
+        elif  batchnorm:
+            if layer.typeid == 2 or normdim == '2d': 
                 self.Norm = BatchNorm2d(**kwargs)
-            elif layernorm and not layernorm == 'pre':
-                self.Norm = LayerNorm2d(**kwargs)
-            else:
-                self.Norm = None
-        else:
-            if   batchnorm:
+            elif layer.typeid == 1 or normdim == '1d':
+                self.Norm = BatchNorm1d(**kwargs)
+            else: # layer.typeid == 0 or normdim == '0d') 
                 self.Norm = BatchNormalization(**kwargs)
-            elif layernorm and not layernorm == 'pre':
+                
+        elif  layernorm and not layernorm == 'pre':
+            if layer.typeid == 2 or normdim == '2d': 
+                self.Norm = LayerNorm2d(**kwargs)
+            elif layer.typeid == 1 or normdim == '1d':
+                self.Norm = LayerNorm1d(**kwargs)
+            else: # layer.typeid == 0 or normdim == '0d') 
                 self.Norm = LayerNormalization(**kwargs)
-            else:
-                self.Norm = None
-       
+               
+        else:
+            self.Norm = None
+
     def update(self, eta=0.001, **kwargs):
         if self.Norm:
             self.Norm.update(**kwargs)
         
-    def __forward__(self, y, *, train=False, dropout=0.0):
+    def forward(self, y, *, train=False, dropout=0.0):
+        #print('    postphase f', y.shape)
         if self.Norm:
-            y = self.Norm.forward(y, train=train)          # バッチor層ノーマライゼーション
-        y = self.activator.forward(y)                      # 活性化関数
+            y = self.Norm.forward(y, train=train)      # バッチor層ノーマライゼーション
+        y = self.activator.forward(y)                  # 活性化関数
         if self.DO:
-            y = self.DO.forward(y, dropout=dropout)        # ドロップアウト
+            y = self.DO.forward(y, dropout=dropout)    # ドロップアウト
         return y    
         
-    def __backward__(self, grad_y, **kwargs):
+    def backward(self, grad_y, **kwargs):
+        #print('    postphase b', grad_y.shape)
         if self.DO:
-            grad_y = self.DO.backward(grad_y)              # ドロップアウト
+            grad_y = self.DO.backward(grad_y)          # ドロップアウト
         grad_y = self.activator.backward(grad_y, **kwargs) # 活性化関数
         if self.Norm:
-            grad_y = self.Norm.backward(grad_y)            # バッチor層ノーマライゼーション
+            grad_y = self.Norm.backward(grad_y)        # バッチor層ノーマライゼーション
         return grad_y
 
 #### Affine層 #######################################################
@@ -563,7 +782,6 @@ class NeuronLayer(BaseLayer): # ニューロンの基本機能
         else:
             m, n = None, None
         self.config = m, n
-        self.full_cnnt  = kwargs.pop('full_connection', False) # 全結合層を明示
         super().__init__(**kwargs)
 
     def fix_configuration(self, shape):
@@ -577,33 +795,30 @@ class NeuronLayer(BaseLayer): # ニューロンの基本機能
         m, n = self.config
         return m, n
 
-    def __forward__(self, x, *, train=False, dropout=0.0):
-        x = self.prephase.forward(x)
+    def _forward(self, x):
         w, b, gamma = self.parameters()
         # 画像の全結合ではバッチ数維持し各ベクトル化、一方、時系列データではバッチ数と時系列長を維持
         m, n = self.config   # m:入力数、n:ニューロン数         
         # 画像、時系列データにも対応するためxをreshape、yの形状は (-1, n)
-        y = self.dot_linear.forward(x.reshape(-1, m), w, b, gamma)
-        # 形状を入力と合致させる
-        if not self.full_cnnt:
-            y = y.reshape((-1,) + x.shape[1:-1] + (n,))
-        y = self.postphase.forward(y, train=train, dropout=dropout)
+        #y = self.dot_linear.forward(x.reshape(-1, m), w, b, gamma)
+        y = self.dot_linear.forward(x, w, b, gamma)
         return y 
         
-    def __backward__(self, grad_y, flush=True, **kwargs):
-        grad_y = self.postphase.backward(grad_y, **kwargs)
-        x, = self.inputs
-        # 順伝播の際の出力形状 (-1, n) に
-        m, n = self.config                       # m:入力数、n:ニューロン数
-        grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y.reshape(-1, n))
+    def _backward(self, grad_y, flush=True):
+        #x, = self.inputs
+        # 順伝播の際のdot_linearの出力形状 (-1, n) に
+        #m, n = self.config                       # m:入力数、n:ニューロン数
+        #grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y.reshape(-1, n))
+        grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
-        grad_x = grad_x.reshape(*x.shape)        # 形状を合致させる
-        grad_x = self.prephase.backward(grad_x)
         return grad_x
 
     def accommodate(self):
         self.parameters.accommodate()
     
+
+
+
 ### 畳み込み層 #####################################################
 class Conv1dLayer(BaseLayer):
     # B:バッチサイズ, C:入力チャンネル数, Iw:入力画像幅
@@ -641,6 +856,7 @@ class Conv1dLayer(BaseLayer):
         self.config = C, Iw, M, Fw, stride, pad, Ow
         self.vec2col = Vec2col(C, Iw+2*pad, Fw, stride, Ow)
         self.col2vec = Col2vec(C, Ow, Fw, stride, Iw+2*pad)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def get_parameter_size(self):
         C, Iw, M, Fw, stride, pad, Ow = self.config
@@ -648,8 +864,8 @@ class Conv1dLayer(BaseLayer):
         n = M     # フィルタ数
         return m, n
 
-    def __forward__(self, x, *, train=False, dropout=0.0):
-        x = self.prephase.forward(x)
+    def _forward(self, x):
+        w, b, gamma = self.parameters()    
         C, Iw, M, Fw, stride, pad, Ow = self.config
         x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
         # '0'パディング B軸    C軸  Iw左Iw右
@@ -658,26 +874,22 @@ class Conv1dLayer(BaseLayer):
         # 入力画像を行列に変換 (B,C,Iw+2*pad)->(C*Fw,B*Ow)
         cols = self.vec2col(x)
         # Affine変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
-        w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Ow, M).transpose(0, 2, 1)       # u.shape=(B,M,Ow) 
-        y = self.postphase.forward(y, train=train, dropout=dropout)
         return y
     
-    def __backward__(self, grad_y, flush=True):
-        grad_y = self.postphase.backward(grad_y) # 20250401AI            
+    def _backward(self, grad_y, flush=True):
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Ow)               # grad_y.shape=(B,M,Ow)
         grad_y = grad_y.transpose(0, 2, 1).reshape(-1, M) #grad_y.shape=(B*Ow,M)
         # Affineの逆伝播 grad_cols.shape=(B*Ow,C*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         # 行列を画像に変換 (B*Ow,C*Fw)->(B,C,Iw)
         grad_x = self.col2vec(grad_cols)
         # パディング分を外して元の画像データに戻す        
         grad_x = grad_x[:,:,pad:pad+Iw]
         grad_x = grad_x.reshape(self.inputs[0].shape)
-        grad_x = self.prephase.backward(grad_x)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
 ### 転置畳込み層 #####################################################
@@ -717,6 +929,7 @@ class Conv1dTransposeLayer(BaseLayer):
         self.config = C, Iw, M, Fw, stride, pad, Ow
         self.col2vec = Col2vec(M, Iw, Fw, stride, Ow+2*pad)
         self.vec2col = Vec2col(M, Ow+2*pad, Fw, stride, Iw)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
 
     def get_parameter_size(self):
@@ -725,22 +938,19 @@ class Conv1dTransposeLayer(BaseLayer):
         n = M*Fw           # フィルタ数とフィルタサイズ「要注意」
         return m, n
 
-    def __forward__(self, x, *, train=False, dropout=0.0):
-        x = self.prephase.forward(x)
+    def _forward(self, x):
+        w, b, gamma = self.parameters()    
         C, Iw, M, Fw, stride, pad, Ow = self.config
         x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
         # Affine変換 (B*Iw,C)×(C,M*Fw)->(B*Iw,M*Fw)   
-        w, b, gamma = self.parameters()    
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)  　
         y = self.col2vec(cols)
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Ow]                     # y.shape=(B,M,Ow)
-        y = self.postphase.forward(y, train=train, dropout=dropout)
         return y
 
-    def __backward__(self, grad_y, flush=True):
-        grad_y = self.postphase.backward(grad_y) # 20250401AI
+    def _backward(self, grad_y, flush=True):
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Ow)       # grad_y.shape=(B,M,Ow)
         #  '0'パディング
@@ -749,10 +959,9 @@ class Conv1dTransposeLayer(BaseLayer):
         grad_y = self.vec2col(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         grad_x = grad_x.reshape(-1,Iw,C).transpose(0,2,1) # (B,C,Iw)
         grad_x = grad_x.reshape(self.inputs[0].shape)
-        grad_x = self.prephase.backward(grad_x)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
 
@@ -855,6 +1064,7 @@ class Conv2dLayer(BaseLayer):
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
         self.im2col = Im2col(C, Ih+2*pad, Iw+2*pad, Fh, Fw, Sh, Sw, Oh, Ow)
         self.col2im = Col2im(C, Oh, Ow, Fh, Fw, Sh, Sw, Ih+2*pad, Iw+2*pad)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def get_parameter_size(self):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
@@ -862,8 +1072,8 @@ class Conv2dLayer(BaseLayer):
         n = M        # フィルタ数
         return m, n
 
-    def __forward__(self, x, *, train=False, dropout=0.0):
-        x = self.prephase.forward(x)
+    def _forward(self, x):
+        w, b, gamma = self.parameters()    
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
         # '0'パディング
@@ -871,26 +1081,22 @@ class Conv2dLayer(BaseLayer):
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow) 
         cols = self.im2col(x)
         # Affine変換: (B*Oh*Ow,C*Fh*Fw)×(C*Fh*Fw,M)->(B*Oh*Ow,M)
-        w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
-        y = self.postphase.forward(y, train=train, dropout=dropout)
         return y
     
-    def __backward__(self, grad_y, flush=True):
-        grad_y = self.postphase.backward(grad_y)
+    def _backward(self, grad_y, flush=True):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
         grad_y = grad_y.transpose(0, 2, 3, 1).reshape(-1, M) # grad_y.shape=(B*Oh*Ow,M)
         # Affineの逆伝播 grad_cols.shape=(B*Oh*Ow,C*Fh*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)
         grad_x = self.col2im(grad_cols)
         # パディング分を外して元の画像データに戻す
         grad_x = grad_x[:,:,pad:pad+Ih,pad:pad+Iw]
         grad_x = grad_x.reshape(self.inputs[0].shape)
-        grad_x = self.prephase.backward(grad_x)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
 class ConvLayer(Conv2dLayer):
@@ -939,6 +1145,7 @@ class Conv2dTransposeLayer(BaseLayer):
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
         self.col2im = Col2im(M, Ih, Iw, Fh, Fw, Sh, Sw, Oh+2*pad, Ow+2*pad)
         self.im2col = Im2col(M, Oh+2*pad, Ow+2*pad, Fh, Fw, Sh, Sw, Ih, Iw)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def get_parameter_size(self):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
@@ -946,23 +1153,19 @@ class Conv2dTransposeLayer(BaseLayer):
         n = M*Fh*Fw        # フィルタ数とフィルタサイズ「要注意」
         return m, n
 
-    def __forward__(self, x, *, train=False, dropout=0.0):
-        x = self.prephase.forward(x)
-        self.x_shape = x.shape
+    def _forward(self, x):
+        w, b, gamma = self.parameters()    
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
         # Affine変換 (B*Ih*Iw,C)×(C,M*Fh*Fw)->(B*Ih*Iw,M*Fh*Fw)
-        w, b, gamma = self.parameters()    
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fh*Fw,B*Ih*Iw)->(B,M,Oh,Ow)  　
         y = self.col2im(cols) # 20251107AI
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Oh,pad:pad+Ow]              # y.shape=(B,M,Oh,Ow)
-        y = self.postphase.forward(y, train=train, dropout=dropout)
         return y
 
-    def __backward__(self, grad_y, flush=True):
-        grad_y = self.postphase.backward(grad_y)
+    def _backward(self, grad_y, flush=True):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
         #  '0'パディング
@@ -971,10 +1174,9 @@ class Conv2dTransposeLayer(BaseLayer):
         grad_y = self.im2col(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         grad_x = grad_x.reshape(-1,Ih,Iw,C).transpose(0,3,1,2) # (B,C,Ih,Iw)
         grad_x = grad_x.reshape(self.inputs[0].shape)
-        grad_x = self.prephase.backward(grad_x)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
 class DeConv2dLayer(Conv2dTransposeLayer):
@@ -1120,6 +1322,7 @@ class Pooling1dLayer(Function):
         self.config = C, Iw, pool, pad, Ow
         self.pooling = Pooling1d(pool, Ow, self.method)
         self.unpooling = UnPooling1d(pool, self.method)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
             
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
@@ -1186,6 +1389,7 @@ class UnPooling1dLayer(Function):
         self.config = C, Iw, pool, pad, Ow
         self.unpooling = UnPooling1d(pool, self.method)
         self.pooling = Pooling1d(pool, Iw, self.method)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
         if None in self.config:
@@ -1300,6 +1504,7 @@ class Pooling2dLayer(Function):
         self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
         self.pooling = Pooling2d(pool_h, pool_w, Oh, Ow, self.method)
         self.unpooling = UnPooling2d(pool_h, pool_w, self.method)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
       
             
     def __forward__(self, x, *, train=False, dropout=0.0):
@@ -1380,6 +1585,7 @@ class UnPooling2dLayer(Function):
         self.config = C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow
         self.unpooling = UnPooling2d(pool_h, pool_w, self.method)
         self.pooling = Pooling2d(pool_h, pool_w, Ih, Iw, self.method)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
         if None in self.config:
@@ -1477,6 +1683,7 @@ class GlobalAveragePooling(Function):
         elif C is None or Ih is None or Iw is None:
             raise Exception(self.__class__.__name__, 'cannot fix configuration.')
         self.config = C, Ih, Iw
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def __forward__(self, x, *, train=False, dropout=0.0):
         if None in self.config:
@@ -1589,7 +1796,6 @@ class Interpolate2d(Function):
 
         else: 
             self.impl = Interpolate2dGeneral(self.config)
-
         print(self.impl.__class__.__name__, self.config)
 
     def __forward__(self, x):
@@ -1810,6 +2016,7 @@ class MaskedExpansionLayer(BaseLayer):
         self.Oh = Oh = Ih * Fh
         self.Ow = Ow = Iw * Fw
         self.config = C, Ih, Iw, M, Fh, Fw, Oh, Ow
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
             
     def get_parameter_size(self):
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
@@ -1817,8 +2024,7 @@ class MaskedExpansionLayer(BaseLayer):
         n = C*Fh*Fw        # フィルタ数
         return m, n
 
-    def __forward__(self, x, *, train=False, dropout=0.0):
-        x = self.prephase.forward(x)
+    def _forward(self, x):
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         B = x.size // (C*Ih*Iw)                        # B = x.shape[0] = len(x)
         w, b, gamma = self.parameters()    
@@ -1833,17 +2039,16 @@ class MaskedExpansionLayer(BaseLayer):
         for c in range(C):
             y[c] = np.dot(z[c], w[c]) + b[c]  # u[c].shape=(B*Ih*Iw,Fh*Fw)
         y = y.reshape(C,B,Ih,Iw,Fh,Fw).transpose(1,0,2,4,3,5).reshape(B,C,Oh,Ow)
-        y = self.postphase.forward(y, train=train, dropout=dropout)
         return y
     
-    def __backward__(self, grad_y):
+    def _backward(self, grad_y):
         #print('畳み込み層逆伝播grad_yの形は', grad_y.shape)
         x, = self.inputs
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         B = grad_y.size // (C*Oh*Ow)                  # B = grad_y.shape[0] = len(grad_y)
         grad_y = grad_y.reshape(B, C, Oh, Ow)
-        grad_y = self.postphase.backward(grad_y)
-        grad_y = grad_y.reshape(B,C,Ih,Fh,Iw,Fw).transpose(1,0,2,4,3,5).reshape(C,B*Ih*Iw,Fh*Fw)
+        grad_y = (grad_y.reshape(B,C,Ih,Fh,Iw,Fw)
+                  .transpose(1,0,2,4,3,5).reshape(C,B*Ih*Iw,Fh*Fw))
         
         # フィルタとバイアスの勾配
         w = self.w.reshape(M,C,Fh*Fw).transpose(1,0,2) # (C,M,Fh*Fw) 
@@ -1862,7 +2067,6 @@ class MaskedExpansionLayer(BaseLayer):
         self.parameters.set_gradient(grad_w, grad_b, None)
         grad_z = grad_z.reshape(C,B,Ih,Iw,M).transpose(1,0,2,3,4) # (B,C,Ih,Iw,M)
         grad_x = np.sum(grad_z, axis=4)
-        grad_x = self.prephase.backward(grad_x)
         return grad_x
 
 # -- 潜在変数をサンプリングする層 -- 20240701
@@ -2062,18 +2266,17 @@ class LatentLayer(BaseLayer):
         for i in shape[1:]:
             m *= i
         self.config = m, self.config[1]
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def get_parameter_size(self):
         m, n = self.config
         return m, n*2 # m×2n 大きさに注意 
 
-    def forward(self, x, train=False, kl_loss=False):
-        x = self.prephase.forward(x)
+    def __forward__(self, x, train=False, kl_loss=False):
         m, n = self.config
         self.x = x
         w, b, gamma = self.parameters()    
         y = self.dot_linear.forward(self.x, w, b, gamma)
-        y = self.postphase.forward(y, train=train, dropout=dropout)
         self.mu = self.y[:, :n]
         self.log_var = self.y[:, n:]
         self.epsilon = np.random.randn(*self.log_var.shape) * self.rate
@@ -2084,7 +2287,7 @@ class LatentLayer(BaseLayer):
         else:
             return self.z, kll
     
-    def backward(self, grad_z, flush=True):
+    def __backward__(self, grad_z, flush=True):
         dldmu, dldlog_var = self.kl_loss.backward()
         # デコーダからのgrad_zとkl_lossの逆伝播の和
         delta_mu      = grad_z \
@@ -2092,10 +2295,8 @@ class LatentLayer(BaseLayer):
         delta_log_var = 0.5 * grad_z * self.epsilon * np.exp(self.log_var/2) \
                       + dldlog_var * self.r_kl_loss
         grad_y = np.hstack((delta_mu, delta_log_var))
-        grad_y = self.postphase.backward(grad_y)
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)        
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
-        grad_x = self.prephase.backward(grad_x)
         return grad_x
 
 #### 時系列データをまとめて処理するRNN層(Truncated BPTT方式) ##################
@@ -3373,6 +3574,7 @@ class ContextualSelfAttention(Function):
                              width=np.sqrt(1/m), # 通常とは異なるため指定が必要
                              debug_mode=self.debug_mode)
         self.q = self.q.reshape(*self.q_shape)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def update(self, eta=0.001, **kwargs):
         if self.linear_v is not None:
@@ -3439,7 +3641,7 @@ class ContextualSelfAttention_bkup(Function):
        
     def fix_configuration(self, shape):
         self.config = shape[-1], self.config[1]
-        print('config =', self.config)
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def update(self, eta=0.001, **kwargs):
         self.parameters.update(eta=eta, **kwargs)
@@ -4681,6 +4883,8 @@ class Mean(Function):
         gx = np.broadcast_to(gx, self.x_shape)
         return gx
 
+# BaseLayerのカテゴリ辞書の登録
+#BaseLayer.resolve_categories(globals())
     
 #########################################
 if __name__=='__main__':
@@ -4689,6 +4893,8 @@ if __name__=='__main__':
     import sys
     current_module = sys.modules[__name__]
     classes = map(lambda x:x[0],inspect.getmembers(current_module,inspect.isclass))
+    models = []
     for c in classes:
         print(c)
-    
+
+     
