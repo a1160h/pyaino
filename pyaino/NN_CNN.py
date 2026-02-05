@@ -1,5 +1,5 @@
 # NN_CNN
-# 2025.10.30 A.Inoue　
+# 2026.02.05 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -92,6 +92,7 @@ class NN_CNN_Base:
             dropout_rate = dropout if i<last_layer else 0.0             # 中間層だけが対象
             y = layer.forward(y, train=train, dropout=dropout_rate)
             self.outputshape[str(i)+layer.__class__.__name__] = y.shape # デバグ用
+        self.error_layer = None 
         if t is None:
             return y
         if not hasattr(self, 'loss_function') or y.size!=t.size:
