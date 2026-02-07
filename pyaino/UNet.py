@@ -1,5 +1,5 @@
 # UNet
-# 20260128 A.Inoue
+# 20260207 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -9,11 +9,20 @@ from pyaino import Functions as F
 from pyaino import common_function as cf
 import warnings
 
+def center_crop(x, crop_h, crop_w):
+    h, w = x.shape[-2:]
+    
+    # 開始位置の計算
+    start_h = (h - crop_h) // 2
+    start_w = (w - crop_w) // 2
+    
+    # スライス
+    return x[:, :, start_h:start_h+crop_h, start_w:start_w+crop_w]
+
 class ConvBlock:
-    def __init__(self, in_ch, out_ch, proj=False,
+    def __init__(self, out_ch, proj=False,
                  **kwargs):
-        print('__init__', self.__class__.__name__, in_ch, out_ch, kwargs)
-        self.in_ch = in_ch
+        print('__init__', self.__class__.__name__, out_ch, kwargs)
         self.out_ch = out_ch
         # Conv 本体（bottleneck 構造）
         self.convs = [neuron.Conv2dLayer(out_ch, 3, 1, **kwargs),
@@ -53,16 +62,15 @@ class ConvBlockBottleneck(ConvBlock):
     - mid_ch -> mid_ch (3x3)
     - mid_ch -> out_ch (1x1)
     """
-    def __init__(self, in_ch, out_ch, proj=False, 
+    def __init__(self, out_ch, proj=False, 
                  bottleneck_ratio=0.5, min_mid_ch=16,
                  **kwargs):
-        print('__init__', self.__class__.__name__, in_ch, out_ch,
+        print('__init__', self.__class__.__name__, out_ch,
               proj, bottleneck_ratio, min_mid_ch, kwargs)
-        self.in_ch = in_ch
         self.out_ch = out_ch
        
-        # mid_ch を下限を設けて決定
-        mid_ch = max(int(in_ch * bottleneck_ratio), min_mid_ch)
+        # mid_ch を下限を設けて決定(in_chとout_chの両方を見る)
+        mid_ch = max(int(out_ch * bottleneck_ratio), min_mid_ch)
 
         # Conv 本体（bottleneck 構造）
         self.convs = [
@@ -93,7 +101,7 @@ class ConvBlockBottleneck(ConvBlock):
 class UNet:
     """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
 
-    def __init__(self, depth=3, in_ch=1,
+    def __init__(self, depth=3, in_ch=None,
                  time_embed=False, num_labels=None, embed_dim=128,  
                  base_ch=32, bottleneck=True, bottleneck_ratio=0.5, 
                  batchnorm=None, layernorm=None, activate='ReLU', 
@@ -166,39 +174,49 @@ class UNet:
 
         print(options_for_blocks, options_for_ol)
 
+        # チャネル構成の決定
+        c_down = [base_ch * (2 ** i) for i in range(depth)]
+        c_bot  =  base_ch * (2 ** depth)
+        c_up   = [base_ch * (2 ** i) for i in reversed(range(depth))]
+
         # Down path
         self.down , self.pool = [], []
-        C0 = in_ch; C1 = base_ch
-        for _ in range(depth):
-            self.down.append(Conv(C0, C1, **options_for_blocks))
+        for i in range(depth):
+            self.down.append(Conv(c_down[i], **options_for_blocks))
             self.pool.append(neuron.Pooling2dLayer(2))
-            C0 = C1; C1 *=2
                 
         # Bottleneck
-        self.bot = Conv(C0, C1, **options_for_blocks)
+        self.bot = Conv(c_bot, **options_for_blocks)
 
         # Up path（Upsample + concat + Conv）
         self.upsample, self.concat, self.up = [], [], []
-        for _ in range(depth):
+        for i in range(depth):
             self.upsample.append(neuron.Interpolate2d(scale_factor=2, mode='bilinear'))
             self.concat.append(F.Concatenate()) 
-            self.up.append(Conv(C1 + C0, C0, **options_for_blocks))
-            C0 //= 2; C1 //= 2
+            self.up.append(Conv(c_up[i], **options_for_blocks))
 
-        # 出力 1x1 Conv（チャネルだけ in_ch に戻す）
-        assert C1 == base_ch, f'{C1} {base_ch}'
+        # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
         self.out = neuron.Conv2dLayer(in_ch, 1, 0, **options_for_ol)
 
+    def fix_out_ch(self, shape):
+        """ 出力のConv2dの出力チャネル数の確定(入力の形状を見て合わせる) """
+        if self.out.config[3] is not None:
+            return
+        else:
+            self.in_ch = shape[1]  # shape=(B,C,Ih,Iw)
+            #print(self.out.config, self.in_ch)
+            org_out_config = self.out.config
+            list_out_config = list(self.out.config)  
+            list_out_config[3] = self.in_ch
+            self.out.config = tuple(list_out_config)
+            #print(self.out.config)
+
     def forward(self, x, timesteps=None, labels=None, train=True):
-        assert x.shape[1] == self.in_ch, \
-                             f"input C={x.shape[1]} but model in_ch={self.in_ch}"
+        self.fix_out_ch(x.shape)
         self.time_mlp_used = False
         self.label_mlp_used = False
-        v = None
         # time/label embedding -> mlp
-        if self.time_mlp is None or timesteps is None:
-            time_ctx = 0
-        else:
+        if (self.time_mlp is not None) and (timesteps is not None):
             t0 = timesteps
             t0 = self.normalize_t(t0, x.shape[0])    # バッチサイズだけ合わせる
             if (t0 < 0).any() or (t0 >= 1000).any(): # 仮20260107AI
@@ -206,15 +224,17 @@ class UNet:
             time_ctx = self.time_mlp(t0, train=train)
             self.time_mlp_used = True
 
-        if self.label_mlp is None or labels is None:
-            label_ctx = 0
-        else:
+        if (self.label_mlp is not None) and (labels is not None):
             label_ctx = self.label_mlp(labels, train=train)
             self.label_mlp_used = True
-
-        v = time_ctx + label_ctx
-        
-        if isinstance(v, (int, float)) and v == 0:   # 仮処置20260123AI
+        # 注入ベクトルの確定
+        if self.time_mlp_used and self.label_mlp_used:
+            v = time_ctx + label_ctx
+        elif self.time_mlp_used:
+            v = time_ctx
+        elif self.label_mlp_used:
+            v = label_ctx
+        else:
             v = None
             
         shapes = []
@@ -237,6 +257,8 @@ class UNet:
             x = self.upsample[i](x)                   # H/4, W/4
             if x.shape[-2:] != shape[-2:]:            # 形状が違う場合 
                 x = x[:, :, 0:shape[-2], 0:shape[-1]] # 元の形状にトリミング
+                x2 = center_crop(x, shape[-2], shape[-1]) # 検証用仮実装(上の行でOKなはずだが確認のため)
+                assert (x==x2).all()   
             x = self.concat[i](x, z, axis=1)          # C4 + C3
             x = self.up[i](x, v, train=train)         # -> C3
 
@@ -286,67 +308,18 @@ class UNet:
 
 
 if __name__=='__main__':
-
-    #### 2. CIFAR-10 データロード ####
     set_derivative(True)
-    from pyaino import CIFER10
-    import time
 
-    epoch = 5
-    batch_size = 160
-    interval = 1
+    for i in range(10):
+        h, w = np.random.randint(1, 100, 2)
+        c = np.random.randint(1, 5)
+        b = np.random.randint(1,10)
+        x = np.random.rand(int(b), int(c), int(h), int(w))
 
-    input_train, correct_train, target_train, input_test, correct_test, target_test \
-        = CIFER10.get_data(normalize=True, image=True)
-    label_list = CIFER10.label_list()
-
-    # -- モデルの生成 -- 
-    model = UNet(in_ch=3,
-                 depth=1,
-                 time_embed=True,
-                 num_labels=10,
-                 bottleneck=False, #True,
-                 )
-    loss_func = lf.MeanSquaredError()   # 再構成誤差
-
-    input('wait')
-    cf.get_obj_info(model)
-
-    # -- 学習データの選択用 --
-    errors, accuracy = [], []
-    index_rand = np.arange(len(input_train))
-    start = time.time()
-    # -- 学習と経過の記録 --
-    for i in range(epoch):
-        np.random.shuffle(index_rand)             # epoch毎index_randをランダマイズ  
-        # -- 学習 --
-        for j in range(0, len(input_train), batch_size): # 0～n_trainまでbatch_sizeずつ更新
-            mb_index = index_rand[j:j+batch_size] # index_randからbatch_sizeずつ取出
-            x = input_train[mb_index]#, :]
-            t = target_train[mb_index]
-
-            # 順伝播と逆伝播→更新
-            y = model.forward(x, labels=t, train=True)#, dropout=0.3)
-            l = loss_func(y, x) 
-            l.backtrace()
-            
-            model.update(eta=0.0003)#, g_clip=2.5)
-            acc = cf.get_accuracy(y, x)  
-            errors.append(float(l)) 
-            accuracy.append(acc)
-            
-            print(f'{i:6d} {j:6d} {float(l):7.4f} {acc:6.3f}')
-
-
-    # -- 誤差の記録をグラフ表示 --
-    cf.graph_for_error(errors, accuracy)
-
-    index_test = np.arange(100)
-    x = input_test[index_test]
-    t = target_test[index_test]
-    y = model.forward(x, train=False)
-
-    CIFER10.show_multi_samples(y, t, label_list)
-
-
+        model = UNet()#in_ch=int(c))
+        print('\n', f'##### test No.{i} x.shape = {x.shape} #####')
+        y = model(x)
+        y.backtrace()
+        gx = model.down[0].convs[0].inputs[0].grad
+        print(f'##### y.shape = {y.shape} gx.shape = {gx.shape} #####')
 
