@@ -1,5 +1,5 @@
 # Initailizer
-# 2025.08.17 A.Inoue
+# 2026.02.07 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy');set_seed(1); np = Config.np
@@ -16,10 +16,10 @@ class BaseInitializer:
                 self.rng = rng
             else:
                 self.rng = np.random.RandomState(Config.seed)
-        print('random generator is', self.rng.__class__.__name__)        
+        debug_print('random generator is', self.rng.__class__.__name__)        
 
     def __call__(self, shape, scale):
-        print(self.__class__.__name__, shape, f'scale={scale:6.4f}', self.distribution)
+        debug_print(self.__class__.__name__, shape, f'scale={scale:6.4f}', self.distribution)
         if self.distribution == 'normal': 
             return self.rng.normal(0.0, np.sqrt(scale), size=shape).astype(Config.dtype)
         elif self.distribution == 'uniform':
@@ -59,7 +59,7 @@ class Orthogonal(BaseInitializer):
         #elif self.distribution == 'uniform':
         #    limit = np.sqrt(3 * scale)
         #    a = self.rng.uniform(-limit, limit, size=shape).astype(Config.dtype)
-        print(f"{head} {self.__class__.__name__} shape={shape} {self.distribution}")
+        debug_print(f"{head} {self.__class__.__name__} shape={shape} {self.distribution}")
         u, _, v = np.linalg.svd(a, full_matrices=False)
         if m >= n:
             return u  # m >= n のときuは列直交
@@ -102,7 +102,7 @@ class Legacy:
             name = 'Xavier'
         # パラメータの初期値
         weight = (width * np.random.randn(m, n)).astype(Config.dtype)
-        print(self.__class__.__name__, name, shape, width)
+        debug_print(self.__class__.__name__, name, shape, width)
         return weight
 
 
