@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.02.05 A.Inoue
+# 2026.02.07 A.Inoue
 
 import copy
 import warnings
@@ -537,7 +537,7 @@ class BaseLayer(Function):
         0: ("NeuronLayer",),
         1: ("Conv1dLayer", "Conv1dTransposeLayer", "DeConv1dLayer"),
         2: ("Conv2dLayer", "Conv2dTransposeLayer", "ConvLayer",
-            "DeConvLayer", "DeConv2dLayer"),
+            "DeConvLayer", "DeConv2dLayer", "MaskedExpansionLayer"),
     }
     categories = {} # 実際のクラスオブジェクトの格納場所
 
@@ -575,9 +575,10 @@ class BaseLayer(Function):
         self.prephase   = PrePhase(self, **kwargs) 
         self.postphase  = PostPhase(self, **kwargs)
 
-        self.x_shape = None
-        self.rsx_flag = None
-        self.rsy_flag = None
+        self.original_x_shape  = None # この層が受け取るxの元の形状
+        self.canonical_x_shape = None # この層が内部で扱う正準なxの形状
+        self.did_reshape_x = None
+        self.did_reshape_y = None
 
     def fix_configuration(self, shape):
         raise NotImplementedError('fix_configuration method for BaseLayer')
@@ -597,32 +598,34 @@ class BaseLayer(Function):
         self.parameters.recover()
         
     def align_config_and_input(self, x):
+        self.original_x_shape = x.shape
         if None in self.config:
             self.fix_configuration(x.shape)
 
-        if self.x_shape is None:
+        if self.canonical_x_shape is None:
             if self.typeid == 0:  
-                self.x_shape = self.config[0:1] # (m,n)の(m,)
+                c_shape = (-1,) + self.config[0:1] # (m,n)の(m,)
             elif self.typeid == 1:
-                self.x_shape = self.config[0:2] # (C,Iw, ...)の(C,Iw)
+                c_shape = (-1,) + self.config[0:2] # (C,Iw, ...)の(C,Iw)
             elif self.typeid == 2:
-                self.x_shape = self.config[0:3] # (C,Ih,Iw,...)の(C,Ih,Iw) 
+                c_shape = (-1,) + self.config[0:3] # (C,Ih,Iw,...)の(C,Ih,Iw) 
             else:
                 raise ValueError(f'Bad typeid {self.typeid}')
+            self.canonical_x_shape = c_shape
 
-        self.rsx_flag = False
-        if x.shape[1:] == self.x_shape: # 合致していればそのまま
+        self.did_reshape_x = False
+        if x.shape[1:] == self.canonical_x_shape[1:]: # 合致していればそのまま
             return x
         else:
-            self.rsx_flag = True 
-            return x.reshape(-1, *self.x_shape)
+            self.did_reshape_x = True 
+            return x.reshape(*self.canonical_x_shape)
 
-    def align_output(self, x, y):
-        self.rsy_flag = False
-        if self.typeid == 0 and not self.full_cnnt: # NNのそのままの出力形状ではない
+    def align_output(self, y):
+        self.did_reshape_y = False
+        if self.typeid == 0 and not self.full_cnnt: # NNの出力形状のままではない
             m, n = self.config
-            y = y.reshape((-1,) + x.shape[1:-1] + (n,)) # 形状を入力と合致
-            self.rsy_flag = True
+            y = y.reshape((-1,) + self.original_x_shape[1:-1] + (n,)) 
+            self.did_reshape_y = True
         return y     
         
 
@@ -640,14 +643,14 @@ class BaseLayer(Function):
         # 後処理
         y = self.postphase.forward(y, train=train, dropout=dropout)
 
-        y = self.align_output(x, y)
+        y = self.align_output(y)
         #print('### forward y =', y.shape)
         return y    
             
 
     def __backward__(self, grad_y, **kwargs):
         #print('###', self.__class__.__name__, 'backward grad_y =', grad_y.shape)
-        if self.rsy_flag: 
+        if self.did_reshape_y: 
             m, n = self.config
             grad_y = grad_y.reshape(-1, n)
 
@@ -661,7 +664,7 @@ class BaseLayer(Function):
         #print('### backward grad_x =', grad_x.shape)
         #return grad_x
 
-        if self.rsx_flag:
+        if self.did_reshape_x:
             x, = self.inputs 
             return grad_x.reshape(*x.shape)
         else:
@@ -712,7 +715,7 @@ class PrePhase:
 
     def update(self, eta=0.001, **kwargs):
         if self.Norm:
-            self.Norm.update(**kwargs)
+            self.Norm.update(eta=eta, **kwargs)
 
 class PostPhase:  
     def __init__(self, layer=None, **kwargs):
@@ -750,7 +753,7 @@ class PostPhase:
 
     def update(self, eta=0.001, **kwargs):
         if self.Norm:
-            self.Norm.update(**kwargs)
+            self.Norm.update(eta=eta, **kwargs)
         
     def forward(self, y, *, train=False, dropout=0.0):
         #print('    postphase f', y.shape)
@@ -797,18 +800,10 @@ class NeuronLayer(BaseLayer): # ニューロンの基本機能
 
     def _forward(self, x):
         w, b, gamma = self.parameters()
-        # 画像の全結合ではバッチ数維持し各ベクトル化、一方、時系列データではバッチ数と時系列長を維持
-        m, n = self.config   # m:入力数、n:ニューロン数         
-        # 画像、時系列データにも対応するためxをreshape、yの形状は (-1, n)
-        #y = self.dot_linear.forward(x.reshape(-1, m), w, b, gamma)
         y = self.dot_linear.forward(x, w, b, gamma)
         return y 
         
     def _backward(self, grad_y, flush=True):
-        #x, = self.inputs
-        # 順伝播の際のdot_linearの出力形状 (-1, n) に
-        #m, n = self.config                       # m:入力数、n:ニューロン数
-        #grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y.reshape(-1, n))
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
@@ -867,7 +862,7 @@ class Conv1dLayer(BaseLayer):
     def _forward(self, x):
         w, b, gamma = self.parameters()    
         C, Iw, M, Fw, stride, pad, Ow = self.config
-        x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
+        #x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
         # '0'パディング B軸    C軸  Iw左Iw右
         x = np.pad(x, [(0,0),(0,0),(pad,pad)])
         self.vec_shape = x.shape # パディング後の形状
@@ -888,7 +883,7 @@ class Conv1dLayer(BaseLayer):
         grad_x = self.col2vec(grad_cols)
         # パディング分を外して元の画像データに戻す        
         grad_x = grad_x[:,:,pad:pad+Iw]
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        #grad_x = grad_x.reshape(self.inputs[0].shape)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
@@ -941,7 +936,8 @@ class Conv1dTransposeLayer(BaseLayer):
     def _forward(self, x):
         w, b, gamma = self.parameters()    
         C, Iw, M, Fw, stride, pad, Ow = self.config
-        x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
+        #x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
+        x = x.transpose(0, 2, 1).reshape(-1, C) # (B*Iw,C)  
         # Affine変換 (B*Iw,C)×(C,M*Fw)->(B*Iw,M*Fw)   
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)  　
@@ -959,8 +955,8 @@ class Conv1dTransposeLayer(BaseLayer):
         grad_y = self.vec2col(grad_y)
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        grad_x = grad_x.reshape(-1,Iw,C).transpose(0,2,1) # (B,C,Iw)
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        grad_x = grad_x.reshape(-1, Iw, C).transpose(0, 2, 1) # (B,C,Iw)
+        #grad_x = grad_x.reshape(self.inputs[0].shape)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
@@ -1075,7 +1071,7 @@ class Conv2dLayer(BaseLayer):
     def _forward(self, x):
         w, b, gamma = self.parameters()    
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
-        x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
+        #x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
         # '0'パディング
         x = np.pad(x, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow) 
@@ -1095,7 +1091,7 @@ class Conv2dLayer(BaseLayer):
         grad_x = self.col2im(grad_cols)
         # パディング分を外して元の画像データに戻す
         grad_x = grad_x[:,:,pad:pad+Ih,pad:pad+Iw]
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        #grad_x = grad_x.reshape(self.inputs[0].shape)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
@@ -1156,7 +1152,8 @@ class Conv2dTransposeLayer(BaseLayer):
     def _forward(self, x):
         w, b, gamma = self.parameters()    
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
-        x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
+        #x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
+        x = x.transpose(0, 2, 3, 1).reshape(-1, C) # (B,C,Ih,Iw)->(B*Ih*Iw,C)  
         # Affine変換 (B*Ih*Iw,C)×(C,M*Fh*Fw)->(B*Ih*Iw,M*Fh*Fw)
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fh*Fw,B*Ih*Iw)->(B,M,Oh,Ow)  　
@@ -1175,7 +1172,7 @@ class Conv2dTransposeLayer(BaseLayer):
         # Affineの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         grad_x = grad_x.reshape(-1,Ih,Iw,C).transpose(0,3,1,2) # (B,C,Ih,Iw)
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        #grad_x = grad_x.reshape(self.inputs[0].shape)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
@@ -1982,15 +1979,15 @@ class Interpolate2dNearest(Interpolate2d):
 
 ### マスク展開層 = 逆畳込みもどき ###########################################
 class MaskedExpansionLayer(BaseLayer):
-    # マスクに入力をかけて展開する
+    """
+    入力をマスクM分繰返して広げたのちに線形変換してフィルタFh*Fw分の拡大
+    入力のチャネルは独立に扱う
+    """
     # B:バッチサイズ, C:入力チャンネル数, Ih:入力画像高さ, Iw:入力画像幅
-    # M:フィルタ数は入力チャネル数と同じ, Fh:フィルタ高さ, Fw:フィルタ幅
+    # M:フィルタ数, Fh:フィルタ高さ, Fw:フィルタ幅
     # 出力チャンネル数=入力チャネル数, Oh:出力高さ, Ow:出力幅
-    # w_decay:L2正則化項の係数
     
     def __init__(self, *configuration, **kwargs):
-        if len(configuration) == 8:
-            C, Ih, Iw, M, Fh, Fw, stride, pad = configuration
         if len(configuration) == 6:
             C, Ih, Iw, M, Fh, Fw = configuration
         if len(configuration) == 5:
@@ -2021,52 +2018,27 @@ class MaskedExpansionLayer(BaseLayer):
     def get_parameter_size(self):
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         m = M              # 入力チャネル数とフィルタサイズ
-        n = C*Fh*Fw        # フィルタ数
+        n = Fh*Fw          # フィルタ数
         return m, n
 
     def _forward(self, x):
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
-        B = x.size // (C*Ih*Iw)                        # B = x.shape[0] = len(x)
-        w, b, gamma = self.parameters()    
-        w = w.reshape(M, C, Fh*Fw).transpose(1,0,2) # (C,M,Fh*Fw) 
-        b = b.reshape(C, 1, Fh*Fw)
-        x = x.reshape(B,C,Ih,Iw).transpose(1,0,2,3).reshape(C,B*Ih*Iw,1)
-        self.x = x
-        z = np.tile(x, (1, 1, M)) # 同じ要素をフィルタ数分繰返す(C,B*Ih*Iw,M)
-
-        # 出力の計算: 各チャネル毎　
-        y = np.empty((C, B*Ih*Iw, Fh*Fw), dtype='f4')
-        for c in range(C):
-            y[c] = np.dot(z[c], w[c]) + b[c]  # u[c].shape=(B*Ih*Iw,Fh*Fw)
-        y = y.reshape(C,B,Ih,Iw,Fh,Fw).transpose(1,0,2,4,3,5).reshape(B,C,Oh,Ow)
+        B = x.size // (C*Ih*Iw)             # B = x.shape[0] = len(x)
+        w, b, gamma = self.parameters()     # w.shape=(M,C*Fh*Fw)
+        z = np.tile(x.reshape(B*C*Ih*Iw,1), (1, M)) # 同じ要素をフィルタ数分繰返す(B*C*Ih*Iw,M)
+        y = self.dot_linear(z, w, b, gamma) # (B*C*Ih*Iw, Fh*Fw)
+        y = y.reshape(B,C,Ih,Iw,Fh,Fw).transpose(0,1,2,4,3,5).reshape(B,C,Oh,Ow)
         return y
     
-    def _backward(self, grad_y):
-        #print('畳み込み層逆伝播grad_yの形は', grad_y.shape)
+    def _backward(self, grad_y, flush=True): 
         x, = self.inputs
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
-        B = grad_y.size // (C*Oh*Ow)                  # B = grad_y.shape[0] = len(grad_y)
-        grad_y = grad_y.reshape(B, C, Oh, Ow)
+        B = grad_y.size // (C*Oh*Ow)        # B = grad_y.shape[0] = len(grad_y)
         grad_y = (grad_y.reshape(B,C,Ih,Fh,Iw,Fw)
-                  .transpose(1,0,2,4,3,5).reshape(C,B*Ih*Iw,Fh*Fw))
-        
-        # フィルタとバイアスの勾配
-        w = self.w.reshape(M,C,Fh*Fw).transpose(1,0,2) # (C,M,Fh*Fw) 
-        b = self.b.reshape(C, 1, Fh*Fw)
-        grad_w = np.empty((C,M,Fh*Fw), dtype='f4')
-        grad_b = np.empty((C,1,Fh*Fw), dtype='f4')
-        grad_z = np.empty((C,B*Ih*Iw,M), dtype='f4')
-        z = np.tile(x, (1, 1, M)) # 同じ要素をフィルタ数分繰返す(C,B*Ih*Iw,M)
-        for c in range(C):
-            grad_w[c] = np.dot(z[c].T, grad_y[c])       # (M,Fh*Fw)
-            grad_b[c] = np.sum(grad_y[c], axis=0)
-            grad_z[c] = np.dot(grad_y[c], w[c].T)       # (B*Ih*Iw,M)
-
-        grad_w = grad_w.transpose(1,0,2).reshape(M,C*Fh*Fw)
-        grad_b = grad_b.reshape(-1)
-        self.parameters.set_gradient(grad_w, grad_b, None)
-        grad_z = grad_z.reshape(C,B,Ih,Iw,M).transpose(1,0,2,3,4) # (B,C,Ih,Iw,M)
-        grad_x = np.sum(grad_z, axis=4)
+                  .transpose(0,1,2,4,3,5).reshape(B*C*Ih*Iw,Fh*Fw))
+        grad_z, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
+        grad_x = np.sum(grad_z, axis=-1).reshape(B,C,Ih,Iw)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
 # -- 潜在変数をサンプリングする層 -- 20240701
@@ -2249,55 +2221,30 @@ class MutualInformationLoss2(CompositFunction):
 
 
 # -- 潜在変数をサンプリングする層 仮版
-class LatentLayer(BaseLayer):
+class LatentLayer:
     def __init__(self, *configuration, **kwargs):
         if len(configuration) == 2:
             m, n = configuration
         if len(configuration) == 1:
             m = None; n, = configuration
-        self.config = m, n
-        super().__init__(**kwargs)
-        self.kl_loss = lf.KullbackLeiblerDivergence()
-        self.rate      = kwargs.pop('rate', 1.0)      # サンプリングの広がり        
-        self.r_kl_loss = kwargs.pop('r_kl_loss', 1.0) # kl_lossの混ぜ具合
+        self.proj = NeuonLaye(m, 2*n, **kwargs)  # 線形変換
+        rate      = kwargs.pop('rate', 1.0)      # サンプリングの広がり        
+        r_kl_loss = kwargs.pop('r_kl_loss', 1.0) # kl_lossの混ぜ具合
+        self.sampling = LatentSampling(rate=rate, kld=r_kl_loss)
 
-    def fix_configuration(self, shape):
-        m = 1
-        for i in shape[1:]:
-            m *= i
-        self.config = m, self.config[1]
-        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
-
-    def get_parameter_size(self):
-        m, n = self.config
-        return m, n*2 # m×2n 大きさに注意 
-
-    def __forward__(self, x, train=False, kl_loss=False):
-        m, n = self.config
+    def forward(self, x, train=False, epsilon=None):
         self.x = x
-        w, b, gamma = self.parameters()    
-        y = self.dot_linear.forward(self.x, w, b, gamma)
-        self.mu = self.y[:, :n]
-        self.log_var = self.y[:, n:]
-        self.epsilon = np.random.randn(*self.log_var.shape) * self.rate
-        self.z = self.mu + self.epsilon * np.exp(self.log_var/2)
-        kll = self.kl_loss.forward(self.mu, self.log_var) 
-        if not kl_loss:
-            return self.z
-        else:
-            return self.z, kll
+        y = self.proj(x, train=train) # 2*n
+        z = self.sampling(y, epsilon=epsilon)
+        return z # (z, kll, mil)の場合もある
+       
+    def backward(self, gz=1, gkll=1, gmil=1, flush=True):
+        grad_y = self.sampling.backward(gz, gkll=gkll, gmil=gmil)
+        grad_x = self.proj.backward(grad_y, flush=flush)
+
+    def update(self, eta=0.001, **kwargs):
+        self.proj.update(eta=eta, **kwargs)
     
-    def __backward__(self, grad_z, flush=True):
-        dldmu, dldlog_var = self.kl_loss.backward()
-        # デコーダからのgrad_zとkl_lossの逆伝播の和
-        delta_mu      = grad_z \
-                      + dldmu * self.r_kl_loss
-        delta_log_var = 0.5 * grad_z * self.epsilon * np.exp(self.log_var/2) \
-                      + dldlog_var * self.r_kl_loss
-        grad_y = np.hstack((delta_mu, delta_log_var))
-        grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)        
-        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
-        return grad_x
 
 #### 時系列データをまとめて処理するRNN層(Truncated BPTT方式) ##################
 # m:Vector_size(入力数)、n:hidden_size(ニューロン数)
