@@ -1,5 +1,5 @@
 # UNet
-# 20260207 A.Inoue
+# 20260209 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -8,16 +8,6 @@ from pyaino import LossFunctions as lf
 from pyaino import Functions as F
 from pyaino import common_function as cf
 import warnings
-
-def center_crop(x, crop_h, crop_w):
-    h, w = x.shape[-2:]
-    
-    # 開始位置の計算
-    start_h = (h - crop_h) // 2
-    start_w = (w - crop_w) // 2
-    
-    # スライス
-    return x[:, :, start_h:start_h+crop_h, start_w:start_w+crop_w]
 
 class ConvBlock:
     def __init__(self, out_ch, proj=False,
@@ -211,6 +201,14 @@ class UNet:
             self.out.config = tuple(list_out_config)
             #print(self.out.config)
 
+    def center_crop(self, x, crop_h, crop_w):
+        h, w = x.shape[-2:]
+        # 開始位置の計算
+        start_h = (h - crop_h) // 2
+        start_w = (w - crop_w) // 2
+        # スライス
+        return x[:, :, start_h:start_h+crop_h, start_w:start_w+crop_w]
+
     def forward(self, x, timesteps=None, labels=None, train=True):
         self.fix_out_ch(x.shape)
         self.time_mlp_used = False
@@ -255,11 +253,11 @@ class UNet:
             shape = shapes.pop()   # 元の形状=Up変換後の形状　 
             z = zs.pop()
             x = self.upsample[i](x)                   # H/4, W/4
-            if x.shape[-2:] != shape[-2:]:            # 形状が違う場合 
-                x = x[:, :, 0:shape[-2], 0:shape[-1]] # 元の形状にトリミング
-                x2 = center_crop(x, shape[-2], shape[-1]) # 検証用仮実装(上の行でOKなはずだが確認のため)
-                assert (x==x2).all()   
-            x = self.concat[i](x, z, axis=1)          # C4 + C3
+            if x.shape[-2:] != shape[-2:]:            # 形状が違う場合
+                # 現状は左上基準で十分だが備えとしてcenter_crop
+                # x = x[:, :, 0:shape[-2], 0:shape[-1]] でもOK
+                x = self.center_crop(x, shape[-2], shape[-1])
+            x = self.concat[i](x, z, axis=1)         # C4 + C3
             x = self.up[i](x, v, train=train)         # -> C3
 
         assert not zs 
