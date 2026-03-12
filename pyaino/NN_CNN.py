@@ -1,9 +1,10 @@
 # NN_CNN
-# 2026.02.05 A.Inoue　
+# 2026.03.12 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
 from pyaino import common_function as cf
+from pyaino import Functions as F
 
 class NN_CNN_Base:
     def __init__(self, *args, **kwargs):
@@ -215,6 +216,10 @@ def test_sample(image_show, x, t, label_list=None, label_list2=None):
     cf.test_sample(image_show, model.forward, x, t, label_list, label_list2)
 
 
+class ReshapeLayer(F.Reshape):
+    def __forward__(self, x, *args, **kwargs):
+        return super().__forward__(x)
+    
 #### 個別のNN #####
 class NN_0(NN_CNN_Base): 
     def __init__(self, *args, **kwargs):
@@ -2949,6 +2954,330 @@ class CNN_ccpccpccp(NN_CNN_Base):
         self.layers.append(self.pooling_layer3)
         self.layers.append(self.output_layer)
 
+class CNN_mic(NN_CNN_Base):
+    def __init__(self, *args, **kwargs):
+        '''
+        # 入力(ノイズ)の大きさは最初のfowardで入力により決まる
+
+        '''
+        In, Out = super().__init__(*args, **kwargs)
+        # -- 各層の初期化 --
+        # layer1 中間層
+        M2           = kwargs.pop('M2',         16)  # フィルタ数
+        image_size2  = kwargs.pop('image_size2', 4)  # 画像サイズ
+        Ih2, Iw2     = image_size2 if isinstance(image_size2, (tuple, list)) \
+                                   else (image_size2, image_size2)
+        opt_for_l1 = {} 
+        opt_for_l1['activate']  = kwargs.pop('ml_act',    'Mish')
+        opt_for_l1['optimize']  = kwargs.pop('ml_opt', 'RMSProp')
+        opt_for_l1['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l1['layernorm'] = kwargs.get('ln',        False)    
+        # layer2 アップサンプリング
+        il2    = kwargs.pop('il2',  2)            
+        opt_for_l2 = {} 
+        opt_for_l2['mode']    = kwargs.get('mode','nearest')
+        # layer3 畳込み　　
+        M3           = kwargs.pop('M3',          12) # フィルタ数
+        kernel_size3 = kwargs.pop('kernel_size3', 3) # フィルタ高と幅　　
+        stride3      = kwargs.pop('stride3',      1) # ストライド　　　　
+        pad3         = kwargs.pop('pad3',         1) # パディング　　　　
+        opt_for_l3 = {} 
+        opt_for_l3['activate']  = kwargs.pop('cl1_act',    'Mish')
+        opt_for_l3['optimize']  = kwargs.pop('cl1_opt', 'RMSProp')
+        opt_for_l3['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l3['layernorm'] = kwargs.get('ln',        False)    
+        # layer4 アップサンプリング 
+        il4    = kwargs.pop('il4',  2)
+        opt_for_l4 = {} 
+        opt_for_l4['mode']    = kwargs.get('mode','nearest')
+        # layer5 畳込み
+        M5           = kwargs.pop('M5',           8) # フィルタ数
+        kernel_size5 = kwargs.pop('kernel_size5', 3) # フィルタ高と幅　　
+        stride5      = kwargs.pop('stride5',      1) # ストライド　　　　
+        pad5         = kwargs.pop('pad5',         1) # パディング　　　　
+        opt_for_l5 = {} 
+        opt_for_l5['activate']  = kwargs.pop('cl2_act',   'Mish')
+        opt_for_l5['optimize']  = kwargs.pop('cl2_opt','RMSProp')
+        opt_for_l5['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l5['layernorm'] = kwargs.pop('ln',        False)    
+        # layer6 出力層
+        opt_for_l6 = {} 
+        opt_for_l6['activate']  = kwargs.pop('ol_act',    'Tanh')
+        opt_for_l6['optimize']  = kwargs.pop('ol_opt', 'RMSProp')
+        opt_for_l6['full_connection'] = True         
+        # kwargsに残ったものを結合
+        opt_for_l1.update(kwargs)
+        #opt_for_l2.update(kwargs)
+        opt_for_l3.update(kwargs)
+        #opt_for_l4.update(kwargs)
+        opt_for_l5.update(kwargs)
+        opt_for_l6.update(kwargs)
+
+        # -- 各層の初期化 -- 
+        # layer 0
+        self.middle_layer     = neuron.NeuronLayer(M2*Ih2*Iw2, **opt_for_l1)
+        # layer 1
+        self.reshape = ReshapeLayer(-1, M2, Ih2, Iw2)
+        # layer 2
+        self.interpolate_layer1 = neuron.Interpolate2dLayer(scale_factor=il2, **opt_for_l2)
+        # layer 3
+        self.conv_layer1    = neuron.Conv2dLayer(M3, kernel_size3, stride3, pad3, **opt_for_l3)
+        # layer 4
+        self.interpolate_layer2 = neuron.Interpolate2dLayer(scale_factor=il4, **opt_for_l4)
+        # layer 5
+        self.conv_layer2    = neuron.Conv2dLayer(M5, kernel_size5, stride5, pad5, **opt_for_l5)
+        # layer 6
+        self.output_layer   = neuron.NeuronLayer(Out, **opt_for_l6)
+
+        #self.output_layer   = ReshapeLayer(-1, C*Ih*Iw)
+
+        # -- layerのまとめ -- 
+        self.layers.append(self.middle_layer)
+        self.layers.append(self.reshape)
+        self.layers.append(self.interpolate_layer1)
+        self.layers.append(self.conv_layer1)    
+        self.layers.append(self.interpolate_layer2)
+        self.layers.append(self.conv_layer2)
+        self.layers.append(self.output_layer)
+
+class CNN_micic(NN_CNN_Base):
+    def __init__(self, *args, **kwargs):
+        '''
+        # 入力(ノイズ)の大きさは最初のfowardで入力により決まる
+
+        '''
+        In, Out = super().__init__(*args, **kwargs)
+        # -- 各層の初期化 --
+        # layer1 中間層
+        M2           = kwargs.pop('M2',         16)  # フィルタ数
+        image_size2  = kwargs.pop('image_size2', 4)  # 画像サイズ
+        Ih2, Iw2     = image_size2 if isinstance(image_size2, (tuple, list)) \
+                                   else (image_size2, image_size2)
+        opt_for_l1 = {} 
+        opt_for_l1['activate']  = kwargs.pop('ml_act',    'Mish')
+        opt_for_l1['optimize']  = kwargs.pop('ml_opt', 'RMSProp')
+        opt_for_l1['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l1['layernorm'] = kwargs.get('ln',        False)    
+        # layer2 アップサンプリング
+        il2    = kwargs.pop('il2',  2)            
+        opt_for_l2 = {} 
+        opt_for_l2['mode']    = kwargs.get('mode','nearest')
+        # layer3 畳込み　　
+        M3           = kwargs.pop('M3',          12) # フィルタ数
+        kernel_size3 = kwargs.pop('kernel_size3', 3) # フィルタ高と幅　　
+        stride3      = kwargs.pop('stride3',      1) # ストライド　　　　
+        pad3         = kwargs.pop('pad3',         1) # パディング　　　　
+        opt_for_l3 = {} 
+        opt_for_l3['activate']  = kwargs.pop('cl1_act',    'Mish')
+        opt_for_l3['optimize']  = kwargs.pop('cl1_opt', 'RMSProp')
+        opt_for_l3['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l3['layernorm'] = kwargs.get('ln',        False)    
+        # layer4 アップサンプリング 
+        il4    = kwargs.pop('il4',  2)
+        opt_for_l4 = {} 
+        opt_for_l4['mode']    = kwargs.get('mode','nearest')
+        # layer5 畳込み
+        M5           = kwargs.pop('M5',           8) # フィルタ数
+        kernel_size5 = kwargs.pop('kernel_size5', 3) # フィルタ高と幅　　
+        stride5      = kwargs.pop('stride5',      1) # ストライド　　　　
+        pad5         = kwargs.pop('pad5',         1) # パディング　　　　
+        opt_for_l5 = {} 
+        opt_for_l5['activate']  = kwargs.pop('cl2_act',   'Mish')
+        opt_for_l5['optimize']  = kwargs.pop('cl2_opt','RMSProp')
+        opt_for_l5['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l5['layernorm'] = kwargs.pop('ln',        False)    
+        # layer6 アップサンプリング 
+        il6    = kwargs.pop('il6',  2)
+        opt_for_l6 = {} 
+        opt_for_l6['mode']    = kwargs.get('mode','nearest')
+        # layer7 畳込み
+        M7           = kwargs.pop('M7',           6) # フィルタ数
+        kernel_size7 = kwargs.pop('kernel_size7', 3) # フィルタ高と幅　　
+        stride7      = kwargs.pop('stride7',      1) # ストライド　　　　
+        pad7         = kwargs.pop('pad7',         1) # パディング　　　　
+        opt_for_l7 = {} 
+        opt_for_l7['activate']  = kwargs.pop('cl3_act',   'Mish')
+        opt_for_l7['optimize']  = kwargs.pop('cl3_opt','RMSProp')
+        opt_for_l7['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l7['layernorm'] = kwargs.pop('ln',        False)    
+        # layer8 出力層
+        opt_for_l8 = {} 
+        opt_for_l8['activate']  = kwargs.pop('ol_act',    'Tanh')
+        opt_for_l8['optimize']  = kwargs.pop('ol_opt', 'RMSProp')
+        opt_for_l8['full_connection'] = True         
+        # kwargsに残ったものを結合
+        opt_for_l1.update(kwargs)
+        #opt_for_l2.update(kwargs)
+        opt_for_l3.update(kwargs)
+        #opt_for_l4.update(kwargs)
+        opt_for_l5.update(kwargs)
+        #opt_for_l6.update(kwargs)
+        opt_for_l7.update(kwargs)
+        opt_for_l8.update(kwargs)
+
+        # -- 各層の初期化 -- 
+        # layer 0
+        self.middle_layer     = neuron.NeuronLayer(M2*Ih2*Iw2, **opt_for_l1)
+        # layer 1
+        self.reshape = ReshapeLayer(-1, M2, Ih2, Iw2)
+        # layer 2
+        self.interpolate_layer1 = neuron.Interpolate2dLayer(scale_factor=il2, **opt_for_l2)
+        # layer 3
+        self.conv_layer1    = neuron.Conv2dLayer(M3, kernel_size3, stride3, pad3, **opt_for_l3)
+        # layer 4
+        self.interpolate_layer2 = neuron.Interpolate2dLayer(scale_factor=il4, **opt_for_l4)
+        # layer 5
+        self.conv_layer2    = neuron.Conv2dLayer(M5, kernel_size5, stride5, pad5, **opt_for_l5)
+        # layer 6
+        self.interpolate_layer3 = neuron.Interpolate2dLayer(scale_factor=il6, **opt_for_l6)
+        # layer 7
+        self.conv_layer3    = neuron.Conv2dLayer(M7, kernel_size7, stride7, pad7, **opt_for_l7)
+        # layer 8
+        self.output_layer   = neuron.NeuronLayer(Out, **opt_for_l8)
+
+        #self.output_layer   = ReshapeLayer(-1, C*Ih*Iw)
+
+        # -- layerのまとめ -- 
+        self.layers.append(self.middle_layer)
+        self.layers.append(self.reshape)
+        self.layers.append(self.interpolate_layer1)
+        self.layers.append(self.conv_layer1)    
+        self.layers.append(self.interpolate_layer2)
+        self.layers.append(self.conv_layer2)
+        self.layers.append(self.interpolate_layer3)
+        self.layers.append(self.conv_layer3)
+        self.layers.append(self.output_layer)
+
+class CNN_micicic(NN_CNN_Base):
+    def __init__(self, *args, **kwargs):
+        '''
+        # 入力(ノイズ)の大きさは最初のfowardで入力により決まる
+
+        '''
+        In, Out = super().__init__(*args, **kwargs)
+        # -- 各層の初期化 --
+        # layer1 中間層
+        M2           = kwargs.pop('M2',         16)  # フィルタ数
+        image_size2  = kwargs.pop('image_size2', 4)  # 画像サイズ
+        Ih2, Iw2     = image_size2 if isinstance(image_size2, (tuple, list)) \
+                                   else (image_size2, image_size2)
+        opt_for_l1 = {} 
+        opt_for_l1['activate']  = kwargs.pop('ml_act',    'Mish')
+        opt_for_l1['optimize']  = kwargs.pop('ml_opt', 'RMSProp')
+        opt_for_l1['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l1['layernorm'] = kwargs.get('ln',        False)    
+        # layer2 アップサンプリング
+        il2    = kwargs.pop('il2',  2)            
+        opt_for_l2 = {} 
+        opt_for_l2['mode']    = kwargs.get('mode','nearest')
+        # layer3 畳込み　　
+        M3           = kwargs.pop('M3',          12) # フィルタ数
+        kernel_size3 = kwargs.pop('kernel_size3', 3) # フィルタ高と幅　　
+        stride3      = kwargs.pop('stride3',      1) # ストライド　　　　
+        pad3         = kwargs.pop('pad3',         1) # パディング　　　　
+        opt_for_l3 = {} 
+        opt_for_l3['activate']  = kwargs.pop('cl1_act',    'Mish')
+        opt_for_l3['optimize']  = kwargs.pop('cl1_opt', 'RMSProp')
+        opt_for_l3['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l3['layernorm'] = kwargs.get('ln',        False)    
+        # layer4 アップサンプリング 
+        il4    = kwargs.pop('il4',  2)
+        opt_for_l4 = {} 
+        opt_for_l4['mode']    = kwargs.get('mode','nearest')
+        # layer5 畳込み
+        M5           = kwargs.pop('M5',           8) # フィルタ数
+        kernel_size5 = kwargs.pop('kernel_size5', 3) # フィルタ高と幅　　
+        stride5      = kwargs.pop('stride5',      1) # ストライド　　　　
+        pad5         = kwargs.pop('pad5',         1) # パディング　　　　
+        opt_for_l5 = {} 
+        opt_for_l5['activate']  = kwargs.pop('cl2_act',   'Mish')
+        opt_for_l5['optimize']  = kwargs.pop('cl2_opt','RMSProp')
+        opt_for_l5['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l5['layernorm'] = kwargs.pop('ln',        False)    
+        # layer6 アップサンプリング 
+        il6    = kwargs.pop('il6',  2)
+        opt_for_l6 = {} 
+        opt_for_l6['mode']    = kwargs.get('mode','nearest')
+        # layer7 畳込み
+        M7           = kwargs.pop('M7',           6) # フィルタ数
+        kernel_size7 = kwargs.pop('kernel_size7', 3) # フィルタ高と幅　　
+        stride7      = kwargs.pop('stride7',      1) # ストライド　　　　
+        pad7         = kwargs.pop('pad7',         1) # パディング　　　　
+        opt_for_l7 = {} 
+        opt_for_l7['activate']  = kwargs.pop('cl3_act',   'Mish')
+        opt_for_l7['optimize']  = kwargs.pop('cl3_opt','RMSProp')
+        opt_for_l7['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l7['layernorm'] = kwargs.pop('ln',        False)    
+        # layer8 アップサンプリング 
+        il8    = kwargs.pop('il8',  2)
+        opt_for_l8 = {} 
+        opt_for_l8['mode']      = kwargs.pop('mode','nearest')
+        # layer9 畳込み
+        M9           = kwargs.pop('M9',           3) # フィルタ数
+        kernel_size9 = kwargs.pop('kernel_size9', 3) # フィルタ高と幅　　
+        stride9      = kwargs.pop('stride9',      1) # ストライド　　　　
+        pad9         = kwargs.pop('pad9',         1) # パディング　　　　
+        opt_for_l9 = {} 
+        opt_for_l9['activate']  = kwargs.pop('cl4_act',   'Mish')
+        #opt_for_l9['activate']  = kwargs.pop('cl4_act', 'Sigmoid')
+        opt_for_l9['optimize']  = kwargs.pop('cl4_opt', 'RMSProp')
+        opt_for_l9['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l9['layernorm'] = kwargs.pop('ln',        False)    
+        # layer10 出力層
+        opt_for_l10 = {} 
+        opt_for_l10['activate'] = kwargs.pop('ol_act',    'Tanh')
+        opt_for_l10['optimize'] = kwargs.pop('ol_opt', 'RMSProp')
+        opt_for_l10['full_connection'] = True         
+        # kwargsに残ったものを結合
+        opt_for_l1.update(kwargs)
+        #opt_for_l2.update(kwargs)
+        opt_for_l3.update(kwargs)
+        #opt_for_l4.update(kwargs)
+        opt_for_l5.update(kwargs)
+        #opt_for_l6.update(kwargs)
+        opt_for_l7.update(kwargs)
+        #opt_for_l8.update(kwargs)
+        opt_for_l9.update(kwargs)
+        opt_for_l10.update(kwargs)
+
+        # -- 各層の初期化 -- 
+        # layer 0
+        self.middle_layer     = neuron.NeuronLayer(M2*Ih2*Iw2, **opt_for_l1)
+        # layer 1
+        self.reshape = ReshapeLayer(-1, M2, Ih2, Iw2)
+        # layer 2
+        self.interpolate_layer1 = neuron.Interpolate2dLayer(scale_factor=il2, **opt_for_l2)
+        # layer 3
+        self.conv_layer1    = neuron.Conv2dLayer(M3, kernel_size3, stride3, pad3, **opt_for_l3)
+        # layer 4
+        self.interpolate_layer2 = neuron.Interpolate2dLayer(scale_factor=il4, **opt_for_l4)
+        # layer 5
+        self.conv_layer2    = neuron.Conv2dLayer(M5, kernel_size5, stride5, pad5, **opt_for_l5)
+        # layer 6
+        self.interpolate_layer3 = neuron.Interpolate2dLayer(scale_factor=il6, **opt_for_l6)
+        # layer 7
+        self.conv_layer3    = neuron.Conv2dLayer(M7, kernel_size7, stride7, pad7, **opt_for_l7)
+        # layer 8
+        self.interpolate_layer4 = neuron.Interpolate2dLayer(scale_factor=il8, **opt_for_l8)
+        # layer 9
+        self.conv_layer4    = neuron.Conv2dLayer(M9, kernel_size9, stride9, pad9, **opt_for_l9)
+        # layer 10
+        self.output_layer   = neuron.NeuronLayer(Out, **opt_for_l10)
+
+        #self.output_layer   = ReshapeLayer(-1, C*Ih*Iw)
+
+        # -- layerのまとめ -- 
+        self.layers.append(self.middle_layer)
+        self.layers.append(self.reshape)
+        self.layers.append(self.interpolate_layer1)
+        self.layers.append(self.conv_layer1)    
+        self.layers.append(self.interpolate_layer2)
+        self.layers.append(self.conv_layer2)
+        self.layers.append(self.interpolate_layer3)
+        self.layers.append(self.conv_layer3)
+        self.layers.append(self.interpolate_layer4)
+        self.layers.append(self.conv_layer4)
+        self.layers.append(self.output_layer)
 
 
 if __name__=='__main__':
@@ -2960,5 +3289,6 @@ if __name__=='__main__':
     classes = list(classes)
     for c in classes:
         print(c)
-        if c not in('NN_CNN_Base') and c[-4:]!='bkup':
+        if c not in('NN_CNN_Base', 'ReshapeLayer', '__loader__') and c[-4:]!='bkup':
+            #print('c =', c)
             model = eval(c)()

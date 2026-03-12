@@ -1,5 +1,5 @@
 # VAE 各種
-# 20260203 A.Inoue　
+# 20260312 A.Inoue　
 from pyaino.Config import *
 import matplotlib.pyplot as plt
 from pyaino import Neuron as neuron
@@ -482,6 +482,30 @@ class VAE_ccpccp_z_mdcdcdc(VAEBase):
         super().__init__(**kwargs)
         self.encoder = NN_CNN.CNN_ccpccp(2*z, **self.opt_for_enc)
         self.decoder = NN_CNN.CNN_mdcdcdc(C*Ih*Iw, **self.opt_for_dec)
+
+class VAE_cp_z_mic(VAEBase):
+    def __init__(self, C, Ih, Iw, z, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = NN_CNN.CNN_cp(2*z, **self.opt_for_enc)
+        self.decoder = NN_CNN.CNN_mic(C*Ih*Iw, **self.opt_for_dec)
+
+class VAE_ccp_z_micic(VAEBase):
+    def __init__(self, C, Ih, Iw, z, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = NN_CNN.CNN_ccp(2*z, **self.opt_for_enc)
+        self.decoder = NN_CNN.CNN_micic(C*Ih*Iw, **self.opt_for_dec)
+
+class VAE_cccp_z_micicic(VAEBase):
+    def __init__(self, C, Ih, Iw, z, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = NN_CNN.CNN_cccp(2*z, **self.opt_for_enc)
+        self.decoder = NN_CNN.CNN_micicic(C*Ih*Iw, **self.opt_for_dec)
+
+class VAE_ccccp_z_micicic(VAEBase):
+    def __init__(self, C, Ih, Iw, z, **kwargs):
+        super().__init__(**kwargs)
+        self.encoder = NN_CNN.CNN_ccccp(2*z, **self.opt_for_enc)
+        self.decoder = NN_CNN.CNN_micicic(C*Ih*Iw, **self.opt_for_dec)
 
 if __name__=='__main__':
     print('\n#### all cast ####')
