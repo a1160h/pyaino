@@ -1,5 +1,5 @@
 # NN_CNN
-# 2026.03.12 A.Inoue　
+# 2026.03.23 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -38,59 +38,65 @@ class NN_CNN_Base:
 
         
     def summary(self):
-        print('～～ model summary of ' + str(self.__class__.__name__) + '  ～～～～～～～～～～～～～～～～～～～～～')
+        print(f'～～ model summary of {str(self.__class__.__name__)}' + '  ～～～～～～～～～～～～～～～～～～～～～')
         for i, layer in enumerate(self.layers):
             post_nl = False
-            print('layer', i, layer.__class__.__name__, end=' ')
+            print(f'layer{i} {layer.__class__.__name__}', end=' ')
             if hasattr(layer, 'config') and layer.config is not None:
-                print('config =', layer.config)
+                print(layer.config)
             if hasattr(layer, 'method'):
-                print(' method =', layer.method, end=' ')
+                print(f' method={layer.method}', end=' ')
                 post_nl = True
-            if hasattr(layer, 'activator'):
-                print(' activate =', layer.activator.__class__.__name__, end=' ')
-                post_nl = True
-            if getattr(layer, 'DO', None) is not None:
-                print('', layer.DO.__class__.__name__, 'applicable', end='')
-                post_nl = True
-            if getattr(layer, 'Norm', None) is not None and layer.Norm.__class__.__name__!='Identity':
-                print('', layer.Norm.__class__.__name__, '= True')
-                post_nl = False
+
+            if hasattr(layer, 'prephase'):
+                if getattr(layer.prephase, 'Norm', None) is not None:
+                    print(f' {layer.prephase.Norm.__class__.__name__}=True')
+                    post_nl = False
+            if hasattr(layer, 'postphase'):
+                if hasattr(layer.postphase, 'activator'):
+                    print(f' activate={layer.postphase.activator.__class__.__name__}', end=' ')
+                    post_nl = True
+                if getattr(layer.postphase, 'Norm', None) is not None:
+                    print(f' {layer.postphase.Norm.__class__.__name__}=True', end=' ')
+                    post_nl = True
+                if getattr(layer.postphase, 'DO', None) is not None:
+                    print(f' {layer.postphase.DO.__class__.__name__}=applicable')
+                    post_nl = False
 
             if hasattr(layer, 'parameters'):
                 if hasattr(layer.parameters, 'optimizer_w'):
                     if post_nl:
                         print()
-                    print(' optimize =', layer.parameters.optimizer_w.__class__.__name__, end=' ')
+                    print(f' optimize={layer.parameters.optimizer_w.__class__.__name__}', end=' ')
                     post_nl = True
                     item = layer.parameters.optimizer_w
                     if item.scheduler is not None:
-                        print(' scheduler =', item.scheduler.__class__.__name__, end=' ')
-                    if item.w_decay!=0:   
-                        print(' weight_decay_lambda =', item.w_decay)
+                        print(f' scheduler={item.scheduler.__class__.__name__}', end=' ')
+                    if item.w_decay!=0 and item.w_decay is not None:   
+                        print(f' weight_decay_lambda={item.w_decay}')
                         post_nl=False
                     if getattr(item, 'spctrnorm', None) is not None:
-                        print('', item.spctrnorm.__class__.__name__,
-                              '=', item.spctrnorm.power_iterations, end='')
+                        print(f' {item.spctrnorm.__class__.__name__}={item.spctrnorm.power_iterations}',
+                              end='')
                         post_nl=True
                     if getattr(item, 'wghtclpng', None) is not None:
-                        print(' weight_clipping =', item.wghtclpng.__class__.__name__,
-                              'clip =', item.wghtclpng.clip, end='')
+                        print(f' weight_clipping={item.wghtclpng.__class__.__name__}',
+                              f' clip={item.wghtclpng.clip}', end='')
                         post_nl = True
             if post_nl:
                 print()
             print('------------------------------------------------------------------------')
         if hasattr(self, 'loss_function'):
-            print('loss_function =', self.loss_function.__class__.__name__)
+            print(f'loss_function={self.loss_function.__class__.__name__}')
         print('～～ end of summary ～～～～～～～～～～～～～～～～～～～～～～～～～～～～\n')
 
     # -- 順伝播 --
     def forward(self, x, t=None, train=False, dropout=0.0, **kwargs): # kwargsは使わない
         y = x
-        last_layer = len(self.layers) -1 + self.last_but_out            # 最後の層の番号
+        last_layer = len(self.layers) -1 + self.last_but_out          # 最後の層の番号
         for i, layer in enumerate(self.layers):
-            self.error_layer = layer                                    # デバグ用
-            dropout_rate = dropout if i<last_layer else 0.0             # 中間層だけが対象
+            self.error_layer = layer                                  # デバグ用
+            dropout_rate = dropout if i<last_layer else 0.0           # 中間層だけが対象
             y = layer.forward(y, train=train, dropout=dropout_rate)
             self.outputshape[str(i)+layer.__class__.__name__] = y.shape # デバグ用
         self.error_layer = None 
@@ -112,7 +118,7 @@ class NN_CNN_Base:
         else:
             raise Exception("Can't get gradient for backward." \
                             , 'gy =', gy, 'gl =', gl)
-        gx = gy.reshape(len(gy), -1)              # バッチサイズ分拡大 
+        gx = gy#.reshape(len(gy), -1) # reshape削除20260323AI 
         for layer in reversed(self.layers):
             self.error_layer = layer
             gx = layer.backward(gx)
@@ -3279,6 +3285,95 @@ class CNN_micicic(NN_CNN_Base):
         self.layers.append(self.conv_layer4)
         self.layers.append(self.output_layer)
 
+class CNN_icic(NN_CNN_Base):
+    def __init__(self, *args, **kwargs):
+        ''' 画像を8倍の大きさにする '''
+        In, Out = super().__init__(*args, **kwargs)
+        # -- 各層の初期化 --
+        # layer1 アップサンプリング
+        il1    = kwargs.pop('il1',  2)            
+        opt_for_l1 = {} 
+        opt_for_l1['mode']    = kwargs.get('mode','nearest')
+        # layer2 畳込み　　
+        M2           = kwargs.pop('M2',          12) # フィルタ数
+        kernel_size2 = kwargs.pop('kernel_size2', 3) # フィルタ高と幅　　
+        stride2      = kwargs.pop('stride2',      1) # ストライド　　　　
+        pad2         = kwargs.pop('pad2',         1) # パディング　　　　
+        opt_for_l2 = {} 
+        opt_for_l2['activate']  = kwargs.pop('cl1_act',  'Mish')
+        opt_for_l2['optimize']  = kwargs.pop('cl1_opt',  'Adam')
+        opt_for_l2['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l2['layernorm'] = kwargs.get('ln',        False)    
+        # layer3 アップサンプリング 
+        il3    = kwargs.pop('il3',  2)
+        opt_for_l3 = {} 
+        opt_for_l3['mode']    = kwargs.get('mode','nearest')
+        # layer4 畳込み
+        M4           = kwargs.pop('M4',           8) # フィルタ数
+        kernel_size4 = kwargs.pop('kernel_size4', 3) # フィルタ高と幅　　
+        stride4      = kwargs.pop('stride4',      1) # ストライド　　　　
+        pad4         = kwargs.pop('pad4',         1) # パディング　　　　
+        opt_for_l4 = {} 
+        opt_for_l4['activate']  = kwargs.pop('cl2_act',  'Mish')
+        opt_for_l4['optimize']  = kwargs.pop('cl2_opt',  'Adam')
+        opt_for_l4['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l4['layernorm'] = kwargs.pop('ln',        False)    
+        # layer5 アップサンプリング 
+        il5    = kwargs.pop('il5',  2)
+        opt_for_l5 = {} 
+        opt_for_l5['mode']    = kwargs.get('mode','nearest')
+        # layer6 畳込み
+        M6           = kwargs.pop('M6',           6) # フィルタ数
+        kernel_size6 = kwargs.pop('kernel_size6', 3) # フィルタ高と幅　　
+        stride6      = kwargs.pop('stride6',      1) # ストライド　　　　
+        pad6         = kwargs.pop('pad6',         1) # パディング　　　　
+        opt_for_l6 = {} 
+        opt_for_l6['activate']  = kwargs.pop('cl3_act',  'Mish')
+        opt_for_l6['optimize']  = kwargs.pop('cl3_opt',  'Adam')
+        opt_for_l6['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l6['layernorm'] = kwargs.pop('ln',        False)    
+        # layer7 畳込み 
+        M7           = kwargs.pop('M7',           3) # フィルタ数
+        kernel_size7 = kwargs.pop('kernel_size7', 1) # フィルタ高と幅　　
+        stride7      = kwargs.pop('stride7',      1) # ストライド　　　　
+        pad7         = kwargs.pop('pad7',         0) # パディング　　　　
+        opt_for_l7 = {} 
+        opt_for_l7['activate']  = kwargs.pop('cl4_act',  'Mish')
+        opt_for_l7['optimize']  = kwargs.pop('cl4_opt',  'Adam')
+        #opt_for_l7['batchnorm'] = kwargs.pop('bn',        False)    
+        #opt_for_l7['layernorm'] = kwargs.pop('ln',        False)    
+        
+        # kwargsに残ったものを結合
+        opt_for_l2.update(kwargs)
+        opt_for_l4.update(kwargs)
+        opt_for_l6.update(kwargs)
+        opt_for_l7.update(kwargs)
+
+        # -- 各層の初期化 -- 
+        # layer 1
+        self.interpolate_layer1 = neuron.Interpolate2dLayer(scale_factor=il1, **opt_for_l1)
+        # layer 2
+        self.conv_layer1    = neuron.Conv2dLayer(M2, kernel_size2, stride2, pad2, **opt_for_l2)
+        # layer 3
+        self.interpolate_layer2 = neuron.Interpolate2dLayer(scale_factor=il3, **opt_for_l3)
+        # layer 4
+        self.conv_layer2    = neuron.Conv2dLayer(M4, kernel_size4, stride4, pad4, **opt_for_l4)
+        # layer 5
+        self.interpolate_layer3 = neuron.Interpolate2dLayer(scale_factor=il5, **opt_for_l5)
+        # layer 6
+        self.conv_layer3    = neuron.Conv2dLayer(M6, kernel_size6, stride6, pad6, **opt_for_l6)
+        # layer 7
+        self.conv_layer4    = neuron.Conv2dLayer(M7, kernel_size7, stride7, pad7, **opt_for_l7)
+
+        # -- layerのまとめ -- 
+        self.layers.append(self.interpolate_layer1)
+        self.layers.append(self.conv_layer1)    
+        self.layers.append(self.interpolate_layer2)
+        self.layers.append(self.conv_layer2)
+        self.layers.append(self.interpolate_layer3)
+        self.layers.append(self.conv_layer3)
+        self.layers.append(self.conv_layer4)
+
 
 if __name__=='__main__':
     print('\n#### all cast ####')
@@ -3289,6 +3384,7 @@ if __name__=='__main__':
     classes = list(classes)
     for c in classes:
         print(c)
-        if c not in('NN_CNN_Base', 'ReshapeLayer', '__loader__') and c[-4:]!='bkup':
+        if c not in('NN_CNN_Base', 'ReshapeLayer', '__loader__', 'Config') and c[-4:]!='bkup':
             #print('c =', c)
             model = eval(c)()
+            model.summary()
