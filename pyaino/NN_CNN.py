@@ -3285,7 +3285,75 @@ class CNN_micicic(NN_CNN_Base):
         self.layers.append(self.conv_layer4)
         self.layers.append(self.output_layer)
 
-class CNN_icic(NN_CNN_Base):
+class CNN_icicc(NN_CNN_Base):
+    def __init__(self, *args, **kwargs):
+        ''' 画像を8倍の大きさにする '''
+        In, Out = super().__init__(*args, **kwargs)
+        # -- 各層の初期化 --
+        # layer1 アップサンプリング
+        il1    = kwargs.pop('il1',  2)            
+        opt_for_l1 = {} 
+        opt_for_l1['mode']    = kwargs.get('mode','nearest')
+        # layer2 畳込み　　
+        M2           = kwargs.pop('M2',          12) # フィルタ数
+        kernel_size2 = kwargs.pop('kernel_size2', 3) # フィルタ高と幅　　
+        stride2      = kwargs.pop('stride2',      1) # ストライド　　　　
+        pad2         = kwargs.pop('pad2',         1) # パディング　　　　
+        opt_for_l2 = {} 
+        opt_for_l2['activate']  = kwargs.pop('cl1_act',  'Mish')
+        opt_for_l2['optimize']  = kwargs.pop('cl1_opt',  'Adam')
+        opt_for_l2['batchnorm'] = kwargs.get('bn',        False)    
+        opt_for_l2['layernorm'] = kwargs.get('ln',        False)    
+        # layer3 アップサンプリング 
+        il3    = kwargs.pop('il3',  2)
+        opt_for_l3 = {} 
+        opt_for_l3['mode']    = kwargs.get('mode','nearest')
+        # layer4 畳込み
+        M4           = kwargs.pop('M4',           8) # フィルタ数
+        kernel_size4 = kwargs.pop('kernel_size4', 3) # フィルタ高と幅　　
+        stride4      = kwargs.pop('stride4',      1) # ストライド　　　　
+        pad4         = kwargs.pop('pad4',         1) # パディング　　　　
+        opt_for_l4 = {} 
+        opt_for_l4['activate']  = kwargs.pop('cl2_act',  'Mish')
+        opt_for_l4['optimize']  = kwargs.pop('cl2_opt',  'Adam')
+        opt_for_l4['batchnorm'] = kwargs.pop('bn',        False)    
+        opt_for_l4['layernorm'] = kwargs.pop('ln',        False)    
+        # layer5 畳込み 
+        M5           = kwargs.pop('M5',           3) # フィルタ数
+        kernel_size5 = kwargs.pop('kernel_size5', 1) # フィルタ高と幅　　
+        stride5      = kwargs.pop('stride5',      1) # ストライド　　　　
+        pad5         = kwargs.pop('pad5',         0) # パディング　　　　
+        opt_for_l5 = {} 
+        opt_for_l5['activate']  = kwargs.pop('cl4_act', 'Identity')
+        opt_for_l5['optimize']  = kwargs.pop('cl4_opt',  'Adam')
+        #opt_for_l5['batchnorm'] = kwargs.pop('bn',        False)    
+        #opt_for_l5['layernorm'] = kwargs.pop('ln',        False)    
+        
+        # kwargsに残ったものを結合
+        opt_for_l2.update(kwargs)
+        opt_for_l4.update(kwargs)
+        opt_for_l5.update(kwargs)
+
+        # -- 各層の初期化 -- 
+        # layer 1
+        self.interpolate_layer1 = neuron.Interpolate2dLayer(scale_factor=il1, **opt_for_l1)
+        # layer 2
+        self.conv_layer1    = neuron.Conv2dLayer(M2, kernel_size2, stride2, pad2, **opt_for_l2)
+        # layer 3
+        self.interpolate_layer2 = neuron.Interpolate2dLayer(scale_factor=il3, **opt_for_l3)
+        # layer 4
+        self.conv_layer2    = neuron.Conv2dLayer(M4, kernel_size4, stride4, pad4, **opt_for_l4)
+        # layer 5
+        self.conv_layer3    = neuron.Conv2dLayer(M5, kernel_size5, stride5, pad5, **opt_for_l5)
+
+        # -- layerのまとめ -- 
+        self.layers.append(self.interpolate_layer1)
+        self.layers.append(self.conv_layer1)    
+        self.layers.append(self.interpolate_layer2)
+        self.layers.append(self.conv_layer2)
+        self.layers.append(self.conv_layer3)
+
+class CNN_icicicc(NN_CNN_Base):
     def __init__(self, *args, **kwargs):
         ''' 画像を8倍の大きさにする '''
         In, Out = super().__init__(*args, **kwargs)
@@ -3338,7 +3406,7 @@ class CNN_icic(NN_CNN_Base):
         stride7      = kwargs.pop('stride7',      1) # ストライド　　　　
         pad7         = kwargs.pop('pad7',         0) # パディング　　　　
         opt_for_l7 = {} 
-        opt_for_l7['activate']  = kwargs.pop('cl4_act',  'Mish')
+        opt_for_l7['activate']  = kwargs.pop('cl4_act', 'Identity')
         opt_for_l7['optimize']  = kwargs.pop('cl4_opt',  'Adam')
         #opt_for_l7['batchnorm'] = kwargs.pop('bn',        False)    
         #opt_for_l7['layernorm'] = kwargs.pop('ln',        False)    
@@ -3373,6 +3441,7 @@ class CNN_icic(NN_CNN_Base):
         self.layers.append(self.interpolate_layer3)
         self.layers.append(self.conv_layer3)
         self.layers.append(self.conv_layer4)
+
 
 
 if __name__=='__main__':
