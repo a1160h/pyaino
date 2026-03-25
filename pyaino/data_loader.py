@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 from queue import Queue
 from PIL import Image, ImageOps
-import glob, os
+import glob, os, math
 import numpy
 from pyaino import common_function as cf
 
@@ -135,24 +135,20 @@ class BinaryImageLoader(ImageLoader):
         self.dtype = dtype
         self.mmap_mode = mmap_mode
 
-        self.items_per_image = 1
-        for axis in source_order:
-            self.items_per_image *= self.axis_size[axis]
+        self.source_shape = tuple(self.axis_size[axis] for axis in source_order)
 
         total_items = os.path.getsize(path) // numpy.dtype(dtype).itemsize
-        total_images = total_items // self.items_per_image
+        self.data_size = total_items // math.prod(self.source_shape)
 
         if data_size is not None:
-            total_images = min(total_images, data_size)
-
-        self.data_size = total_images
-
-        # 生データをmemmapで持つ
+            self.data_size = min(self.data_size, data_size)
+        
+        # 生データをmemmapで持つ(データ形状の通り)
         self.data = numpy.memmap(
             path,
             dtype=self.dtype,
             mode=self.mmap_mode,
-            shape=(self.data_size, self.items_per_image)
+            shape=(self.data_size, *self.source_shape)
         )
 
         super().__init__(
@@ -169,24 +165,21 @@ class BinaryImageLoader(ImageLoader):
 
     def _load_item(self, idx):
         """
-        memmapでもつデータのidxが指すflat画像1枚分 を取出して、
+        idxが指すmemmapの画像1枚分を取出して、
         source_order の指定に従って多次元配列にして返す
         """
-        flat = self.data[idx]
-
-        stored_shape = tuple(self.axis_size[axis] for axis in self.source_order[1:])
-        x = flat.reshape(stored_shape)
+        x = self.data[idx]
         if self.resize is None:
             return x
 
         # PIL は HWC 前提なので、いったん HWC にしてから resize
-        hwc = cf.change_axis_order(x[numpy.newaxis, ...], self.source_order, 'BHWC')[0]
-        img = Image.fromarray(hwc)
+        x = cf.change_axis_order(x, self.source_order[1:], 'HWC')
+        img = Image.fromarray(x)
         img = ImageOps.fit(img, self.resize, Image.LANCZOS)
-        hwc = numpy.asarray(img, dtype=numpy.uint8)
+        x = numpy.asarray(img, dtype=numpy.uint8)
 
         # 元の画像軸順に戻す
-        x = cf.change_axis_order(hwc[numpy.newaxis, ...], 'BHWC', self.source_order)[0]
+        x = cf.change_axis_order(x, 'HWC', self.source_order[1:])
         return x
 
 
