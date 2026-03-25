@@ -1,5 +1,5 @@
 # common_function
-# 2026.02.02 A.Inoue 
+# 2026.03.25 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -548,7 +548,8 @@ def search_obj_path3(obj, target, name=None, seen=set()):
     return None
 
 
-def export_parameters_recursive(obj, params=None, name=None, param_label = ('w', 'v', 'b', 'gamma', 'beta'),
+def export_parameters_recursive(obj, params=None, name=None,
+                             param_label = ('w', 'v', 'b', 'gamma', 'beta', 'mu_ppl', 'sigma_ppl'),
                              seen=None, generation=0):
     """オブジェクトとその内部要素を再帰的に表示"""
     if name is None:   # はじめは呼び出し元でのobj名
@@ -618,7 +619,8 @@ def get_param_info(model):
             print()
     
 
-def import_parameters_recursive(obj, params=None, name=None, param_label = ('w', 'v', 'b', 'gamma', 'beta'),
+def import_parameters_recursive(obj, params=None, name=None,
+                             param_label = ('w', 'v', 'b', 'gamma', 'beta', 'mu_ppl', 'sigma_ppl'),
                              seen=None, generation=0):
     """ 再帰的にparamsをobjのtarget項に設定 """
     if name is None:   # はじめは呼び出し元でのobj名
@@ -788,10 +790,11 @@ def load_parameters_cpb(file_name):
 
 # -- 標準化 --
 class Normalize:
-    def __init__(self, method='standard'):
+    def __init__(self, method='standard', verbose=False):
         self.method = method
         self.shift = None
         self.base = None
+        self.verbose = verbose
 
     def __call__(self, data, adapt=True):
         return self.normalize(data, adapt=adapt)
@@ -809,21 +812,25 @@ class Normalize:
             data_min = np.min(data); data_max = np.max(data)
             shift = data_min
             base  = data_max - data_min
-            print('データは最小値=0,最大値=1に標準化されます')
+            if self.verbose:
+                print('データは最小値=0,最大値=1に標準化されます')
         elif method in('-1to1', 'minmax-11','range-1to1'):
             data_min = np.min(data); data_max = np.max(data)
             shift = (data_max + data_min)/2
             base  = (data_max - data_min)/2
-            print('データは最小値=-1,最大値=1に標準化されます')
+            if self.verbose:
+                print('データは最小値=-1,最大値=1に標準化されます')
         elif method in('l2', 'l2n','norm', 'l2norm'):
             l2n = np.sum(data**2)**0.5
             shift = 0
             base  = l2n
-            print('データはl2ノルムが1になるように標準化されます')
+            if self.verbose:
+                print('データはl2ノルムが1になるように標準化されます')
         else: # standard
             shift = np.average(data)
             base  = np.std(data)
-            print('データは平均値=0,標準偏差=1に標準化されます')
+            if self.verbose:
+                print('データは平均値=0,標準偏差=1に標準化されます')
         if adapt:
             self.shift = shift
             self.base  = base
@@ -838,8 +845,8 @@ class Normalize:
         data = data * self.base + self.shift
         return data       
 
-def normalize(data, method='standard'):
-    return Normalize(method)(data)
+def normalize(data, method='standard', verbose=False):
+    return Normalize(method, verbose)(data)
 
 class NormalizeMulti:
     """ 列方向に複数項目が並んだデータを、それぞれ行方向で正規化する """
@@ -894,6 +901,23 @@ class L2Normalize:
 def l2normalize(data):
     return L2Normalize().normalize(data)
 
+class ChangeAxisOrder:
+    """ 配列xのsource_orderの文字列で与えられる軸の並びをtarget_orderの文字列の並びに並べ替える """
+    def __init__(self, source_order, target_order):
+        self.source_order = source_order.upper()
+        self.target_order = target_order.upper()
+
+    def __call__(self, x):
+        if self.source_order == self.target_order:
+            return x
+        if self.target_order == 'asis':
+            return x
+        axis_index = {axis: i for i, axis in enumerate(self.source_order)}
+        perm = [axis_index[axis] for axis in self.target_order]
+        return x.transpose(perm)
+
+def change_axis_order(x, source_order, target_order):
+    return ChangeAxisOrder(source_order, target_order)(x)
 
 def cos_similarity(x, y, eps=1e-8):
     """ コサイン類似度 """
@@ -941,7 +965,7 @@ def test_sample(show, func, x, t, label_list=None, label_list2=None):
         if input('機械の判定を行いますか？(y/n)') not in ('y', 'Y'):
             continue
         
-        # 順伝播して結果を表示　　　　
+        # 順伝播して結果を表示
         try:
             y = func(sample_data)             # 順伝播(入力の次元保存)
         except:
