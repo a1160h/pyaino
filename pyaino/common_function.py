@@ -1,5 +1,5 @@
 # common_function
-# 2026.03.25 A.Inoue 
+# 2026.03.26 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2467,6 +2467,50 @@ def display_images(image):
         ax.get_xaxis().set_visible(False)  # 軸は非表示
         ax.get_yaxis().set_visible(False)
     plt.show()
+
+# -- テスト用のサンプルの表示 --
+def show_sample(data, label=None):
+    #print('### debug', data.shape)
+    rdata = data[0] if data.ndim==4 else data
+    rdata = data.reshape(3, 32, 32) if data.ndim<=2 else rdata
+    rdata = rdata.transpose(1, 2, 0) if rdata.shape[0]==3 else rdata 
+    max_picel = np.max(rdata); min_picel = np.min(rdata) # 画素データを0～1に補正
+    rdata = (rdata - min_picel)/(max_picel - min_picel)
+    plt.imshow(rdata.tolist())
+    if label:
+        plt.title(label)
+    plt.show()
+
+# -- 複数サンプルを表示(端数にも対応) --
+def show_multi_samples(data, n=(10,5), label_list=None, target=None,
+                       figsize=(18, 10), maxis=(1,2,3),
+                       save=False, file=None,
+                       ):
+    # 画素データを0～1に補正
+    if maxis is not None: # 補正軸
+        max_picel = np.max(data, axis=maxis, keepdims=True)
+        min_picel = np.min(data, axis=maxis, keepdims=True) 
+        rdata = (data - min_picel)/(max_picel - min_picel)
+    # C=3でC軸を探し、転置してBHWCの並びに
+    rdata = rdata.transpose(0, 2, 3, 1) if rdata.shape[1]==3 else rdata
+    n_data = len(rdata)
+    for j in range(0, n_data, n[0]*n[1]):   # はじめのn個、次のn個と進める
+        x = rdata[j:]
+        if target is not None:
+            t = target[j:]
+        plt.figure(figsize=figsize)
+        m = min(n[0]*n[1], n_data - j)      # n個以上残っていればn個、n個に満たない時はその端数
+        for i in range(m):
+            plt.subplot(n[1], n[0], i+1)    # nもfigsizeに合わせて横×縦
+            plt.imshow(x[i].tolist())
+            if target is not None and label_list is not None:
+                plt.title(label_list[int(t[i])])
+            plt.axis('off')
+        if save:
+            plt.savefig(file)
+            plt.close()
+        else:    
+            plt.show()
 
 def eval_perplexity(model, corpus, B=10, T=35, n=10000):
     model.reset_state()
