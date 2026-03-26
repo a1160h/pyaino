@@ -1,3 +1,6 @@
+# data_loader
+# 2026.03.26 A.Inoue
+
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
 from concurrent.futures import ThreadPoolExecutor
@@ -10,56 +13,73 @@ from pyaino import common_function as cf
 
 class ImageLoader:
     """
-    先読み機能付きデータローダ
+    汎用画像データローダ（基底クラス）
 
-    役割分担:
-      - _load_item()     : 1件を numpy 配列として読む
-      - _formatting()    : バッチ単位の軸変換・正規化
-      - __next__()       : 最後に Config.np へ変換（必要ならGPU転送）
+    データは index によりアクセスされ、各 index に対して
+    _load_item(idx) が 1件のデータを返すことを前提とする。
+
+    データの実体（データ総数、ファイル、バイナリ、メモリ等）は派生クラス側で管理
+
+    Parameters
+    ----------
+    batch_size : int
+        バッチサイズ
+    prefetch : int
+        先読みバッファサイズ
+    shuffle : bool
+        シャッフルするかどうか
+    resize : tuple or None
+        (H, W) のリサイズ指定
+    source_order : str
+        入力データの軸順（Bを除く、例: 'HWC', 'CWH'）
+    target_order : str
+        出力時の軸順（'asis' または 'CHW' など）
+    normalize : tuple or None
+        正規化設定
     """
-    def __init__(self, item_list, batch_size=32, prefetch=4, shuffle=True,
+    def __init__(self, batch_size=32, prefetch=4, shuffle=True,
                  resize=None, source_order='HWC', target_order='asis', normalize=None):
-        self.item_list = item_list
+        #self.data_size = data_size
         self.batch_size = batch_size
         self.prefetch = prefetch
         self.shuffle = shuffle
-
         self.queue = Queue(maxsize=prefetch)
         self.stop_event = threading.Event()
-
         self.executor = ThreadPoolExecutor(max_workers=1)
         self.future = None
 
         self.resize = resize
         self.source_order = f'B{source_order.upper()}'
         self.target_order = f'B{target_order.upper()}' if target_order != 'asis' else 'asis'
-        if normalize is not None:  
-            self.normalizer = cf.Normalize(normalize)
-        else:
-            self.normalizer = None
+        self.normalizer = cf.Normalize(normalize) if normalize is not None else None
 
-    def _load_item(self, path):
+    def _load_item(self, idx):
         """
-        画像ファイル1件を読んで大きさを調整して numpy 配列にして返す。
-        画像ファイルでない場合には派生クラスで上書きする前提。
+        index に対応する1件のデータを返す
+
+        Parameters
+        ----------
+        idx : int データインデックス
+
+        Returns 
+        -------
+        ndarray : 画像1枚分（B軸なし）
         """
-        img = Image.open(path).convert('RGB')
-        if self.resize is not None:
-            img = ImageOps.fit(img, self.resize, Image.LANCZOS)
-        x = numpy.asarray(img, dtype=numpy.uint8)
-        return x
+        raise NotImplementedError
+
+    def _get_indices(self):
+        indices = numpy.arange(self.data_size)
+        if self.shuffle:
+            numpy.random.shuffle(indices)
+        return indices
 
     def _batch_generator(self):
-        """ バッチを生成するジェネレータ """
-        items = self.item_list.copy()
-        if self.shuffle:
-            numpy.random.shuffle(items)
-
-        for i in range(0, len(items), self.batch_size):
-            batch_items = items[i:i + self.batch_size]
-            batch = [self._load_item(item) for item in batch_items]
+        indices = self._get_indices()
+        for i in range(0, len(indices), self.batch_size):
+            batch_indices = indices[i:i + self.batch_size]
+            batch = [self._load_item(idx) for idx in batch_indices]
             yield numpy.stack(batch)
-
+            
     def _formatting(self, x):
         """
         cpu上(numpy)でデータの整形
@@ -108,36 +128,71 @@ class ImageLoader:
         self.executor.shutdown(wait=False)
 
 
-class BinaryImageLoader(ImageLoader):
+class CelebALoader(ImageLoader):
     """
-    1つの .bin に複数画像が入っている場合のローダ
+    CelebA 画像ディレクトリ用ローダ
 
-    例:
-      source_order = 'CWH'
-      axis_size    = {'H':96, 'W':96, 'C':3}
+    data_source で指定されたディレクトリ内の画像ファイルを列挙し、
+    index によってアクセスする。
 
-    読み出し直後の軸順は source_order の通り。
-    軸変換は _formatting() 側で target_order に合わせて行う。
+    各画像はPIL.Imageで RGB (HWC) として読み込まれる。
+
+    Parameters
+    ----------
+    data_source : str 画像ディレクトリのパス
     """
-    def __init__(self, path, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, source_order='HWC', target_order='asis',
-                 normalize=None,
-                 data_size=None,
-                 axis_size=None,
-                 dtype=numpy.uint8,
-                 mmap_mode='r'):
+    def __init__(self, data_source, batch_size=64, prefetch=8, shuffle=True,
+                 resize=None, target_order='asis', normalize=None, data_size=None):
 
-        if axis_size is None:
-            raise ValueError("axis_size を指定してください。例: {'H':96, 'W':96, 'C':3}")
+        rawpath = os.path.normpath(data_source + os.sep + "*")
+        self.file_list = glob.glob(rawpath)
+        
+        if data_size is not None:
+            self.file_list = self.file_list[:data_size]
+        self.data_size = len(self.file_list)    
 
-        self.path = path
-        self.axis_size = dict(axis_size)
-        self.dtype = dtype
-        self.mmap_mode = mmap_mode
+        super().__init__(
+            batch_size=batch_size,
+            prefetch=prefetch,
+            shuffle=shuffle,
+            resize=resize,
+            source_order='HWC',
+            target_order=target_order,
+            normalize=normalize,
+        )
+
+    def _load_item(self, idx):
+        file_path = self.file_list[idx]
+        img = Image.open(file_path).convert('RGB')
+        if self.resize is not None:
+            img = ImageOps.fit(img, self.resize, Image.LANCZOS)
+        return numpy.asarray(img, dtype=numpy.uint8)
+
+
+class STL10BinaryLoader(ImageLoader):
+    """
+    STL10 のバイナリデータ用ローダ
+
+    data_source は複数画像が連続して格納された .bin ファイル
+    CWH 形式で格納されているため、source_order='CWH' として扱う。
+
+    Parameters
+    ----------
+    data_source : str STL10 の .bin ファイルパス
+    target_order : str 出力時の軸順（例: 'CHW'）
+    """
+    def __init__(self, data_source, batch_size=64, prefetch=8, shuffle=True,
+                 resize=None, target_order='CHW', normalize=None,
+                 data_size=None):
+
+        self.data_source = data_source
+        self.axis_size = {'H': 96, 'W': 96, 'C': 3}
+        self.dtype = numpy.uint8
+        self.mmap_mode = 'r'
+        source_order = 'CWH'
 
         self.source_shape = tuple(self.axis_size[axis] for axis in source_order)
-
-        total_items = os.path.getsize(path) // numpy.dtype(dtype).itemsize
+        total_items = os.path.getsize(data_source) // numpy.dtype(self.dtype).itemsize
         self.data_size = total_items // math.prod(self.source_shape)
 
         if data_size is not None:
@@ -145,14 +200,13 @@ class BinaryImageLoader(ImageLoader):
         
         # 生データをmemmapで持つ(データ形状の通り)
         self.data = numpy.memmap(
-            path,
+            data_source,
             dtype=self.dtype,
             mode=self.mmap_mode,
             shape=(self.data_size, *self.source_shape)
         )
-
+        
         super().__init__(
-            item_list=list(range(self.data_size)), #self.item_list,
             batch_size=batch_size,
             prefetch=prefetch,
             shuffle=shuffle,
@@ -161,7 +215,6 @@ class BinaryImageLoader(ImageLoader):
             target_order=target_order,
             normalize=normalize,
         )
-
 
     def _load_item(self, idx):
         """
@@ -183,66 +236,18 @@ class BinaryImageLoader(ImageLoader):
         return x
 
 
-class CelebALoader(ImageLoader):
-    """
-    通常の画像ファイル群用ローダ
-    読み出し直後は HWC
-    """
-    def __init__(self, file_path, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, target_order='asis', normalize=None,
-                 data_size=None):
-        rawpath = os.path.normpath(file_path + os.sep + "*")
-        file_list = glob.glob(rawpath)
-        if data_size is not None:
-            file_list = file_list[:data_size]
-
-        self.data_size = len(file_list)
-
-        super().__init__(
-            item_list=file_list,
-            batch_size=batch_size,
-            prefetch=prefetch,
-            shuffle=shuffle,
-            resize=resize,
-            source_order='HWC', 
-            target_order=target_order,
-            normalize=normalize,
-        )
-
-class STL10BinaryLoader(BinaryImageLoader):
-    """
-    STL10 用
-    STL10 の bin は実質 CWH とみなす
-    """
-    def __init__(self, path, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, source_order='CWH', target_order='CHW', normalize=None,
-                 data_size=None):
-        super().__init__(
-            path=path,
-            batch_size=batch_size,
-            prefetch=prefetch,
-            shuffle=shuffle,
-            resize=resize,
-            source_order=source_order,
-            target_order=target_order,
-            normalize=normalize,
-            data_size=data_size,
-            axis_size={'H': 96, 'W': 96, 'C': 3},
-            dtype=numpy.uint8,
-        )
-
-
 if __name__ == '__main__':
     from pyaino import STL10
 
     # CelebA の例
-    path = r'D:\Python\img_align_celeba\img_align_celeba'
+    data_source = r'D:\Python\img_align_celeba\img_align_celeba'
     loader = CelebALoader(
-        path,
+        data_source,
         batch_size=50,
         resize=(48, 64),
         target_order='CHW',
         normalize=True,
+        data_size=1000,
     )
     count = 0
     for x in loader:
@@ -254,9 +259,9 @@ if __name__ == '__main__':
     STL10.show_multi_samples(x) # celebAでも使える
     
     # STL10 の例
-    path = r'D:\Python\STL10\stl10_binary\train_X.bin'
+    data_source = r'D:\Python\STL10\stl10_binary\train_X.bin'
     loader = STL10BinaryLoader(
-        path,
+        data_source,
         batch_size=50,
         resize=(48, 48),
         normalize=True,
