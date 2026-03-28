@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.03.17 A.Inoue
+# 2026.03.28 A.Inoue
 
 import copy
 import warnings
@@ -1792,8 +1792,8 @@ class Interpolate2d(Function):
             self.impl = Interpolate2dNearestSimple(self.config)
 
         else: 
-            self.impl = Interpolate2dGeneral(self.config)
-        print(self.impl.__class__.__name__, self.config)
+            self.impl = Interpolate2dGeneral(self.config, self.align_corners)
+        print(self.impl.__class__.__name__, self.config, self.align_corners)
 
     def __forward__(self, x):
         if None in self.config:
@@ -1826,7 +1826,214 @@ class Interpolate2dNearestSimple:
         gx = gy.reshape((-1, *prefix, Ih, Oh//Ih, Iw, Ow//Iw)).sum(axis=(-3, -1))
         return gx
 
-class Interpolate2dGeneral:
+class Interpolate2dGeneral: 
+    """ 汎用的な補間ロジック """
+
+    def __init__(self, config, align_corners):
+        self.config = config
+        self.align_corners = align_corners
+
+    def forward(self, x):
+        prefix, Ih, Iw, Oh, Ow, mode = self.config
+
+        # pos_h, pos_w, h0, h1, th, tw を計算
+        if self.align_corners: # 端を揃える
+            
+            if Oh > 1:
+                scale_h = (Ih - 1) / (Oh - 1)
+                pos_h = np.arange(Oh, dtype=Config.dtype) * scale_h
+            else:
+                scale_h = 0
+                pos_h = np.zeros(1, dtype=Config.dtype)
+
+            if Ow > 1:
+                scale_w = (Iw - 1) / (Ow - 1)
+                pos_w = np.arange(Ow, dtype=Config.dtype) * scale_w
+            else:
+                scale_w = 0
+                pos_w = np.zeros(1, dtype=Config.dtype)
+
+        else: # ピクセル中心を揃える
+            scale_h = Ih / Oh
+            scale_w = Iw / Ow
+
+            pos_h = (np.arange(Oh, dtype=Config.dtype) + 0.5) * scale_h - 0.5
+            pos_w = (np.arange(Ow, dtype=Config.dtype) + 0.5) * scale_w - 0.5
+            pos_h = np.clip(pos_h, 0, Ih - 1)
+            pos_w = np.clip(pos_w, 0, Iw - 1)
+               
+        pos_hi = np.floor(pos_h)  
+        pos_wi = np.floor(pos_w)  
+        h0 = pos_hi.astype(np.int32)
+        w0 = pos_wi.astype(np.int32)
+        h1 = h0 + 1
+        w1 = w0 + 1
+        h0 = np.clip(h0, 0, Ih - 1)
+        w0 = np.clip(w0, 0, Iw - 1) 
+        h1 = np.clip(h1, 0, Ih - 1)
+        w1 = np.clip(w1, 0, Iw - 1) 
+        th = pos_h - pos_hi # 端数=bilinearの混ぜ具合 
+        tw = pos_w - pos_wi # 端数=bilinearの混ぜ具合
+
+        # 保存（重要）
+        self.h0, self.h1 = h0, h1
+        self.w0, self.w1 = w0, w1
+        self.th = th.reshape(Oh, 1)
+        self.tw = tw.reshape(1, Ow)
+        self.mode = mode
+
+        if mode == 'nearest':
+            return x[..., h0[:, None], w0[None, :]]
+
+        th = th.reshape(Oh, 1)
+        tw = tw.reshape(1, Ow)
+
+        # W方向
+        x0 = x[..., :, w0]
+        x1 = x[..., :, w1]
+        tmp = (1 - tw) * x0 + tw * x1
+
+        # H方向
+        tmp0 = tmp[..., h0, :]
+        tmp1 = tmp[..., h1, :]
+        y = (1 - th) * tmp0 + th * tmp1
+
+        return y
+
+    def backward(self, gy):
+        prefix, Ih, Iw, Oh, Ow, mode = self.config
+
+        h0, h1 = self.h0, self.h1
+        w0, w1 = self.w0, self.w1
+        th, tw = self.th, self.tw
+
+        gx = np.zeros((*gy.shape[:-2], Ih, Iw), dtype=gy.dtype)
+
+        if mode == 'nearest':
+            for i in range(Oh):
+                for j in range(Ow):
+                    gx[..., h0[i], w0[j]] += gy[..., i, j]
+            return gx
+    
+        # --- H方向（修正） ---
+        tmp = np.zeros((*gy.shape[:-2], Ih, Ow), dtype=gy.dtype)
+
+        for i in range(Oh):
+            tmp[..., h0[i], :] += gy[..., i, :] * (1 - th[i, 0])
+            tmp[..., h1[i], :] += gy[..., i, :] * th[i, 0]
+
+        # --- W方向（既に正しい） ---
+        for j in range(Ow):
+            gx[..., :, w0[j]] += tmp[..., :, j] * (1 - tw[0, j])
+            gx[..., :, w1[j]] += tmp[..., :, j] * tw[0, j]
+
+        return gx
+
+
+class Interpolate2dGeneral_bkup:
+    """ 汎用的な補間ロジック """
+
+    def __init__(self, config, align_corners):
+        self.config = config
+        self.align_corners = align_corners
+        
+    def forward(self, x):
+        prefix, Ih, Iw, Oh, Ow, mode = self.config
+
+        # --- ここを変更 ---
+        if self.align_corners: # 端を揃える
+            
+            if Oh > 1:
+                scale_h = (Ih - 1) / (Oh - 1)
+                pos_h = np.arange(Oh, dtype=Config.dtype) * scale_h
+            else:
+                scale_h = 0
+                pos_h = np.zeros(1, dtype=Config.dtype)
+
+            if Ow > 1:
+                scale_w = (Iw - 1) / (Ow - 1)
+                pos_w = np.arange(Ow, dtype=Config.dtype) * scale_w
+            else:
+                scale_w = 0
+                pos_w = np.zeros(1, dtype=Config.dtype)
+
+        else: # ピクセル中心を揃える
+            scale_h = Ih / Oh
+            scale_w = Iw / Ow
+
+            pos_h = (np.arange(Oh, dtype=Config.dtype) + 0.5) * scale_h - 0.5
+            pos_w = (np.arange(Ow, dtype=Config.dtype) + 0.5) * scale_w - 0.5
+            pos_h = np.clip(pos_h, 0, Ih - 1)
+            pos_w = np.clip(pos_w, 0, Iw - 1)
+               
+        pos_hi = np.floor(pos_h)  
+        pos_wi = np.floor(pos_w)  
+        h0 = pos_hi.astype(np.int32)
+        w0 = pos_wi.astype(np.int32)
+        h1 = h0 + 1
+        w1 = w0 + 1
+        h0 = np.clip(h0, 0, Ih - 1)
+        w0 = np.clip(w0, 0, Iw - 1) 
+        h1 = np.clip(h1, 0, Ih - 1)
+        w1 = np.clip(w1, 0, Iw - 1) 
+        th = pos_h - pos_hi # 端数=bilinearの混ぜ具合 
+        tw = pos_w - pos_wi # 端数=bilinearの混ぜ具合
+
+        # 行方向 (H) の補間行列 A、列方向 (W) の補間行列 B を作る
+
+        A = np.zeros((Oh, Ih), dtype=Config.dtype)
+        B = np.zeros((Ow, Iw), dtype=Config.dtype)
+
+        if mode == 'bilinear':
+            self.bilinear_AB(A, B, h0, h1, w0, w1, th, tw)
+        else:
+            self.nearest_AB(A, B, h0, w0)
+
+        # forward: Y = A · X · B^T
+        BT = B.T  # (Iw, Ow)
+        tmp = np.tensordot(x, BT, axes=([-1], [0]))   # (..., Ih, Ow)
+        y   = np.tensordot(A, tmp, axes=([1], [-2]))  # (Oh, *prefix, Ow)
+        y   = np.moveaxis(y, 0, -2)                   # (*prefix, Oh, Ow)
+        # backward 用に保存
+        self.A = A
+        self.B = B
+
+        return y
+
+    def backward(self, gy):
+
+        A = self.A  # (Oh, Ih)
+        B = self.B  # (Ow, Iw)
+
+        # dX = A^T · dY · B
+        # まず行方向 (Oh→Ih)： gy(...,Oh,Ow) × A(Oh,Ih) → tmp(...,Ow,Ih)
+        tmp = np.tensordot(gy, A, axes=([-2], [0]))   # (..., Ow, Ih)
+
+        # 軸順を (..., Ih, Ow) に揃える
+        tmp = np.moveaxis(tmp, -1, -2)                # (..., Ih, Ow)
+
+        # 次に列方向 (Ow→Iw)： tmp(...,Ih,Ow) × B(Ow,Iw) → gx(...,Ih,Iw)
+        gx = np.tensordot(tmp, B, axes=([-1], [0]))   # (..., Ih, Iw)
+
+        return gx
+
+    def nearest_AB(self, A, B, h0, w0):
+        prefix, Ih, Iw, Oh, Ow, mode = self.config
+
+        A[np.arange(Oh), h0] = 1
+        B[np.arange(Ow), w0] = 1
+
+    def bilinear_AB(self, A, B, h0, h1, w0, w1, th, tw):
+        prefix, Ih, Iw, Oh, Ow, mode = self.config
+
+        A[np.arange(Oh), h0] += (1 - th)
+        A[np.arange(Oh), h1] += th
+        B[np.arange(Ow), w0] += (1 - tw)
+        B[np.arange(Ow), w1] += tw
+
+
+
+class Interpolate2dGeneral_bkup:
     """ 汎用的な補間ロジック """
 
     def __init__(self, config):
