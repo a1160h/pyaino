@@ -1746,25 +1746,21 @@ class Interpolate2d(Function):
                 f"{self.__class__.__name__}: invalid size {size}"
             )
 
-        if mode in ('nearest', 'bilinear'):
-            self.mode = mode
-        else:
+        if mode not in ('nearest', 'bilinear'):
             raise NotImplementedError(
                 f"{self.__class__.__name__}"
                 f" mode={mode}, size={self.size}, "
                 f"scale_factor={self.scale_factor} はまだ未実装です。"
             )
             
-        self.align_corners = align_corners  # 今は使わないが保持しておく
-
         self.impl = None
-        prefix, Ih, Iw, Oh, Ow = None, None, None, None, None
-        self.config = prefix, Ih, Iw, Oh, Ow, None
+        Ih, Iw, Oh, Ow = None, None, None, None
+        self.config = Ih, Iw, Oh, Ow, mode, align_corners
 
 
     def fix_configuration(self, shape):
-
         """共通の ndim チェックと Ih,Iw,Oh,Ow の決定までを行う。"""
+        _, _, _, _, mode, align_corners = self.config 
         if len(shape) < 2:
             raise ValueError(
                 f"{self.__class__.__name__}: "
@@ -1785,15 +1781,15 @@ class Interpolate2d(Function):
                 )
             self.size = Oh, Ow
         Oh, Ow = self.size
-        self.config = prefix, Ih, Iw, Oh, Ow, self.mode
+        self.config = Ih, Iw, Oh, Ow, mode, align_corners
 
         # ここで「どの実装を使うか」を決める
-        if self.mode == "nearest" and Oh%Ih==0 and Ow%Iw==0:
+        if mode == "nearest" and Oh%Ih==0 and Ow%Iw==0:
             self.impl = Interpolate2dNearestSimple(self.config)
 
         else: 
-            self.impl = Interpolate2dGeneral(self.config, self.align_corners)
-        print(self.impl.__class__.__name__, self.config, self.align_corners)
+            self.impl = Interpolate2dGeneral(self.config)
+        print(self.impl.__class__.__name__, self.config)
 
     def __forward__(self, x):
         if None in self.config:
@@ -1816,28 +1812,111 @@ class Interpolate2dNearestSimple:
         self.config = config
 
     def forward(self, x):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        Ih, Iw, Oh, Ow, _, _ = self.config
         y = x.repeat(Ow//Iw, axis=-1) # 横方向のupsampling
         y = y.repeat(Oh//Ih, axis=-2) # 縦方向のupsampling
+        self.x = x
         return y
 
     def backward(self, gy):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
-        gx = gy.reshape((-1, *prefix, Ih, Oh//Ih, Iw, Ow//Iw)).sum(axis=(-3, -1))
+        Ih, Iw, Oh, Ow, _, _ = self.config
+        gx = gy.reshape(self.x.shape[:-2]+(Ih, Oh//Ih, Iw, Ow//Iw)).sum(axis=(-3, -1))
         return gx
 
-class Interpolate2dGeneral: 
-    """ 汎用的な補間ロジック """
 
-    def __init__(self, config, align_corners):
+class Interpolate2dGeneral:
+    """ 補間行列ABを用いた汎用的な補間ロジック """
+
+    def __init__(self, config):
         self.config = config
-        self.align_corners = align_corners
+        self.AB = None
+        
+    def forward(self, x):
+        """ Y = A · X · B^T """
+        if self.AB is None:
+            self.build_AB()
+        A, B = self.AB    
+        tmp = np.tensordot(x, B.T, axes=([-1], [0]))  # (..., Ih, Ow)
+        y   = np.tensordot(A, tmp, axes=([1], [-2]))  # (Oh, B, C, Ow)
+        y   = np.moveaxis(y, 0, -2)                   # (B, C, Oh, Ow)
+        return y
+
+    def backward(self, gy):
+        """ dX = A^T · dY · B """
+        A, B = self.AB
+        # まず行方向 (Oh→Ih)： gy(...,Oh,Ow) × A(Oh,Ih) → tmp(...,Ow,Ih)
+        tmp = np.tensordot(gy, A, axes=([-2], [0]))   # (..., Ow, Ih)
+        # 軸順を (..., Ih, Ow) に揃える
+        tmp = np.moveaxis(tmp, -1, -2)                # (..., Ih, Ow)
+        # 次に列方向 (Ow→Iw)： tmp(...,Ih,Ow) × B(Ow,Iw) → gx(...,Ih,Iw)
+        gx = np.tensordot(tmp, B, axes=([-1], [0]))   # (..., Ih, Iw)
+        return gx
+
+    def build_AB(self):
+        Ih, Iw, Oh, Ow, mode, align_corners = self.config
+
+        if align_corners: # 端を揃える
+            if Oh > 1:
+                scale_h = (Ih - 1) / (Oh - 1)
+                pos_h = np.arange(Oh, dtype=Config.dtype) * scale_h
+            else:
+                scale_h = 0
+                pos_h = np.zeros(1, dtype=Config.dtype)
+
+            if Ow > 1:
+                scale_w = (Iw - 1) / (Ow - 1)
+                pos_w = np.arange(Ow, dtype=Config.dtype) * scale_w
+            else:
+                scale_w = 0
+                pos_w = np.zeros(1, dtype=Config.dtype)
+
+        else: # ピクセル中心を揃える
+            scale_h = Ih / Oh
+            scale_w = Iw / Ow
+            pos_h = (np.arange(Oh, dtype=Config.dtype) + 0.5) * scale_h - 0.5
+            pos_w = (np.arange(Ow, dtype=Config.dtype) + 0.5) * scale_w - 0.5
+            pos_h = np.clip(pos_h, 0, Ih - 1)
+            pos_w = np.clip(pos_w, 0, Iw - 1)
+               
+        pos_hi = np.floor(pos_h)  
+        pos_wi = np.floor(pos_w)  
+        h0 = pos_hi.astype(np.int32)
+        w0 = pos_wi.astype(np.int32)
+        h1 = h0 + 1
+        w1 = w0 + 1
+        h0 = np.clip(h0, 0, Ih - 1)
+        w0 = np.clip(w0, 0, Iw - 1) 
+        h1 = np.clip(h1, 0, Ih - 1)
+        w1 = np.clip(w1, 0, Iw - 1) 
+        th = pos_h - pos_hi # 端数=bilinearの混ぜ具合 
+        tw = pos_w - pos_wi # 端数=bilinearの混ぜ具合
+
+        # 行方向 (H) の補間行列 A、列方向 (W) の補間行列 B を作る
+        A = np.zeros((Oh, Ih), dtype=Config.dtype)
+        B = np.zeros((Ow, Iw), dtype=Config.dtype)
+        if mode == 'bilinear':
+            Ih, Iw, Oh, Ow, mode, align_corners = self.config
+            A[np.arange(Oh), h0] += (1 - th)
+            A[np.arange(Oh), h1] += th
+            B[np.arange(Ow), w0] += (1 - tw)
+            B[np.arange(Ow), w1] += tw
+        else:     # nearest
+            Ih, Iw, Oh, Ow, mode, align_corners = self.config
+            A[np.arange(Oh), h0] = 1
+            B[np.arange(Ow), w0] = 1
+        self.AB = A, B
+        
+class Interpolate2dGeneral2: 
+    """ 汎用的な補間ロジック(補間行列を作らない) """
+
+    def __init__(self, config):
+        self.config = config
 
     def forward(self, x):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        Ih, Iw, Oh, Ow, mode, align_corners = self.config
 
         # pos_h, pos_w, h0, h1, th, tw を計算
-        if self.align_corners: # 端を揃える
+        if align_corners: # 端を揃える
             
             if Oh > 1:
                 scale_h = (Ih - 1) / (Oh - 1)
@@ -1901,7 +1980,7 @@ class Interpolate2dGeneral:
         return y
 
     def backward(self, gy):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        Ih, Iw, Oh, Ow, mode, align_corners = self.config
 
         h0, h1 = self.h0, self.h1
         w0, w1 = self.w0, self.w1
@@ -1929,110 +2008,6 @@ class Interpolate2dGeneral:
 
         return gx
 
-
-class Interpolate2dGeneral_bkup:
-    """ 汎用的な補間ロジック """
-
-    def __init__(self, config, align_corners):
-        self.config = config
-        self.align_corners = align_corners
-        
-    def forward(self, x):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
-
-        # --- ここを変更 ---
-        if self.align_corners: # 端を揃える
-            
-            if Oh > 1:
-                scale_h = (Ih - 1) / (Oh - 1)
-                pos_h = np.arange(Oh, dtype=Config.dtype) * scale_h
-            else:
-                scale_h = 0
-                pos_h = np.zeros(1, dtype=Config.dtype)
-
-            if Ow > 1:
-                scale_w = (Iw - 1) / (Ow - 1)
-                pos_w = np.arange(Ow, dtype=Config.dtype) * scale_w
-            else:
-                scale_w = 0
-                pos_w = np.zeros(1, dtype=Config.dtype)
-
-        else: # ピクセル中心を揃える
-            scale_h = Ih / Oh
-            scale_w = Iw / Ow
-
-            pos_h = (np.arange(Oh, dtype=Config.dtype) + 0.5) * scale_h - 0.5
-            pos_w = (np.arange(Ow, dtype=Config.dtype) + 0.5) * scale_w - 0.5
-            pos_h = np.clip(pos_h, 0, Ih - 1)
-            pos_w = np.clip(pos_w, 0, Iw - 1)
-               
-        pos_hi = np.floor(pos_h)  
-        pos_wi = np.floor(pos_w)  
-        h0 = pos_hi.astype(np.int32)
-        w0 = pos_wi.astype(np.int32)
-        h1 = h0 + 1
-        w1 = w0 + 1
-        h0 = np.clip(h0, 0, Ih - 1)
-        w0 = np.clip(w0, 0, Iw - 1) 
-        h1 = np.clip(h1, 0, Ih - 1)
-        w1 = np.clip(w1, 0, Iw - 1) 
-        th = pos_h - pos_hi # 端数=bilinearの混ぜ具合 
-        tw = pos_w - pos_wi # 端数=bilinearの混ぜ具合
-
-        # 行方向 (H) の補間行列 A、列方向 (W) の補間行列 B を作る
-
-        A = np.zeros((Oh, Ih), dtype=Config.dtype)
-        B = np.zeros((Ow, Iw), dtype=Config.dtype)
-
-        if mode == 'bilinear':
-            self.bilinear_AB(A, B, h0, h1, w0, w1, th, tw)
-        else:
-            self.nearest_AB(A, B, h0, w0)
-
-        # forward: Y = A · X · B^T
-        BT = B.T  # (Iw, Ow)
-        tmp = np.tensordot(x, BT, axes=([-1], [0]))   # (..., Ih, Ow)
-        y   = np.tensordot(A, tmp, axes=([1], [-2]))  # (Oh, *prefix, Ow)
-        y   = np.moveaxis(y, 0, -2)                   # (*prefix, Oh, Ow)
-        # backward 用に保存
-        self.A = A
-        self.B = B
-
-        return y
-
-    def backward(self, gy):
-
-        A = self.A  # (Oh, Ih)
-        B = self.B  # (Ow, Iw)
-
-        # dX = A^T · dY · B
-        # まず行方向 (Oh→Ih)： gy(...,Oh,Ow) × A(Oh,Ih) → tmp(...,Ow,Ih)
-        tmp = np.tensordot(gy, A, axes=([-2], [0]))   # (..., Ow, Ih)
-
-        # 軸順を (..., Ih, Ow) に揃える
-        tmp = np.moveaxis(tmp, -1, -2)                # (..., Ih, Ow)
-
-        # 次に列方向 (Ow→Iw)： tmp(...,Ih,Ow) × B(Ow,Iw) → gx(...,Ih,Iw)
-        gx = np.tensordot(tmp, B, axes=([-1], [0]))   # (..., Ih, Iw)
-
-        return gx
-
-    def nearest_AB(self, A, B, h0, w0):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
-
-        A[np.arange(Oh), h0] = 1
-        B[np.arange(Ow), w0] = 1
-
-    def bilinear_AB(self, A, B, h0, h1, w0, w1, th, tw):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
-
-        A[np.arange(Oh), h0] += (1 - th)
-        A[np.arange(Oh), h1] += th
-        B[np.arange(Ow), w0] += (1 - tw)
-        B[np.arange(Ow), w1] += tw
-
-
-
 class Interpolate2dGeneral_bkup:
     """ 汎用的な補間ロジック """
 
@@ -2040,7 +2015,7 @@ class Interpolate2dGeneral_bkup:
         self.config = config
         
     def forward(self, x):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        Ih, Iw, Oh, Ow, mode, align_corners = self.config
 
         scale_h = Ih / Oh
         scale_w = Iw / Ow
@@ -2073,8 +2048,8 @@ class Interpolate2dGeneral_bkup:
         # forward: Y = A · X · B^T
         BT = B.T  # (Iw, Ow)
         tmp = np.tensordot(x, BT, axes=([-1], [0]))   # (..., Ih, Ow)
-        y   = np.tensordot(A, tmp, axes=([1], [-2]))  # (Oh, *prefix, Ow)
-        y   = np.moveaxis(y, 0, -2)                   # (*prefix, Oh, Ow)
+        y   = np.tensordot(A, tmp, axes=([1], [-2]))  # (Oh, B, C, Ow)
+        y   = np.moveaxis(y, 0, -2)                   # (B, C, Oh, Ow)
         # backward 用に保存
         self.A = A
         self.B = B
@@ -2099,13 +2074,13 @@ class Interpolate2dGeneral_bkup:
         return gx
 
     def nearest_AB(self, A, B, h0, w0):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        Ih, Iw, Oh, Ow, mode, align_corners = self.config
 
         A[np.arange(Oh), h0] = 1
         B[np.arange(Ow), w0] = 1
 
     def bilinear_AB(self, A, B, h0, h1, w0, w1, th, tw):
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        Ih, Iw, Oh, Ow, mode, align_corners = self.config
 
         A[np.arange(Oh), h0] += (1 - th)
         A[np.arange(Oh), h1] += th
@@ -2137,7 +2112,7 @@ class Interpolate2dNearest(Interpolate2d):
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        prefix, Ih, Iw, Oh, Ow, mode, align_corners = self.config
 
         # 出力座標 0..Oh-1, 0..Ow-1
         # 入力側の連続座標 → 最近傍の整数インデックス
@@ -2163,7 +2138,7 @@ class Interpolate2dNearest(Interpolate2d):
     def __backward__(self, gy):
         x, = self.inputs
         B = x.shape[0]
-        prefix, Ih, Iw, Oh, Ow, mode = self.config
+        prefix, Ih, Iw, Oh, Ow, mode, align_corners = self.config
 
         # gx をゼロ初期化
         gx = np.zeros_like(x) # xの形と型を継承
