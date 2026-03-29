@@ -49,7 +49,7 @@ print("nearest grad check:", np.allclose(gx, gxr))
 model = Neuron.Interpolate2d(scale_factor=1.50,
                                        #mode="nearest",
                                        mode="bilinear",
-                                       align_corners=True,
+                                       align='corners',
                                        #align_corners=False,
                                        )
 y = model(x)
