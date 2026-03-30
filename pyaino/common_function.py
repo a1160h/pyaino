@@ -1,5 +1,5 @@
 # common_function
-# 2026.03.26 A.Inoue 
+# 2026.03.30 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2469,11 +2469,38 @@ def display_images(image):
     plt.show()
 
 # -- テスト用のサンプルの表示 --
-def show_sample(data, label=None):
+def show_sample(data, label=None, shape=None):
     #print('### debug', data.shape)
-    rdata = data[0] if data.ndim==4 else data
-    rdata = data.reshape(3, 32, 32) if data.ndim<=2 else rdata
-    rdata = rdata.transpose(1, 2, 0) if rdata.shape[0]==3 else rdata 
+    rdata = data[0] if (data.ndim==4 or data.ndim==2) else data
+    if rdata.ndim==1:
+        if shape is not None:
+            if len(shape)!=3:
+                raise ValueError('Cannot shape give data as an image.')
+            elif shape[0]==3 or shape[0]==1:
+                C,Ih,Iw = shape
+                rdata = rdata.reshape(C,Ih,Iw).transpose(1,2,0)
+            elif shape[2]==3 or shape[2]==1:
+                Ih,Iw,C = shape
+                rdata = rdata.reshape(Ih,Iw,C)
+            else:
+                raise ValueError('Cannot shape give data as an image.')
+        else: # 決められないけれど、無理やり決め打ち
+            C  = 3               # カラーとみなす
+            IhIw = rdata.size//3 
+            Ih = int(IhIw**0.5)  # 正方形とみなす
+            Iw = IhIw//Ih
+            if C*Ih*Iw!=rdata.size:
+                raise ValueError('Cannot shape give data as an image. ')
+            rdata = rdata.reshape(C,Ih,Iw).transpose(1,2,0) 
+    elif rdata.ndim==3:
+        if rdata.shape[0]==3 or rdata.shape[0]==1:
+            C,Ih,Iw = rdata.shape
+            rdata = rdata.reshape(C,Ih,Iw).transpose(1,2,0)
+
+        else:    
+            Ih,Iw,C = rdata.shape
+            rdata = rdata.reshape(Ih,Iw,C)
+    
     max_picel = np.max(rdata); min_picel = np.min(rdata) # 画素データを0～1に補正
     rdata = (rdata - min_picel)/(max_picel - min_picel)
     plt.imshow(rdata.tolist())
