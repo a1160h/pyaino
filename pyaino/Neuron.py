@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.03.28 A.Inoue
+# 2026.03.30 A.Inoue
 
 import copy
 import warnings
@@ -1713,7 +1713,7 @@ class Interpolate2d(Function):
     """ 統合インターフェース """
 
     def __init__(self, scale_factor=None, size=None,
-                 mode="nearest", align=None):
+                 mode="nearest", align="legacy"):
         super().__init__()
 
         if scale_factor is None and size is None:
@@ -1754,8 +1754,6 @@ class Interpolate2d(Function):
             )
             
         self.impl = None
-        if align is None:
-            align = 'legacy'
         Ih, Iw, Oh, Ow = None, None, None, None
         self.config = Ih, Iw, Oh, Ow, mode, align
 
