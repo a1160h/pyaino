@@ -2967,7 +2967,8 @@ class CNN_nicn(NN_CNN_Base):
         # layer2 アップサンプリング
         il2    = kwargs.pop('il2',  2)            
         opt_for_l2 = {} 
-        opt_for_l2['mode']    = kwargs.get('mode','nearest')
+        opt_for_l2['mode']    = kwargs.pop('mode', 'nearest')
+        opt_for_l2['align']   = kwargs.pop('align', 'center')
         # layer3 畳込み　　
         M3           = kwargs.pop('M3',          12) # フィルタ数
         kernel_size3 = kwargs.pop('kernel_size3', 3) # フィルタ高と幅　　
@@ -3031,7 +3032,8 @@ class CNN_nicicn(NN_CNN_Base):
         # layer2 アップサンプリング
         il2    = kwargs.pop('il2',  2)            
         opt_for_l2 = {} 
-        opt_for_l2['mode']    = kwargs.get('mode','nearest')
+        opt_for_l2['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l2['align']   = kwargs.get('align', 'center')
         # layer3 畳込み　　
         M3           = kwargs.pop('M3',          12) # フィルタ数
         kernel_size3 = kwargs.pop('kernel_size3', 3) # フィルタ高と幅　　
@@ -3045,7 +3047,8 @@ class CNN_nicicn(NN_CNN_Base):
         # layer4 アップサンプリング 
         il4    = kwargs.pop('il4',  2)
         opt_for_l4 = {} 
-        opt_for_l4['mode']    = kwargs.get('mode','nearest')
+        opt_for_l4['mode']    = kwargs.pop('mode', 'nearest')
+        opt_for_l4['align']   = kwargs.pop('align', 'center')
         # layer5 畳込み
         M5           = kwargs.pop('M5',           8) # フィルタ数
         kernel_size5 = kwargs.pop('kernel_size5', 3) # フィルタ高と幅　　
@@ -3117,7 +3120,8 @@ class CNN_nicicicn(NN_CNN_Base):
         # layer2 アップサンプリング
         il2    = kwargs.pop('il2',  2)            
         opt_for_l2 = {} 
-        opt_for_l2['mode']    = kwargs.get('mode','nearest')
+        opt_for_l2['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l2['align']   = kwargs.get('align', 'center')
         # layer3 畳込み　　
         M3           = kwargs.pop('M3',          12) # フィルタ数
         kernel_size3 = kwargs.pop('kernel_size3', 3) # フィルタ高と幅　　
@@ -3131,7 +3135,8 @@ class CNN_nicicicn(NN_CNN_Base):
         # layer4 アップサンプリング 
         il4    = kwargs.pop('il4',  2)
         opt_for_l4 = {} 
-        opt_for_l4['mode']    = kwargs.get('mode','nearest')
+        opt_for_l4['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l4['align']   = kwargs.get('align', 'center')
         # layer5 畳込み
         M5           = kwargs.pop('M5',           8) # フィルタ数
         kernel_size5 = kwargs.pop('kernel_size5', 3) # フィルタ高と幅　　
@@ -3145,7 +3150,8 @@ class CNN_nicicicn(NN_CNN_Base):
         # layer6 アップサンプリング 
         il6    = kwargs.pop('il6',  2)
         opt_for_l6 = {} 
-        opt_for_l6['mode']    = kwargs.get('mode','nearest')
+        opt_for_l6['mode']    = kwargs.pop('mode', 'nearest')
+        opt_for_l6['align']   = kwargs.pop('align', 'center')
         # layer7 畳込み
         M7           = kwargs.pop('M7',           6) # フィルタ数
         kernel_size7 = kwargs.pop('kernel_size7', 3) # フィルタ高と幅　　
@@ -3225,7 +3231,8 @@ class CNN_nicicicicn(NN_CNN_Base):
         # layer2 アップサンプリング
         il2    = kwargs.pop('il2',  2)            
         opt_for_l2 = {} 
-        opt_for_l2['mode']    = kwargs.get('mode','nearest')
+        opt_for_l2['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l2['align']   = kwargs.get('align', 'center')
         # layer3 畳込み　　
         M3           = kwargs.pop('M3',          12) # フィルタ数
         kernel_size3 = kwargs.pop('kernel_size3', 3) # フィルタ高と幅　　
@@ -3239,7 +3246,8 @@ class CNN_nicicicicn(NN_CNN_Base):
         # layer4 アップサンプリング 
         il4    = kwargs.pop('il4',  2)
         opt_for_l4 = {} 
-        opt_for_l4['mode']    = kwargs.get('mode','nearest')
+        opt_for_l4['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l4['align']   = kwargs.get('align', 'center')
         # layer5 畳込み
         M5           = kwargs.pop('M5',           8) # フィルタ数
         kernel_size5 = kwargs.pop('kernel_size5', 3) # フィルタ高と幅　　
@@ -3253,7 +3261,8 @@ class CNN_nicicicicn(NN_CNN_Base):
         # layer6 アップサンプリング 
         il6    = kwargs.pop('il6',  2)
         opt_for_l6 = {} 
-        opt_for_l6['mode']    = kwargs.get('mode','nearest')
+        opt_for_l6['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l6['align']   = kwargs.get('align', 'center')
         # layer7 畳込み
         M7           = kwargs.pop('M7',           6) # フィルタ数
         kernel_size7 = kwargs.pop('kernel_size7', 3) # フィルタ高と幅　　
@@ -3267,7 +3276,8 @@ class CNN_nicicicicn(NN_CNN_Base):
         # layer8 アップサンプリング 
         il8    = kwargs.pop('il8',  2)
         opt_for_l8 = {} 
-        opt_for_l8['mode']      = kwargs.pop('mode','nearest')
+        opt_for_l8['mode']    = kwargs.pop('mode', 'nearest')
+        opt_for_l8['align']   = kwargs.pop('align', 'center')
         # layer9 畳込み
         M9           = kwargs.pop('M9',           3) # フィルタ数
         kernel_size9 = kwargs.pop('kernel_size9', 3) # フィルタ高と幅　　
@@ -3343,7 +3353,8 @@ class CNN_icicc(NN_CNN_Base):
         # layer1 アップサンプリング
         il1    = kwargs.pop('il1',  2)            
         opt_for_l1 = {} 
-        opt_for_l1['mode']    = kwargs.get('mode','nearest')
+        opt_for_l1['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l1['align']   = kwargs.get('align', 'center')
         # layer2 畳込み　　
         M2           = kwargs.pop('M2',          12) # フィルタ数
         kernel_size2 = kwargs.pop('kernel_size2', 3) # フィルタ高と幅　　
@@ -3357,7 +3368,8 @@ class CNN_icicc(NN_CNN_Base):
         # layer3 アップサンプリング 
         il3    = kwargs.pop('il3',  2)
         opt_for_l3 = {} 
-        opt_for_l3['mode']    = kwargs.get('mode','nearest')
+        opt_for_l3['mode']    = kwargs.pop('mode', 'nearest')
+        opt_for_l3['align']   = kwargs.pop('align', 'center')
         # layer4 畳込み
         M4           = kwargs.pop('M4',           8) # フィルタ数
         kernel_size4 = kwargs.pop('kernel_size4', 3) # フィルタ高と幅　　
@@ -3411,7 +3423,8 @@ class CNN_icicicc(NN_CNN_Base):
         # layer1 アップサンプリング
         il1    = kwargs.pop('il1',  2)            
         opt_for_l1 = {} 
-        opt_for_l1['mode']    = kwargs.get('mode','nearest')
+        opt_for_l1['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l1['align']   = kwargs.get('align', 'center')
         # layer2 畳込み　　
         M2           = kwargs.pop('M2',          12) # フィルタ数
         kernel_size2 = kwargs.pop('kernel_size2', 3) # フィルタ高と幅　　
@@ -3425,7 +3438,8 @@ class CNN_icicicc(NN_CNN_Base):
         # layer3 アップサンプリング 
         il3    = kwargs.pop('il3',  2)
         opt_for_l3 = {} 
-        opt_for_l3['mode']    = kwargs.get('mode','nearest')
+        opt_for_l3['mode']    = kwargs.get('mode', 'nearest')
+        opt_for_l3['align']   = kwargs.get('align', 'center')
         # layer4 畳込み
         M4           = kwargs.pop('M4',           8) # フィルタ数
         kernel_size4 = kwargs.pop('kernel_size4', 3) # フィルタ高と幅　　
@@ -3439,7 +3453,8 @@ class CNN_icicicc(NN_CNN_Base):
         # layer5 アップサンプリング 
         il5    = kwargs.pop('il5',  2)
         opt_for_l5 = {} 
-        opt_for_l5['mode']    = kwargs.get('mode','nearest')
+        opt_for_l5['mode']    = kwargs.pop('mode', 'nearest')
+        opt_for_l5['align']   = kwargs.pop('align', 'center')
         # layer6 畳込み
         M6           = kwargs.pop('M6',           6) # フィルタ数
         kernel_size6 = kwargs.pop('kernel_size6', 3) # フィルタ高と幅　　
