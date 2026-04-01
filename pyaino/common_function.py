@@ -1,5 +1,5 @@
 # common_function
-# 2026.03.30 A.Inoue 
+# 2026.03.31 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -16,6 +16,18 @@ import matplotlib.pyplot as plt
 import pickle
 import inspect, types
 import copy
+import numpy 
+"""
+npの特別扱いが必要な場合
+
+Normalize
+    data_loaderの内部ではnumpyで処理し最後にConfig.np.ndarray、
+    すなわちnumpy配列/cupy配列をConfigに従って変換しで出力する。
+    そこで使われるため、Normalizeは強制的にnumpyで処理する機能を提供 
+
+"""
+
+
 try:
     from PIL import Image, ImageFilter
 except:
@@ -547,13 +559,13 @@ def search_obj_path3(obj, target, name=None, seen=set()):
 
     return None
 
-
 def export_parameters_recursive(obj, params=None, name=None,
-                             param_label = ('w', 'v', 'b', 'gamma', 'beta', 'mu_ppl', 'sigma_ppl'),
-                             seen=None, generation=0):
+                     param_label = ('w', 'v', 'b', 'gamma', 'beta', 'mu_ppl', 'sigma_ppl'),
+                     seen=None):
     """オブジェクトとその内部要素を再帰的に表示"""
     if name is None:   # はじめは呼び出し元でのobj名
-        name = who_am_i(obj, stack_offset=3) # 0:who_am_i->1:ここ->2:呼び出し元->3:__main__
+        raise Exception('No name provided.')
+        #name = who_am_i(obj, stack_offset=3) # 0:who_am_i->1:ここ->2:呼び出し元->3:__main__
     if seen is None:   # 明示的に初期化が必要
         seen = set()
     if params is None: # 明示的に初期化が必要
@@ -562,10 +574,10 @@ def export_parameters_recursive(obj, params=None, name=None,
     obj_id = id(obj)
 
     if type(obj) in (type(None), int, float, bool, str):
-        return params, name, seen, generation
+        return params, name, seen
 
     if obj_id in seen:  # すでに計算済みならスキップ
-        return params, name, seen, generation
+        return params, name, seen
     seen.add(obj_id)
 
     # リスト、タプル、セット
@@ -574,17 +586,18 @@ def export_parameters_recursive(obj, params=None, name=None,
             # ndarrayに行きついたら、再帰呼び出しはしない
             if isinstance(item, np.ndarray):
                 continue
-            # 要素を対象に再帰呼び出し
-            _, _, seen, _ = export_parameters_recursive(item, params=params,
-                            name=f"{name}[{idx}]", seen=seen, generation=generation)
+            # 要素を対象に再帰呼び出し、nameにindexを付与する
+            _, _, seen = export_parameters_recursive(
+                            item, params=params,
+                            name=f"{name}[{idx}]", seen=seen)
 
     # 辞書型の場合（キーと値）
     elif isinstance(obj, dict):
         for key, value in obj.items():
-            # 辞書の値を対象に再帰呼び出し
-            name_to = key if name is None else f"{name}.{key}"
-            _, _, seen, _ = export_parameters_recursive(value, params=params,
-                            name=name_to, seen=seen, generation=generation)
+            # 辞書の値を対象に再帰呼び出し、ここでnameにkeyを加えて紡いでいく 
+            _, _, seen = export_parameters_recursive(
+                            value, params=params,
+                            name=f"{name}.{key}", seen=seen)
     
     # クラスのインスタンス（`__dict__` の中身）
     elif hasattr(obj, '__dict__'):
@@ -597,16 +610,20 @@ def export_parameters_recursive(obj, params=None, name=None,
                 if hasattr(obj, p):                  # pは文字列 
                     params[name+'.'+p] = getattr(obj, p) # 該当ケースに対象を辞書登録              
 
-        generation = generation + 1
         # クラスに付随する辞書を対象に再帰呼び出し
-        params, name, seen, generation = export_parameters_recursive(obj.__dict__, params=params,
-                                         name=name, seen=seen, generation=generation)
+        params, name, seen = export_parameters_recursive(
+                                    obj.__dict__, params=params,
+                                    name=name, seen=seen)
 
-    return params, name, seen, generation
+    return params, name, seen
 
 def export_parameters(model, **kwargs): # targetを指定するなどのため
     """ モデルのパラメータを抽出する """
-    params, name, seen, generation = export_parameters_recursive(model, **kwargs)
+    name = who_am_i(model, stack_offset=3)
+                           # 0:who_am_i->1:ここ->2:呼び出し元->3:__main__
+    #name = model.__class__.__name__
+    #name = "model"
+    params, name, seen = export_parameters_recursive(model, name=name, **kwargs)
     return params
 
 def get_param_info(model):
@@ -618,46 +635,47 @@ def get_param_info(model):
         else:
             print()
     
-
-def import_parameters_recursive(obj, params=None, name=None,
-                             param_label = ('w', 'v', 'b', 'gamma', 'beta', 'mu_ppl', 'sigma_ppl'),
-                             seen=None, generation=0):
+def import_parameters_recursive(obj, params=None, done=None, name=None,
+                     param_label = ('w', 'v', 'b', 'gamma', 'beta', 'mu_ppl', 'sigma_ppl'),
+                     seen=None):
     """ 再帰的にparamsをobjのtarget項に設定 """
-    if name is None:   # はじめは呼び出し元でのobj名
-        name = who_am_i(obj, stack_offset=3) # 0:who_am_i->1:ここ->2:呼び出し元->3:__main__
-    if seen is None:   # 明示的に初期化が必要
-        seen = set()
     if params is None: # 必ず外から与える
         raise Exception('No params provided.')
+    if name is None:   # はじめは呼び出し元でのobj名
+        raise Exception('No name provided.')
+    #    name = who_am_i(obj, stack_offset=3) # 0:who_am_i->1:ここ->2:呼び出し元->3:__main__
+    if seen is None:   # 明示的に初期化が必要
+        seen = set()
+    if done is None:   # 明示的に初期化が必要
+        done = set()
 
     obj_id = id(obj)
 
     if type(obj) in (type(None), int, float, bool, str):
-        return name, seen, generation
+        return done, name, seen
 
     if obj_id in seen:  # すでに計算済みならスキップ
-        return name, seen, generation
+        return done, name, seen
     
     seen.add(obj_id)
 
     # リスト、タプル、セット
     if isinstance(obj, (list, tuple, set)):
-        #print('<<list, tuple, set>>')
         for idx, item in enumerate(obj):
             # ndarrayに行きついたら、再帰呼び出しはしない
             if isinstance(item, np.ndarray):
                 continue
-            # 要素を対象に再帰呼び出し
-            _, seen, _ = import_parameters_recursive(item, params=params,
-                         name=f"{name}[{idx}]", seen=seen, generation=generation)
-
+            # 要素を対象に再帰呼び出し、nameにindexを付与する
+            done, _, seen = import_parameters_recursive(
+                                item, params=params, done=done,
+                                name=f"{name}[{idx}]", seen=seen)
     # 辞書型の場合（キーと値）
     elif isinstance(obj, dict):
         for key, value in obj.items():
-            # 辞書の値を対象に再帰呼び出し
-            name_to = key if name is None else f"{name}.{key}"
-            _, seen, _ = import_parameters_recursive(value, params=params,
-                         name=name_to, seen=seen, generation=generation)
+            # 辞書の値を対象に再帰呼び出し、ここでnameにkeyを加えて紡いでいく
+            done, _, seen = import_parameters_recursive(
+                                value, params=params, done=done,
+                                name=f"{name}.{key}", seen=seen)
             
     # クラスのインスタンス（`__dict__` の中身）
     elif hasattr(obj, '__dict__'):
@@ -671,18 +689,26 @@ def import_parameters_recursive(obj, params=None, name=None,
                 if hasattr(obj, p):
                     if fullname in params: # paramsに無いものは放置20250725AI
                         setattr(obj, p, params[fullname])
+                        done.add(fullname) # 完了したものを記録
                     else:
                         warnings.warn(fullname+' skipped.')
 
-        generation = generation + 1
         # クラスに付随する辞書を対象に再帰呼び出し
-        name, seen, generation = import_parameters_recursive(obj.__dict__, params=params,
-                                 name=name, seen=seen, generation=generation)
-
-    return name, seen, generation
+        done, name, seen = import_parameters_recursive(
+                                obj.__dict__, params=params, done=done, 
+                                name=name, seen=seen)
+        
+    return done, name, seen
 
 def import_parameters(model, params, **kwargs): # targetを指定するなどのため
-    name, seen, generation = import_parameters_recursive(model, params, **kwargs)
+    name = who_am_i(model, stack_offset=3)
+                           # 0:who_am_i->1:ここ->2:呼び出し元->3:__main__
+    #name = model.__class__.__name__
+    #name = "model"
+    done, name, seen = import_parameters_recursive(model, params, name=name, **kwargs)
+    for key in done:
+        params.pop(key, None)
+    return params, done
 
 
 def analize_parameters(model):
@@ -739,16 +765,22 @@ def n2c_dictionary(parameters):
 
 
 # -- 学習結果の保存(辞書形式) --
-def save_parameters(file_name, model, numpy=True):
+def save_parameters(file_name, model, numpy=True, verbose=False):
     params = export_parameters(model)
     if numpy:
         params = c2n_dictionary(params)
+    if verbose:
+        print(f'file = {file_name}')
+        print(f'model = {model.__class__.__name__}')
+        print(f'config = {model.config if hasattr(model, "config") else None}')
+        for k, v in params.items():
+            print(f'{k} {v.shape if v is not None else None}')
     with open(file_name, 'wb') as f:
         pickle.dump(params, f)
     print(model.__class__.__name__, 'モデルのパラメータをファイルに記録しました=>', file_name)    
 
 # -- 学習結果の継承(辞書形式) --
-def load_parameters(file_name, model):
+def load_parameters(file_name, model, verbose=False):
     with open(file_name, 'rb') as f:
         params = pickle.load(f)
     print('load_parameters called on np =', np.__name__)    
@@ -756,8 +788,19 @@ def load_parameters(file_name, model):
         params = n2c_dictionary(params)
     if np.__name__=='numpy':
         params = c2n_dictionary(params)
-    import_parameters(model, params)
+    if verbose:
+        print(f'file = {file_name}')
+        print(f'model = {model.__class__.__name__}')
+        print(f'config = {model.config if hasattr(model, "config") else None}')
+        for k, v in params.items():
+            print(f'{k} {v.shape if v is not None else None}')
+    params, done = import_parameters(model, params)
     print(model.__class__.__name__, 'モデルのパラメータをファイルから取得しました<=', file_name)
+    if len(params) > 0:
+        warnings.warn(f'Unused parameters {len(params)}.')
+    if verbose:
+        print('\nRemaining parameters:\n', params.keys())
+        print('\nLoaded parameters:\n', done, '\n')
     return params
     
 # -- 学習結果の保存(辞書形式) --
@@ -790,16 +833,18 @@ def load_parameters_cpb(file_name):
 
 # -- 標準化 --
 class Normalize:
-    def __init__(self, method='standard', verbose=False):
+    def __init__(self, method='standard', verbose=False, np=Config.np):
         self.method = method
         self.shift = None
         self.base = None
         self.verbose = verbose
+        self.np = np # data_loaderで使う場合のnumpy/cupy対応
 
     def __call__(self, data, adapt=True):
         return self.normalize(data, adapt=adapt)
 
     def normalize(self, data, adapt=True):
+        np = self.np
         method = self.method
         data = np.array(data)
         if method is None: # Noneでそのまま通過
@@ -840,6 +885,7 @@ class Normalize:
         return data       
  
     def denormalize(self, data):
+        np = self.np
         method = self.method
         data = np.array(data)
         data = data * self.base + self.shift
