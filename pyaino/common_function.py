@@ -1,5 +1,5 @@
 # common_function
-# 2026.03.31 A.Inoue 
+# 2026.04.02 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -799,8 +799,8 @@ def load_parameters(file_name, model, verbose=False):
     if len(params) > 0:
         warnings.warn(f'Unused parameters {len(params)}.')
     if verbose:
-        print('\nRemaining parameters:\n', params.keys())
-        print('\nLoaded parameters:\n', done, '\n')
+        print(f'\nRemaining parameters:{len(params)}\n', params.keys())
+        print(f'\nLoaded parameters:{len(done)}\n', done)
     return params
     
 # -- 学習結果の保存(辞書形式) --

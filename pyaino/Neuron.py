@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.03.30 A.Inoue
+# 2026.04.02 A.Inoue
 
 import copy
 import warnings
@@ -169,8 +169,8 @@ class Sequential2:
             print('\n')
 
 #### ニューロンの基本機能 ##############################################
-class AffineParameters:
-    """ Affine変換のパラメータ管理 """
+class WeightsAndBiases:
+    """ linear変換のパラメータ管理 """
     def __init__(self, layer, **kwargs):
         print('Initialize', self.__class__.__name__)
         self.layer      = layer
@@ -304,7 +304,7 @@ class LinearLayer(Function):
         matmul          = kwargs.pop('matmul',     False) # MatMulLinearを使う
         self.bias       = kwargs.get('bias',        True) # dot_linearのbias有無
         self.scale      = kwargs.get('scale',      False) # ReParameteraization
-        self.parameters = AffineParameters(self, **kwargs)
+        self.parameters = WeightsAndBiases(self, **kwargs)
         self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
         self.prephase   = PrePhase(self, **kwargs) 
 
@@ -553,7 +553,7 @@ class BaseLayer(Function):
         matmul          = kwargs.pop('matmul',       False) # MatMulLinearを使う 
         self.bias       = kwargs.get('bias',          True) # dot_linearのbias有無
         self.scale      = kwargs.get('scale',        False) # ReParameteraization
-        self.parameters = AffineParameters(self, **kwargs)
+        self.parameters = WeightsAndBiases(self, **kwargs)
         self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
         self.full_cnnt  = kwargs.pop('full_connection', False) # 全結合層を明示
 
@@ -684,19 +684,20 @@ class PrePhase:
     def __init__(self, layer=None, **kwargs):
         #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
         self.layer = layer
-        layernorm  = kwargs.pop('layernorm', False) # 層正規化の適用有無
-        normdim    = kwargs.pop('normdim',    None) # 正規化の軸指定(2d)
+        layernorm  = kwargs.pop('layernorm',  False) # 層正規化の適用有無
+        normdim    = kwargs.pop('normdim',     None) # 正規化の軸指定(バイアス2d)
+        normaffine = kwargs.pop('normaffine', False) # 正規化のスケール＆バイアス
 
         if layer is None:
             self.Norm = None
 
         elif layernorm == 'pre':
             if layer.typeid == 2 or normdim == '2d': 
-                self.Norm = LayerNorm2d(**kwargs)
+                self.Norm = LayerNorm2d(scale_and_bias=normaffine, **kwargs)
             elif layer.typeid == 1 or normdim == '1d':
-                self.Norm = LayerNorm1d(**kwargs)
+                self.Norm = LayerNorm1d(scale_and_bias=normaffine, **kwargs)
             else: # layer.typeid == 0 or normdim == '0d') 
-                self.Norm = LayerNormalization(**kwargs)
+                self.Norm = LayerNormalization(scale_and_bias=normaffine, **kwargs)
 
         else:
             self.Norm = None
@@ -728,25 +729,26 @@ class PostPhase:
         batchnorm       = kwargs.pop('batchnorm',    False) # バッチ正規化の適用有無
         layernorm       = kwargs.pop('layernorm',    False) # 層正規化の適用有無
         normdim         = kwargs.pop('normdim',       None) # 正規化の軸指定(2d)
+        normaffine      = kwargs.pop('normaffine',   False) # 正規化のスケール＆バイアス
 
         if layer is None:
             self.Norm = None
             
         elif  batchnorm:
             if layer.typeid == 2 or normdim == '2d': 
-                self.Norm = BatchNorm2d(**kwargs)
+                self.Norm = BatchNorm2d(scale_and_bias=normaffine, **kwargs)
             elif layer.typeid == 1 or normdim == '1d':
-                self.Norm = BatchNorm1d(**kwargs)
+                self.Norm = BatchNorm1d(scale_and_bias=normaffine, **kwargs)
             else: # layer.typeid == 0 or normdim == '0d') 
-                self.Norm = BatchNormalization(**kwargs)
+                self.Norm = BatchNormalization(scale_and_bias=normaffine, **kwargs)
                 
         elif  layernorm and not layernorm == 'pre':
             if layer.typeid == 2 or normdim == '2d': 
-                self.Norm = LayerNorm2d(**kwargs)
+                self.Norm = LayerNorm2d(scale_and_bias=normaffine, **kwargs)
             elif layer.typeid == 1 or normdim == '1d':
-                self.Norm = LayerNorm1d(**kwargs)
+                self.Norm = LayerNorm1d(scale_and_bias=normaffine, **kwargs)
             else: # layer.typeid == 0 or normdim == '0d') 
-                self.Norm = LayerNormalization(**kwargs)
+                self.Norm = LayerNormalization(scale_and_bias=normaffine, **kwargs)
                
         else:
             self.Norm = None
@@ -773,7 +775,7 @@ class PostPhase:
             grad_y = self.Norm.backward(grad_y)        # バッチor層ノーマライゼーション
         return grad_y
 
-#### Affine層 #######################################################
+#### 基本的な Neuron層 ##############################################
 # m:上流のニューロン数、n:自身のニューロン数、activate:活性化関数、optimize:最適化、
 # eta:学習係数、width:広がり係数、loss_f:損失関数、w_decay:L2正則化項の係数
 class NeuronLayer(BaseLayer): # ニューロンの基本機能 
@@ -868,7 +870,7 @@ class Conv1dLayer(BaseLayer):
         self.vec_shape = x.shape # パディング後の形状
         # 入力画像を行列に変換 (B,C,Iw+2*pad)->(C*Fw,B*Ow)
         cols = self.vec2col(x)
-        # Affine変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
+        # linear変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
         y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Ow, M).transpose(0, 2, 1)       # u.shape=(B,M,Ow) 
         return y
@@ -877,7 +879,7 @@ class Conv1dLayer(BaseLayer):
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Ow)               # grad_y.shape=(B,M,Ow)
         grad_y = grad_y.transpose(0, 2, 1).reshape(-1, M) #grad_y.shape=(B*Ow,M)
-        # Affineの逆伝播 grad_cols.shape=(B*Ow,C*Fw)
+        # linearの逆伝播 grad_cols.shape=(B*Ow,C*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         # 行列を画像に変換 (B*Ow,C*Fw)->(B,C,Iw)
         grad_x = self.col2vec(grad_cols)
@@ -938,7 +940,7 @@ class Conv1dTransposeLayer(BaseLayer):
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
         x = x.transpose(0, 2, 1).reshape(-1, C) # (B*Iw,C)  
-        # Affine変換 (B*Iw,C)×(C,M*Fw)->(B*Iw,M*Fw)   
+        # linear変換 (B*Iw,C)×(C,M*Fw)->(B*Iw,M*Fw)   
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)  　
         y = self.col2vec(cols)
@@ -953,7 +955,7 @@ class Conv1dTransposeLayer(BaseLayer):
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad)])
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fw,B*Iw)に変換
         grad_y = self.vec2col(grad_y)
-        # Affineの逆伝播
+        # linearの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         grad_x = grad_x.reshape(-1, Iw, C).transpose(0, 2, 1) # (B,C,Iw)
         #grad_x = grad_x.reshape(self.inputs[0].shape)
@@ -1076,7 +1078,7 @@ class Conv2dLayer(BaseLayer):
         x = np.pad(x, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow) 
         cols = self.im2col(x)
-        # Affine変換: (B*Oh*Ow,C*Fh*Fw)×(C*Fh*Fw,M)->(B*Oh*Ow,M)
+        # linear変換: (B*Oh*Ow,C*Fh*Fw)×(C*Fh*Fw,M)->(B*Oh*Ow,M)
         y = self.dot_linear.forward(cols, w, b, gamma)
         y = y.reshape(-1, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
         return y
@@ -1085,7 +1087,7 @@ class Conv2dLayer(BaseLayer):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
         grad_y = grad_y.transpose(0, 2, 3, 1).reshape(-1, M) # grad_y.shape=(B*Oh*Ow,M)
-        # Affineの逆伝播 grad_cols.shape=(B*Oh*Ow,C*Fh*Fw)
+        # linearの逆伝播 grad_cols.shape=(B*Oh*Ow,C*Fh*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)
         grad_x = self.col2im(grad_cols)
@@ -1154,7 +1156,7 @@ class Conv2dTransposeLayer(BaseLayer):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
         x = x.transpose(0, 2, 3, 1).reshape(-1, C) # (B,C,Ih,Iw)->(B*Ih*Iw,C)  
-        # Affine変換 (B*Ih*Iw,C)×(C,M*Fh*Fw)->(B*Ih*Iw,M*Fh*Fw)
+        # linear変換 (B*Ih*Iw,C)×(C,M*Fh*Fw)->(B*Ih*Iw,M*Fh*Fw)
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fh*Fw,B*Ih*Iw)->(B,M,Oh,Ow)  　
         y = self.col2im(cols) # 20251107AI
@@ -1169,7 +1171,7 @@ class Conv2dTransposeLayer(BaseLayer):
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fh*Fw,B*Ih*Iw)に変換
         grad_y = self.im2col(grad_y)
-        # Affineの逆伝播
+        # linearの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         grad_x = grad_x.reshape(-1,Ih,Iw,C).transpose(0,3,1,2) # (B,C,Ih,Iw)
         #grad_x = grad_x.reshape(self.inputs[0].shape)
@@ -1660,52 +1662,25 @@ class UnPooling2d:
 
 ### globalAveragePooling層 ####################################################
 class GlobalAveragePooling(Function):
-    def __init__(self, *configuration, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__()
-        if len(configuration) == 3:
-            C, Ih, Iw = configuration
-        else:
-            C = None; Ih = None; Iw = None
-        self.config = C, Ih, Iw
-        print('Initialize', self.__class__.__name__, self.config)
+        self.config = None
+        print('Initialize', self.__class__.__name__)
         self.DO = Dropout() if kwargs.pop('dropout', False) else None
 
-    def fix_configuration(self, shape):
-        C, Ih, Iw = self.config
-        B = shape[0]
-        if len(shape) >= 3:
-            Ih = shape[-2] 
-            Iw = shape[-1] 
-            C = shape[1] if len(shape)==4 else 1
-        elif C is None or Ih is None or Iw is None:
-            raise Exception(self.__class__.__name__, 'cannot fix configuration.')
-        self.config = C, Ih, Iw
-        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
-
     def __forward__(self, x, *, train=False, dropout=0.0):
-        if None in self.config:
-            #print(self.__class__.__name__, 'input.shape', x.shape)
-            self.fix_configuration(x.shape)
         y = np.mean(x, axis=(2, 3))
         if self.DO:
             y = self.DO.forward(y, dropout=dropout)       
         return y
         
     def __backward__(self, grad_y):
-        C, Ih, Iw = self.config
-        B = grad_y.size//C
+        x, = self.inputs
+        B, C, Ih, Iw = x.shape
         if self.DO:
             grad_y = self.DO.backward(grad_y) 
         grad_x = grad_y / (Ih*Iw)
         grad_x = np.broadcast_to(grad_x.reshape(B, C, 1, 1), (B, C, Ih, Iw))
-        return grad_x
-
-    def __backward2__(self, grad_y):
-        C, Ih, Iw = self.config
-        #grad_x = self.DO.backward(grad_y) # 
-        grad_x /= Ih*Iw
-        grad_x = np.repeat(grad_x.reshape(-1, 1), Ih*Iw, axis=1)
-        grad_x = grad_x.reshape(-1, C, Ih, Iw)
         return grad_x
 
 ### 2次元補完層 ############################################################
@@ -2437,7 +2412,7 @@ class LatentLayer:
 #### 時系列データをまとめて処理するRNN層(Truncated BPTT方式) ##################
 # m:Vector_size(入力数)、n:hidden_size(ニューロン数)
 
-class AffineParametersForRNN:
+class WeightsAndBiasesForRNN:
     """ RNNの重みやバイアスを管理する """
     def __init__(self, layer, **kwargs):
         self.layer       = layer
@@ -2525,7 +2500,7 @@ class AffineParametersForRNN:
         
 class RnnBaseLayer(Function):
     """
-    Layerは時系列の展開を担う．重みやバイアスはAffineParametersForRNNに委託
+    Layerは時系列の展開を担う．重みやバイアスはWeightsAndBiasesForRNNに委託
     時系列の展開に際して機能cellをインスタンス化してLayer内に蓄積する
     いっぽう機能cellではforwardの際の入出力や内部の状態を自身と一体で保持し、
     backwardの際にLayerに蓄積されたcellを呼出せばforwardの際の変数がそのまま使える
@@ -2552,7 +2527,7 @@ class RnnBaseLayer(Function):
         print('Initialize', self.__class__.__name__,
                             self.config[:2], 'stateful', self.config[2])
         
-        self.parameters = AffineParametersForRNN(self, **kwargs)
+        self.parameters = WeightsAndBiasesForRNN(self, **kwargs)
         
         self.cell_normalization = kwargs.pop('cell_normalization', False)
                                                 # セル正規化(層正規化相当)の適用有無
@@ -3700,7 +3675,7 @@ class ContextualSelfAttention(Function):
          
     """
     def __init__(self, *configuration,
-                 affine_v=False, affine_k=False, q_shape=(1,1,-1), **kwargs):
+                 linear_v=False, linear_k=False, q_shape=(1,1,-1), **kwargs):
         super().__init__()
         if len(configuration) == 2:
             m, n = configuration
@@ -3710,9 +3685,9 @@ class ContextualSelfAttention(Function):
 
         # linear_iとlinear_oのconfigはfix_configurationで設定
         self.linear_v = LinearLayer(matmul=True, bias=False,**kwargs) \
-            if affine_v else None
+            if linear_v else None
         self.linear_k = LinearLayer(matmul=True, bias=False,**kwargs) \
-            if affine_k else None
+            if linear_k else None
         # qもfix_configurationで設定
         self.q, self.grad_q = None, None
         self.q_shape = q_shape
@@ -4615,7 +4590,7 @@ class GeneralNormalizationBase2(Function):
         return gx 
 
 class BatchNormalization(GeneralNormalizationBase):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化の軸はバッチ軸0だが、
         # scale_and_biasの軸は特長軸すなわち0以外の軸
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
@@ -4631,7 +4606,7 @@ class batch_normalization(BatchNormalization):
 
 
 class BatchNorm1d(GeneralNormalizationBase):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化の軸はバッチ軸0+最後の空間軸(長さ軸)-1だが、
         # scale_and_biasの軸はこれ以外の軸
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
@@ -4646,7 +4621,7 @@ class batch_norm_1d(BatchNorm1d):
     pass
 
 class BatchNorm2d(GeneralNormalizationBase):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化の軸はバッチ軸0+Ih+Iwだが、
         # scale_and_biasの軸はこれ以外の軸すなわちチャネル軸
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
@@ -4661,7 +4636,7 @@ class batch_norm_2d(BatchNorm2d):
     pass
 
 class LayerNormalization(GeneralNormalizationBase):
-    def __init__(self, axis=-1, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, axis=-1, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = axis
@@ -4672,7 +4647,7 @@ class LayerNormalization(GeneralNormalizationBase):
         super().__init__(**kwargs)
 
 class LayerNorm1d(GeneralNormalizationBase):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = -2, -1
@@ -4683,7 +4658,7 @@ class LayerNorm1d(GeneralNormalizationBase):
         super().__init__(**kwargs)
 
 class LayerNorm2d(GeneralNormalizationBase):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = -3, -2, -1
@@ -4694,7 +4669,7 @@ class LayerNorm2d(GeneralNormalizationBase):
         super().__init__(**kwargs)
 
 class InstanceNorm2d(GeneralNormalizationBase):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化の軸はH,Wのみ
         kwargs['axis']           = -2, -1      # H, W
         kwargs['exclude']        = True        # ここがγ/βの軸の決め方に効く
@@ -4783,7 +4758,7 @@ class RootMeanSquareNormalization(Function):
         return gx 
 
 class RMSNormalization(RootMeanSquareNormalization):
-    def __init__(self, axis=-1, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, axis=-1, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = axis
@@ -4797,7 +4772,7 @@ class rms_normalization(RMSNormalization):
     pass
 
 class RMSNorm1d(RootMeanSquareNormalization):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = -2, -1
@@ -4811,7 +4786,7 @@ class rms_norm_1d(RMSNorm1d):
     pass
 
 class RMSNorm2d(RootMeanSquareNormalization):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化もscale_and_biasも同じく特長軸をaxisで指定
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
         kwargs['axis']           = -3, -2, -1
@@ -4825,7 +4800,7 @@ class rms_norm_2d(RMSNorm2d):
     pass
 
 class RMSBatchNormalization(RootMeanSquareNormalization):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化の軸はバッチ軸0だが、
         # scale_and_biasの軸は特長軸すなわち0以外の軸
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
@@ -4840,7 +4815,7 @@ class rms_batch_normalization(RMSBatchNormalization):
     pass
 
 class RMSBatchNorm1d(RootMeanSquareNormalization):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化の軸はバッチ軸0+最後の空間軸(長さ軸)-1だが、
         # scale_and_biasの軸はこれ以外の軸
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る
@@ -4855,7 +4830,7 @@ class rms_batch_norm_1d(RMSBatchNorm1d):
     pass
 
 class RMSBatchNorm2d(RootMeanSquareNormalization):
-    def __init__(self, scale_and_bias=True, inplace=False, **kwargs):
+    def __init__(self, scale_and_bias=False, inplace=False, **kwargs):
         # 正規化の軸はバッチ軸0+Ih+Iwだが、
         # scale_and_biasの軸はこれ以外の軸すなわちチャネル軸
         # scale_and_biasを伴う場合にはnormalizationをinplace処理に出来る

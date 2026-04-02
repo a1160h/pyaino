@@ -1,5 +1,5 @@
 # NN_CNN
-# 2026.03.27 A.Inoue　
+# 2026.04.01 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -41,10 +41,11 @@ class NN_CNN_Base:
     def summary(self):
         print(f'～～ model summary of {str(self.__class__.__name__)}' + '  ～～～～～～～～～～～～～～～～～～～～～')
         for i, layer in enumerate(self.layers):
-            post_nl = False
+            post_nl = True
             print(f'layer{i} {layer.__class__.__name__}', end=' ')
             if hasattr(layer, 'config') and layer.config is not None:
                 print(layer.config)
+                post_nl = False
             if hasattr(layer, 'method'):
                 print(f' method={layer.method}', end=' ')
                 post_nl = True
@@ -3688,5 +3689,5 @@ if __name__=='__main__':
         if c not in('NN_CNN_Base', 'ReshapeLayer', '__loader__', 'Config') and c[-4:]!='bkup':
             #print('c =', c)
             model = eval(c)()
-            #model.summary()
+            model.summary()
             pass

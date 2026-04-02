@@ -1,5 +1,5 @@
 # UNet
-# 20260209 A.Inoue
+# 20260402 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -94,7 +94,7 @@ class UNet:
     def __init__(self, depth=3, in_ch=None,
                  time_embed=False, num_labels=None, embed_dim=128,  
                  base_ch=32, bottleneck=True, bottleneck_ratio=0.5, 
-                 batchnorm=None, layernorm=None, activate='ReLU', 
+                 batchnorm=None, layernorm=None, normaffine=False, activate='ReLU', 
                  optimize='AdamT', w_decay=0.01, bias_last=False):
         warnings.warn(self.__class__.__name__
                       +"Use this module with 'set_derivative(True)'.")
@@ -111,13 +111,14 @@ class UNet:
 
         # timeおよびlabelのembeddingとその次元変換用のmlp
         if time_embed or (num_labels is not None):
-            options_for_mlpn = {'batchnorm' : batchnorm,
-                                'layernorm' : layernorm,
-                                'activate' : activate,
-                                'optimize' : optimize,
-                                'w_decay'  : w_decay}
-            options_for_mlpo = {'optimize' : optimize,
-                                'w_decay'  : w_decay}
+            options_for_mlpn = {'batchnorm'  : batchnorm,
+                                'layernorm'  : layernorm,
+                                'normaffine' : normaffine,
+                                'activate'   : activate,
+                                'optimize'   : optimize,
+                                'w_decay'    : w_decay}
+            options_for_mlpo = {'optimize'   : optimize,
+                                'w_decay'    : w_decay}
             proj = True  # Convのprojを有効に
         else:
             proj = False # Convのprojを無効に
@@ -147,20 +148,22 @@ class UNet:
         else:
             Conv = ConvBlock
 
-        options_for_blocks = {'proj'     : proj,      # projの有効無効を指定
-                              'batchnorm': batchnorm,
-                              'layernorm': layernorm,
-                              'activate' : activate,
-                              'optimize' : optimize,
-                              'w_decay'  : w_decay}
+        options_for_blocks = {'proj'       : proj,      # projの有効無効を指定
+                              'batchnorm'  : batchnorm,
+                              'layernorm'  : layernorm,
+                              'normaffine' : normaffine,
+                              'activate'   : activate,
+                              'optimize'   : optimize,
+                              'w_decay'    : w_decay}
         if bottleneck:
             options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
 
-        options_for_ol     = {'bias'     : bias_last,
-                              'optimize' : optimize,
-                              'batchnorm': batchnorm,
-                              'layernorm': layernorm,
-                              'w_decay'  : w_decay}
+        options_for_ol     = {'bias'       : bias_last,
+                              'optimize'   : optimize,
+                              'batchnorm'  : batchnorm,
+                              'layernorm'  : layernorm,
+                              'normaffine' : normaffine,
+                              'w_decay'    : w_decay}
 
         print(options_for_blocks, options_for_ol)
 
