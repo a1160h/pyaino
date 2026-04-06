@@ -1,5 +1,5 @@
 # Optimizers
-# 2025.12.13 A.Inoue
+# 2026.04.06 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -25,7 +25,7 @@ class OptimizerBase:
         self.w_decay = None if self.bias else kwargs.pop('w_decay', None)  
         
         # 勾配クリッピングは更新の際の指定による
-        self.gradient_clipping = GradientClipping() 
+        self.gradient_clipping = None #GradientClipping() 実行時につなぐ
 
         # 以下はlearning rate scheduler, 
         self.scheduler = None
@@ -74,6 +74,8 @@ class OptimizerBase:
 
         # 勾配クリッピング 無指定では__call__()しない
         if any(kwargs): # kwargsは勾配クリッピングの指定のみ
+            if self.gradient_clipping is None:
+                self.gradient_clipping = Gradient_clipping()
             eta *= self.gradient_clipping(gradient, **kwargs)
             
         # 学習率調整の諸手法 learning rate scheduler　　

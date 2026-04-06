@@ -721,15 +721,15 @@ class PrePhase:
 class PostPhase:  
     def __init__(self, layer=None, **kwargs):
         #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
-        activate        = kwargs.pop('activate','Identity') # 恒等関数
-        activate_option = kwargs.copy()                     # 残りは活性化のオプション
+        activate        = kwargs.pop('activate',    None) # 
+        activate_option = kwargs.copy()                   # 残りは活性化のオプション
         self.activator  = cf.eval_in_module(activate, Activators, **activate_option)  # 活性化関数
-        dropout         = kwargs.pop('dropout',      False) # ドロップアウト可否(forwardで指定)
+        dropout         = kwargs.pop('dropout',    False) # ドロップアウト可否(forwardで指定)
         self.DO = Dropout() if dropout else None
-        batchnorm       = kwargs.pop('batchnorm',    False) # バッチ正規化の適用有無
-        layernorm       = kwargs.pop('layernorm',    False) # 層正規化の適用有無
-        normdim         = kwargs.pop('normdim',       None) # 正規化の軸指定(2d)
-        normaffine      = kwargs.pop('normaffine',   False) # 正規化のスケール＆バイアス
+        batchnorm       = kwargs.pop('batchnorm',  False) # バッチ正規化の適用有無
+        layernorm       = kwargs.pop('layernorm',  False) # 層正規化の適用有無
+        normdim         = kwargs.pop('normdim',     None) # 正規化の軸指定(2d)
+        normaffine      = kwargs.pop('normaffine', False) # 正規化のスケール＆バイアス
 
         if layer is None:
             self.Norm = None
