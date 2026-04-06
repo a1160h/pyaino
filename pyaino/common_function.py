@@ -1,5 +1,5 @@
 # common_function
-# 2026.04.02 A.Inoue 
+# 2026.04.04 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1150,7 +1150,7 @@ def get_accuracy(y, t, mchx=False, y_label=False):
         return accuracy
 
 class Mesurement:
-    def __init__(self, model, get_acc=None, batch_size=200):
+    def __init__(self, model, get_acc=None, batch_size=200, bind=False):
         self.model = model
         if get_acc is not None:
             self.get_acc = get_acc
@@ -1158,6 +1158,7 @@ class Mesurement:
             self.get_acc = get_accuracy # get_accuracyはcommon_function内に定義
         self.error, self.accuracy = [], []
         self.batch_size = batch_size
+        self.bind = bind
     
     def __call__(self, x, t, n=None):
         if n is None or n > len(x): # 指定しないか、データ数より大きな数を指定した場合        
@@ -1180,8 +1181,11 @@ class Mesurement:
         for i in range(0, n, n2):
             xi = x_sample[i:i+n2]
             ti = t_sample[i:i+n2]
-            yi = self.model.forward(xi)
-            li = self.model.loss_function.forward(yi, ti)
+            if self.bind:
+                yi, li = self.model.forward(xi, ti)
+            else:    
+                yi = self.model.forward(xi)
+                li = self.model.loss_function.forward(yi, ti)
             ai = self.get_acc(yi, ti)
             ni = len(xi) # エラーと正解率の分母
             ln += li * ni
