@@ -1,5 +1,5 @@
 # common_function
-# 2026.04.04 A.Inoue 
+# 2026.04.06 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -211,6 +211,8 @@ def eval_in_module(class_name, module=None, *args, **kwargs):
     class_nameの文字列中に記述した内容を引数に組み込む
     '''
     # class_nameからクラス名とオプションを抽出し、指定されたオプションで更新
+    if class_name is None:
+        return None
     name, argtext = extract_name_and_args(class_name)
     parsed_args, parsed_kwargs = parse_args_and_kwargs(argtext)
     args += tuple(parsed_args)

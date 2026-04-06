@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.02 A.Inoue
+# 2026.04.06 A.Inoue
 
 import copy
 import warnings
@@ -761,7 +761,8 @@ class PostPhase:
         #print('    postphase f', y.shape)
         if self.Norm:
             y = self.Norm.forward(y, train=train)      # バッチor層ノーマライゼーション
-        y = self.activator.forward(y)                  # 活性化関数
+        if self.activator: 
+            y = self.activator.forward(y)                  # 活性化関数
         if self.DO:
             y = self.DO.forward(y, dropout=dropout)    # ドロップアウト
         return y    
@@ -770,7 +771,8 @@ class PostPhase:
         #print('    postphase b', grad_y.shape)
         if self.DO:
             grad_y = self.DO.backward(grad_y)          # ドロップアウト
-        grad_y = self.activator.backward(grad_y, **kwargs) # 活性化関数
+        if self.activator:    
+            grad_y = self.activator.backward(grad_y, **kwargs) # 活性化関数
         if self.Norm:
             grad_y = self.Norm.backward(grad_y)        # バッチor層ノーマライゼーション
         return grad_y
