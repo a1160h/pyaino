@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.06 A.Inoue
+# 2026.04.07 A.Inoue
 
 import copy
 import warnings
@@ -550,12 +550,15 @@ class BaseLayer(Function):
     def __init__(self, **kwargs):
         super().__init__()
         print('Initialize', self.__class__.__name__, self.config)
-        matmul          = kwargs.pop('matmul',       False) # MatMulLinearを使う 
-        self.bias       = kwargs.get('bias',          True) # dot_linearのbias有無
-        self.scale      = kwargs.get('scale',        False) # ReParameteraization
+        matmul         = kwargs.pop('matmul',          False) # MatMulLinearを使う 
+        self.bias      = kwargs.get('bias',             True) # dot_linearのbias有無
+        self.scale     = kwargs.get('scale',           False) # ReParameteraization
+        self.full_cnnt = kwargs.pop('full_connection', False) # 全結合層を明示
+        pre_activation = kwargs.pop('pre_activation',  False) # pre/post切替
+        activate       = kwargs.pop('activate',         None) # pre/post phaseに渡す
+
         self.parameters = WeightsAndBiases(self, **kwargs)
         self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
-        self.full_cnnt  = kwargs.pop('full_connection', False) # 全結合層を明示
 
         # カテゴリ辞書はここで作る
         if not BaseLayer.categories:
@@ -572,8 +575,10 @@ class BaseLayer(Function):
             raise Exception("Unsupported class uses BaseLayer.")
 
         # 自分のtypeid確定後にインスタンス化
-        self.prephase   = PrePhase(self, **kwargs) 
-        self.postphase  = PostPhase(self, **kwargs)
+        activate_pre  = activate if pre_activation else None 
+        activate_post = None if pre_activation else activate 
+        self.prephase   = PrePhase(self,  activate=activate_pre,  **kwargs) 
+        self.postphase  = PostPhase(self, activate=activate_post, **kwargs)
 
         self.original_x_shape  = None # この層が受け取るxの元の形状
         self.canonical_x_shape = None # この層が内部で扱う正準なxの形状
@@ -683,33 +688,55 @@ class BaseLayer(Function):
 class PrePhase:
     def __init__(self, layer=None, **kwargs):
         #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
-        self.layer = layer
-        layernorm  = kwargs.pop('layernorm',  False) # 層正規化の適用有無
-        normdim    = kwargs.pop('normdim',     None) # 正規化の軸指定(バイアス2d)
-        normaffine = kwargs.pop('normaffine', False) # 正規化のスケール＆バイアス
+        self.layer      = layer
+        batchnorm       = kwargs.pop('batchnorm',  False) # バッチ正規化の適用有無
+        layernorm       = kwargs.pop('layernorm',  False) # 層正規化の適用有無
+        normdim         = kwargs.pop('normdim',     None) # 正規化の軸指定(バイアス2d)
+        normaffine      = kwargs.pop('normaffine', False) # 正規化のスケール＆バイアス
+        activate        = kwargs.pop('activate',    None) # Pre-activation
+        norm_option     = kwargs.copy()                   # 残りは正規化のオプション
+        activate_option = kwargs.copy()                   # 残りは活性化のオプション
+
+        use_batchnorm = batchnorm is True and activate is not None
+        use_layernorm = (layernorm == 'pre') or (layernorm is True and activate is not None)
 
         if layer is None:
             self.Norm = None
 
-        elif layernorm == 'pre':
+        elif use_batchnorm:
             if layer.typeid == 2 or normdim == '2d': 
-                self.Norm = LayerNorm2d(scale_and_bias=normaffine, **kwargs)
+                self.Norm = BatchNorm2d(scale_and_bias=normaffine, **norm_option)
             elif layer.typeid == 1 or normdim == '1d':
-                self.Norm = LayerNorm1d(scale_and_bias=normaffine, **kwargs)
+                self.Norm = BatchNorm1d(scale_and_bias=normaffine, **norm_option)
             else: # layer.typeid == 0 or normdim == '0d') 
-                self.Norm = LayerNormalization(scale_and_bias=normaffine, **kwargs)
+                self.Norm = BatchNormalization(scale_and_bias=normaffine, **norm_option)
+
+        elif use_layernorm:
+            if layer.typeid == 2 or normdim == '2d': 
+                self.Norm = LayerNorm2d(scale_and_bias=normaffine, **norm_option)
+            elif layer.typeid == 1 or normdim == '1d':
+                self.Norm = LayerNorm1d(scale_and_bias=normaffine, **norm_option)
+            else: # layer.typeid == 0 or normdim == '0d') 
+                self.Norm = LayerNormalization(scale_and_bias=normaffine, **norm_option)
 
         else:
             self.Norm = None
+            
+        self.activator = cf.eval_in_module(activate, Activators, **activate_option) \
+                         if activate is not None else None
         
     def forward(self, x, *, train=False):
         #print('    prephase f', x.shape)
         if self.Norm:
             x = self.Norm.forward(x, train=train)      # バッチor層ノーマライゼーション
+        if self.activator:
+            x = self.activator.forward(x)
         return x
         
     def backward(self, grad_x, **kwargs):
         #print('    prephase b', grad_x.shape)
+        if self.activator:
+            grad_x = self.activator.backward(grad_x)
         if self.Norm:
             grad_x = self.Norm.backward(grad_x)        # バッチor層ノーマライゼーション
         return grad_x
@@ -721,37 +748,44 @@ class PrePhase:
 class PostPhase:  
     def __init__(self, layer=None, **kwargs):
         #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
-        activate        = kwargs.pop('activate',    None) # 
-        activate_option = kwargs.copy()                   # 残りは活性化のオプション
-        self.activator  = cf.eval_in_module(activate, Activators, **activate_option)  # 活性化関数
+        activate        = kwargs.pop('activate',    None) # Post-activation
         dropout         = kwargs.pop('dropout',    False) # ドロップアウト可否(forwardで指定)
-        self.DO = Dropout() if dropout else None
         batchnorm       = kwargs.pop('batchnorm',  False) # バッチ正規化の適用有無
         layernorm       = kwargs.pop('layernorm',  False) # 層正規化の適用有無
         normdim         = kwargs.pop('normdim',     None) # 正規化の軸指定(2d)
         normaffine      = kwargs.pop('normaffine', False) # 正規化のスケール＆バイアス
+        activate_option = kwargs.copy()                        # 残りは活性化のオプション
+        norm_option     = kwargs.copy()                        # 残りは正規化のオプション
+
+        self.activator = cf.eval_in_module(activate, Activators, **activate_option) \
+                         if activate is not None else None
+
+        use_batchnorm = batchnorm is True and activate is not None
+        use_layernorm = layernorm is True and activate is not None
 
         if layer is None:
             self.Norm = None
             
-        elif  batchnorm:
+        elif use_batchnorm:
             if layer.typeid == 2 or normdim == '2d': 
-                self.Norm = BatchNorm2d(scale_and_bias=normaffine, **kwargs)
+                self.Norm = BatchNorm2d(scale_and_bias=normaffine, **norm_option)
             elif layer.typeid == 1 or normdim == '1d':
-                self.Norm = BatchNorm1d(scale_and_bias=normaffine, **kwargs)
+                self.Norm = BatchNorm1d(scale_and_bias=normaffine, **norm_option)
             else: # layer.typeid == 0 or normdim == '0d') 
-                self.Norm = BatchNormalization(scale_and_bias=normaffine, **kwargs)
+                self.Norm = BatchNormalization(scale_and_bias=normaffine, **norm_option)
                 
-        elif  layernorm and not layernorm == 'pre':
+        elif use_layernorm:
             if layer.typeid == 2 or normdim == '2d': 
-                self.Norm = LayerNorm2d(scale_and_bias=normaffine, **kwargs)
+                self.Norm = LayerNorm2d(scale_and_bias=normaffine, **norm_option)
             elif layer.typeid == 1 or normdim == '1d':
-                self.Norm = LayerNorm1d(scale_and_bias=normaffine, **kwargs)
+                self.Norm = LayerNorm1d(scale_and_bias=normaffine, **norm_option)
             else: # layer.typeid == 0 or normdim == '0d') 
-                self.Norm = LayerNormalization(scale_and_bias=normaffine, **kwargs)
+                self.Norm = LayerNormalization(scale_and_bias=normaffine, **norm_option)
                
         else:
             self.Norm = None
+
+        self.DO = Dropout() if dropout else None
 
     def update(self, eta=0.001, **kwargs):
         if self.Norm:

@@ -1,5 +1,5 @@
 # NN_CNN
-# 2026.04.01 A.Inoue　
+# 2026.04.07 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -52,7 +52,7 @@ class NN_CNN_Base:
 
             if hasattr(layer, 'prephase'):
                 if getattr(layer.prephase, 'Norm', None) is not None:
-                    print(f' {layer.prephase.Norm.__class__.__name__}=True')
+                    print(f' {layer.prephase.Norm.__class__.__name__}=pre')
                     post_nl = False
             if hasattr(layer, 'postphase'):
                 if hasattr(layer.postphase, 'activator'):
@@ -125,6 +125,9 @@ class NN_CNN_Base:
             self.error_layer = layer
             gx = layer.backward(gx)
         return gx
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
     
     def loss(self, y, t):
         if hasattr(self, 'loss_function'):
@@ -2525,7 +2528,7 @@ class CNN_ccccpn(NN_CNN_Base):
         # layer 5
         self.pooling_layer = neuron.Pooling2dLayer(pool, pl_pad, method)
         # layer 6
-        self.output_layer  = neuron.NeuronLayer(Out, **opt_for_ol); print('###debug', Out)
+        self.output_layer  = neuron.NeuronLayer(Out, **opt_for_ol)
 
         # -- layerのまとめ -- 
         self.layers.append(self.conv_layer1)
@@ -2615,7 +2618,7 @@ class CNN_ccpccgpn(NN_CNN_Base):
         self.conv_layer3    = neuron.Conv2dLayer(M3, kernel_size3, stride3, cl3_pad, **opt_for_cl3)
         self.conv_layer4    = neuron.Conv2dLayer(M4, kernel_size4, stride4, cl4_pad, **opt_for_cl4)
         self.global_pooling = neuron.GlobalAveragePooling()
-        self.output_layer   = neuron.NeuronLayer(Out, **opt_for_ol); print('###debug', Out)
+        self.output_layer   = neuron.NeuronLayer(Out, **opt_for_ol)
 
         # -- layerのまとめ -- 
         self.layers.append(self.conv_layer1)
@@ -3688,6 +3691,6 @@ if __name__=='__main__':
         print(c)
         if c not in('NN_CNN_Base', 'ReshapeLayer', '__loader__', 'Config') and c[-4:]!='bkup':
             #print('c =', c)
-            model = eval(c)()
-            model.summary()
+            #model = eval(c)()
+            #model.summary()
             pass
