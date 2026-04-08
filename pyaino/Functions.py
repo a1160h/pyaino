@@ -533,12 +533,12 @@ class VariadicBase:
 
     def forward(self, *xs): # 引数の数は不定
         if all(isinstance(x, np.ndarray) for x in xs):    
-            y = self.func(xs)
+            y = self.func(*xs)
             self.packed_in_one = False
             
         elif len(xs)==1 and all(isinstance(x, (tuple, list)) for x in xs):
             xs, = xs
-            y = self.func(xs)
+            y = self.func(*xs)
             self.pcked_in_one =True
             
         elif len(xs)==1 and all(isinstance(x, type((i for i in []))) for x in xs):
@@ -571,8 +571,8 @@ class SumVariadic(VariadicBase):
         super().__init__()
         self.func = SumVariadicCore()
 
-def sum_variadic(xs):
-    return SumVariadic()(xs)
+def sum_variadic(*xs):
+    return SumVariadic()(*xs)
 
 
 class MaxMin(Function):
@@ -1133,6 +1133,37 @@ class Concatenate(Function):
 
 def concatenate(*args, **kwargs):
     return Concatenate()(*args, **kwargs)
+
+############################################ 
+# 新規実装　20260408
+############################################
+class ECat(Function):
+    """ 同一形状どうしの結合 """
+    def __forward__(self, *xs, axis=0):
+        self.n = len(xs)
+        self.axis = axis
+        return np.concatenate(xs, axis=axis)
+
+    def __backward__(self, gy):
+        return np.split(gy, self.n, axis=self.axis)
+
+def ecat(*args, **kwargs):
+    return ECat()(*args, **kwargs)
+
+class Split(Function):
+    """ 同一形状への分割 """
+    def __forward__(self, x, n, axis=0):
+        self.n = n
+        self.axis = axis
+        return np.split(x, n, axis=axis)
+
+    def __backward__(self, *gys):
+        return np.concatenate(gys, axis=self.axis)
+
+def split(*args, **kwargs):
+    return Split()(*args, **kwargs)
+
+
 
 ############################################ 
 # 仮実装　0240812
@@ -1712,7 +1743,7 @@ if __name__=='__main__':
     for f in functions:
         func = f()
         print('test ', func.__class__.__name__)
-        y = func(xs)
+        y = func(*xs)
         #print('xs =', xs)
         #print('y =', y)
         gxs = func.backward()
@@ -2093,3 +2124,17 @@ if __name__=='__main__':
         print(gg)
     #"""#
     
+    print('そのほかの関数のテスト4')
+    func1 = Split()
+    print('test ', func1.__class__.__name__)
+    x = np.arange(3*2*4, dtype=np.float32).reshape(3,2,4)
+    ys = func1(x, 3)
+    print(ys)
+    gx = func1.backward()
+    print(gx)
+    func2 = ECat()
+    print('test ', func2.__class__.__name__)
+    z = func2(*ys)
+    print(z)
+    gys = func2.backward()
+    print(gys)

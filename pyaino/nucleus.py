@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260129 A.Inoue
+# 20260408 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -165,6 +165,7 @@ class Function:
         if len(inputs)==1 and all(isinstance(x, (tuple, list)) for x in inputs):
             inputs, = inputs
             warnings.warn(self.__class__.__name__+' inputs packed in list or tuple.')
+            #raise Exception(self.__class__.__name__+' inputs packed in list or tuple.')
 
         #            [x.shape if isinstance(x, np.ndarray) else x for x in inputs], end=' ')       # -- 無限ループ防止(forward中の演算でFunctionのforwardが呼び出されると無限ループ) --
         if Config.operator_state == 3: # 演算子オーバーロードでの無限ループ防止
@@ -175,10 +176,14 @@ class Function:
         # -- 派生クラスの順伝播 --
         with using_config('create_graph', False): # forward中のforwardはグラフ生成しない
             ys = self.__forward__(*xs, **kwargs)  # 演算に使うxsはinputsと別物で構わない
-        if self.preserve_attr: # 関数の返り値をアトリビュートself.outputsと同じ値の別物に分ける
-            outputs = (ys.copy(),) if type(ys) is not tuple else ys.copy()
+
+        if isinstance(ys, tuple):
+            outputs = ys.copy() if self.preserve_attr else ys
+        elif isinstance(ys, list):
+            outputs = tuple(ys.copy()) if self.preserve_attr else tuple(ys)
         else:
-            outputs = (ys,) if type(ys) is not tuple else ys
+            outputs = (ys.copy(),) if self.preserve_attr else (ys,)
+
         self.y_shapes = [y.shape if isinstance(y, np.ndarray) else () for y in outputs] # 仮処置20241023   
 
         # -- グラフ非生成時の短縮パス --
@@ -260,8 +265,12 @@ class Function:
         # -- 勾配を入力変数に設定 --
         debug_print('<bw> For inputs of', self.__class__.__name__, 'set gradient', \
                     '\n   ',  self.inputs, '\n   ', gxs)
-        #gxs = (gxs,) if type(gxs) is not tuple else gxs
-        gxs = (gxs,) if not isinstance(gxs , (tuple, list)) else gxs
+        if isinstance(gxs, tuple):
+            pass
+        elif isinstance(gxs, list):
+            gxs = tuple(gxs)
+        else:
+            gxs = (gxs,)
 
         for x, gx in zip(self.inputs, gxs):
             debug_print('<bw0> for x', type(x), id(x))
