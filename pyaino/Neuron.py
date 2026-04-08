@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.07 A.Inoue
+# 2026.04.09 A.Inoue
 
 import copy
 import warnings
@@ -313,7 +313,7 @@ class LinearLayer(Function):
         self.prephase.update(eta=eta, **kwargs)
         
     def fix_configuration(self, shape):
-        if self.dot_linear.__class__.__name__=='MatMulLinear':
+        if self.dot_linear.matmul:
             m = shape[-1]
         else:
             m = 1
@@ -826,9 +826,12 @@ class NeuronLayer(BaseLayer): # ニューロンの基本機能
         super().__init__(**kwargs)
 
     def fix_configuration(self, shape):
-        m = 1
-        for i in shape[1:]:                               # バッチ軸以外の積
-            m *= i
+        if self.dot_linear.matmul:
+            m = shape[-1]
+        else:
+            m = 1
+            for i in shape[1:]:                       # バッチ軸以外の積
+                m *= i
         self.config = m, self.config[1]
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
@@ -3358,7 +3361,7 @@ class AttentionUnit(Function):
         self.tril = None # causalityの制御のマスク
         self.mask = None # 無効トークンのマスク
        
-    def __forward__(self, v, k, q, *, mask=None, dropout=0.0):
+    def __forward__(self, q, k, v, *, mask=None, dropout=0.0):
         B,Tv,C = v.shape
         B,Tk,C = k.shape
         B,Tq,C = q.shape
@@ -3441,7 +3444,7 @@ class AttentionUnit(Function):
         gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
         gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)
         gq = gq.transpose(0,2,1,3).reshape(B,Tq,C) # (B,h,Tq,H)->(B,Tq,C)
-        return gv, gk, gq
+        return gq, gk, gv
 
 #### 時系列データをまとめて処理する Attention層 ############################
 # q:入力 query、x:入力 keyとvalue、y:出力、w:attention_weight
@@ -3463,11 +3466,11 @@ class SimpleAttentionLayer(Function):
         print('Initialize', self.__class__.__name__)
         
     def __forward__(self, x, q, *, dropout=0.0):
-        return self.unit.forward(x, x, q, dropout=dropout) # valueとkeyは同じものを与える
+        return self.unit.forward(q, x, x, dropout=dropout) # keyとvalueは同じものを与える
 
     def __backward__(self, grad_y):       # grad_yは下流から受け取る勾配
-        grad_v, grad_k, grad_q = self.unit.backward(grad_y)
-        grad_x = grad_v + grad_k          # valueとkeyに同じものを与えたことに対応
+        grad_q, grad_k, grad_v = self.unit.backward(grad_y)
+        grad_x = grad_k + grad_v          # keyとvalueに同じものを与えたことに対応
         return grad_x, grad_q
 
 class SelfAttention(Function):
@@ -3516,8 +3519,8 @@ class SelfAttention(Function):
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         z = self.linear_i.forward(x)
-        key, query, value = np.split(z, 3, axis=-1)
-        y = self.attention.forward(value, key, query, mask=mask, dropout=dropout)
+        query, key, value = np.split(z, 3, axis=-1)
+        y = self.attention.forward(query, key, value, mask=mask, dropout=dropout)
         y = self.linear_o.forward(y)
         y = self.DO.forward(y, dropout=dropout)
         self.y = y
@@ -3526,8 +3529,8 @@ class SelfAttention(Function):
     def __backward__(self, gy):
         gx = self.DO.backward(gy)    
         gx = self.linear_o.backward(gx)
-        gv, gk, gq = self.attention.backward(gx)
-        gz = np.concatenate([gk, gq, gv], axis=-1)
+        gq, gk, gv = self.attention.backward(gx)
+        gz = np.concatenate([gq, gk, gv], axis=-1)
         gx = self.linear_i.backward(gz)
         return gx
 
@@ -3562,9 +3565,9 @@ class MultiHeadSelfAttention2(Function):
         self.config = emb_dim, head_dim, n_head
         print('Initialize', self.__class__.__name__, self.config)
         # linear_iとlinear_oのconfigはfix_configurationで設定
-        self.linear_v = LinearLayer(matmul=True, bias=False, optimize=optimize, **kwargs)
-        self.linear_k = LinearLayer(matmul=True, bias=False, optimize=optimize, **kwargs)
         self.linear_q = LinearLayer(matmul=True, bias=False, optimize=optimize, **kwargs)
+        self.linear_k = LinearLayer(matmul=True, bias=False, optimize=optimize, **kwargs)
+        self.linear_v = LinearLayer(matmul=True, bias=False, optimize=optimize, **kwargs)
         self.attention = [AttentionUnit(causality='tri', scale=scale, temperature=temperature)
                                                         for _ in range(n_head)]
         self.linear_o = LinearLayer(matmul=True, bias=True, optimize=optimize, **kwargs)
@@ -3582,31 +3585,31 @@ class MultiHeadSelfAttention2(Function):
         assert emb_dim % n_head==0, "embedding dimension must be divisible by n_head"
         assert emb_dim // n_head == head_dim, "head_dim must be emb_dim // n_head"
         self.config = emb_dim, head_dim, n_head
-        self.linear_v.config = emb_dim, emb_dim 
-        self.linear_k.config = emb_dim, emb_dim 
         self.linear_q.config = emb_dim, emb_dim 
+        self.linear_k.config = emb_dim, emb_dim 
+        self.linear_v.config = emb_dim, emb_dim 
         self.linear_o.config = emb_dim, emb_dim
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def __forward__(self, x, *, dropout=0.0):
         if None in (*self.config,
-                    *self.linear_v.config,
-                    *self.linear_k.config,
                     *self.linear_q.config,
+                    *self.linear_k.config,
+                    *self.linear_v.config,
                     *self.linear_o.config):
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
         emb_dim, head_dim, n_head = self.config    
-        value = self.linear_v.forward(x)
-        key   = self.linear_k.forward(x)
         query = self.linear_q.forward(x)
+        key   = self.linear_k.forward(x)
+        value = self.linear_v.forward(x)
         # head分割
-        value = np.split(value, n_head, axis=-1)
-        key   = np.split(key,   n_head, axis=-1)
         query = np.split(query, n_head, axis=-1)
+        key   = np.split(key,   n_head, axis=-1)
+        value = np.split(value, n_head, axis=-1)
         # 各ヘッド独立　　　　
-        y = [a.forward(v, k, q, dropout=dropout) for a, v, k, q \
-                       in zip(self.attention, value, key, query)] 
+        y = [a.forward(q, k, v, dropout=dropout) for a, q, k, v \
+                       in zip(self.attention, query, key, value)] 
         # 各ヘッド出力を併合して出力層へ
         y = np.concatenate(y, axis=-1)
         y = self.linear_o.forward(y)
@@ -3620,22 +3623,22 @@ class MultiHeadSelfAttention2(Function):
         gz = self.linear_o.backward(gz)
         gz = np.split(gz, n_head, axis=-1)
         
-        gvkq = [a.backward(gzi) for a, gzi in zip(self.attention, gz)]
+        gqkv = [a.backward(gzi) for a, gzi in zip(self.attention, gz)]
 
-        gv = np.concatenate([g[0] for g in gvkq], axis=-1)
-        gk = np.concatenate([g[1] for g in gvkq], axis=-1)
-        gq = np.concatenate([g[2] for g in gvkq], axis=-1)
-       
-        gv = self.linear_v.backward(gv)
-        gk = self.linear_k.backward(gk)
+        gq = np.concatenate([g[0] for g in gqkv], axis=-1)
+        gk = np.concatenate([g[1] for g in gqkv], axis=-1)
+        gv = np.concatenate([g[2] for g in gqkv], axis=-1)
+               
         gq = self.linear_q.backward(gq)
-        gx = gv + gk + gq
+        gk = self.linear_k.backward(gk)
+        gv = self.linear_v.backward(gv)
+        gx = gq + gk + gv
         return gx
 
     def update(self, eta=0.001, **kwargs):
-        self.linear_v.update(eta=eta, **kwargs)
-        self.linear_k.update(eta=eta, **kwargs)
         self.linear_q.update(eta=eta, **kwargs)
+        self.linear_k.update(eta=eta, **kwargs)
+        self.linear_v.update(eta=eta, **kwargs)
         self.linear_o.update(eta=eta, **kwargs)
 
     def entropy(self):
@@ -3771,7 +3774,7 @@ class ContextualSelfAttention(Function):
         k = self.linear_k.forward(x) if self.linear_k is not None else x
         q = np.broadcast_to(self.q, (B, 1, n))
        
-        y = self.attention.forward(v, k, q)
+        y = self.attention.forward(q, k, v)
         y = y.reshape(B, n)
         return y
 
@@ -3782,13 +3785,13 @@ class ContextualSelfAttention(Function):
 
         gy = gy.reshape(B, 1, n)
 
-        gv, gk, gq = self.attention.backward(gy)
+        gq, gk, gv = self.attention.backward(gy)
 
         self.grad_q = np.sum(gq, axis=0, keepdims=True) # (B,1,H)->(1,1,H) forwardでのBCに対応
 
         gxk = self.linear_k.backward(gk) if self.linear_k is not None else gk
         gxv = self.linear_v.backward(gv) if self.linear_v is not None else gv
-        gx = gxv + gxk
+        gx = gxk + gxv
 
         return gx
     
@@ -3834,7 +3837,7 @@ class ContextualSelfAttention_bkup(Function):
         self.x = x
         # 入力xからkeyを生成 keyの形状 (B, T, H)
         self.k = self.dot_linear.forward(x, w, b) # (B,T,H)
-        y = self.attention.forward(x, self.k, np.broadcast_to(q, (B, 1, n)))
+        y = self.attention.forward(np.broadcast_to(q, (B, 1, n)), self.k, x)
         y = y.reshape(B, n)
         return y
 
@@ -3844,7 +3847,7 @@ class ContextualSelfAttention_bkup(Function):
         B, _, _ = x.shape
 
         gy = gy.reshape(B, 1, n)
-        gx, gk, gq = self.attention.backward(gy) 
+        gq, gk, gv = self.attention.backward(gy) 
         grad_q = np.sum(gq, axis=0, keepdims=True) # (B,1,H)->(1,1,H) forwardでのBCに対応
 
         # keyの逆伝播
