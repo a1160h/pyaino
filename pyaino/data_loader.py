@@ -1,5 +1,5 @@
 # data_loader
-# 2026.03.26 A.Inoue
+# 2026.04.11 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -50,8 +50,10 @@ class ImageLoader:
 
         self.resize = resize
         self.source_order = f'B{source_order.upper()}'
-        self.target_order = f'B{target_order.upper()}' if target_order != 'asis' else 'asis'
-        self.normalizer = cf.Normalize(normalize) if normalize is not None else None
+        self.target_order = f'B{target_order.upper()}' \
+                            if target_order != 'asis' else 'asis'
+        self.normalizer = cf.Normalize(normalize, np=numpy) \
+                          if normalize is not None else None
 
     def _load_item(self, idx):
         """
@@ -74,6 +76,19 @@ class ImageLoader:
         return indices
 
     def _batch_generator(self):
+        indices = self._get_indices()
+        for i in range(0, len(indices), self.batch_size):
+            batch_indices = indices[i:i + self.batch_size]
+            batch = [self._load_item(idx) for idx in batch_indices]
+
+            # (x, y) かどうか判定
+            if isinstance(batch[0], tuple):
+                xs, ys = zip(*batch)
+                yield numpy.stack(xs), numpy.asarray(ys)
+            else:
+                yield numpy.stack(batch)
+
+    def _batch_generator_bkup(self):
         indices = self._get_indices()
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i:i + self.batch_size]
@@ -112,6 +127,25 @@ class ImageLoader:
             raise batch
         if batch is None:
             raise StopIteration
+
+        # (x, y) 対応
+        if isinstance(batch, tuple):
+            x, y = batch
+            x = self._formatting(x)
+            x = np.asarray(x)
+            y = np.asarray(y)
+            return x, y
+        else:
+            batch = self._formatting(batch)
+            batch = np.asarray(batch)
+            return batch
+
+    def __next__bkup(self):
+        batch = self.queue.get()
+        if isinstance(batch, Exception):
+            raise batch
+        if batch is None:
+            raise StopIteration
         batch = self._formatting(batch)
         batch = np.asarray(batch)
         return batch
@@ -120,6 +154,20 @@ class ImageLoader:
         self.stop_event.clear()
         self.future = self.executor.submit(self._prefetch_loop)
         return self
+
+    def __getitem__(self, idx):
+        item = self._load_item(idx)
+
+        if isinstance(item, tuple):
+            x, y = item
+            x = self._formatting(numpy.expand_dims(x, axis=0))[0]
+            return x, y
+        else:
+            x = self._formatting(numpy.expand_dims(item, axis=0))[0]
+            return x
+    
+    def __len__(self):
+        return self.data_size
 
     def shutdown(self):
         self.stop_event.set()
@@ -181,11 +229,12 @@ class STL10BinaryLoader(ImageLoader):
     data_source : str STL10 の .bin ファイルパス
     target_order : str 出力時の軸順（例: 'CHW'）
     """
-    def __init__(self, data_source, batch_size=64, prefetch=8, shuffle=True,
+    def __init__(self, data_source, label_source=None, batch_size=64, prefetch=8, shuffle=True,
                  resize=None, target_order='CHW', normalize=None,
                  data_size=None):
 
         self.data_source = data_source
+        self.label_source = label_source
         self.axis_size = {'H': 96, 'W': 96, 'C': 3}
         self.dtype = numpy.uint8
         self.mmap_mode = 'r'
@@ -197,6 +246,12 @@ class STL10BinaryLoader(ImageLoader):
 
         if data_size is not None:
             self.data_size = min(self.data_size, data_size)
+
+        if label_source is None:
+            self.labels = None    
+        else:
+            self.labels = numpy.fromfile(label_source, dtype=numpy.uint8)
+            self.labels = self.labels[:self.data_size]
         
         # 生データをmemmapで持つ(データ形状の通り)
         self.data = numpy.memmap(
@@ -222,6 +277,26 @@ class STL10BinaryLoader(ImageLoader):
         source_order の指定に従って多次元配列にして返す
         """
         x = self.data[idx]
+
+        if self.resize is not None:
+            x = cf.change_axis_order(x, self.source_order[1:], 'HWC')
+            img = Image.fromarray(x)
+            img = ImageOps.fit(img, self.resize, Image.LANCZOS)
+            x = numpy.asarray(img, dtype=numpy.uint8)
+            x = cf.change_axis_order(x, 'HWC', self.source_order[1:])
+
+        if self.labels is not None:
+            y = self.labels[idx]
+            return x, y
+        else:
+            return x
+
+    def _load_item_bkup(self, idx):
+        """
+        idxが指すmemmapの画像1枚分を取出して、
+        source_order の指定に従って多次元配列にして返す
+        """
+        x = self.data[idx]
         if self.resize is None:
             return x
 
@@ -235,7 +310,101 @@ class STL10BinaryLoader(ImageLoader):
         x = cf.change_axis_order(x, 'HWC', self.source_order[1:])
         return x
 
+    def label_names(self, file_path):
+        with open(file_path, "r") as  f:
+            names = f.read().splitlines() # 呼んでリスト形式に変換
+        return names
 
+class CIFAR10Loader(ImageLoader):
+    """
+    CIFAR-10 用ローダ
+
+    data_source : CIFAR-10 のディレクトリ
+        例: cifar-10-batches-py/
+
+    train=True  -> data_batch_1〜5
+    train=False -> test_batch
+    """
+
+    def __init__(self, data_source, train=True,
+                 batch_size=64, prefetch=8, shuffle=True,
+                 resize=None, target_order='CHW', normalize=None,
+                 data_size=None):
+
+        import pickle
+
+        self.data = []
+        self.labels = []
+
+        if train:
+            file_list = [f"data_batch_{i}" for i in range(1, 6)]
+        else:
+            file_list = ["test_batch"]
+
+        for fname in file_list:
+            path = os.path.join(data_source, fname)
+            with open(path, 'rb') as f:
+                entry = pickle.load(f, encoding='latin1')
+
+                self.data.append(entry['data'])     # (10000, 3072)
+                self.labels.extend(entry['labels']) # list
+
+        # concat
+        self.data = numpy.concatenate(self.data, axis=0)
+        self.labels = numpy.asarray(self.labels, dtype=numpy.uint8)
+
+        # reshape to (N, C, H, W)
+        self.data = self.data.reshape(-1, 3, 32, 32)
+
+        self.data_size = len(self.data)
+
+        if data_size is not None:
+            self.data = self.data[:data_size]
+            self.labels = self.labels[:data_size]
+            self.data_size = data_size
+
+        super().__init__(
+            batch_size=batch_size,
+            prefetch=prefetch,
+            shuffle=shuffle,
+            resize=resize,
+            source_order='CHW',
+            target_order=target_order,
+            normalize=normalize,
+        )
+
+    def _load_item(self, idx):
+        x = self.data[idx]
+        y = self.labels[idx]
+
+        if self.resize is None:
+            return x, y
+
+        # resize のため一度 HWC に
+        x = cf.change_axis_order(x, 'CHW', 'HWC')
+        img = Image.fromarray(x)
+        img = ImageOps.fit(img, self.resize, Image.LANCZOS)
+        x = numpy.asarray(img, dtype=numpy.uint8)
+
+        # 元の軸へ戻す
+        x = cf.change_axis_order(x, 'HWC', 'CHW')
+
+        return x, y
+
+    def label_names(self):
+        names = ['airplane',   # 0
+                 'automobile', # 1
+                 'bird',       # 2
+                 'cat',        # 3
+                 'deer',       # 4
+                 'dog',        # 5
+                 'frog',       # 6
+                 'horse',      # 7
+                 'ship',       # 8
+                 'truck']      # 9
+        return names
+    
+    
 if __name__ == '__main__':
     from pyaino import STL10
 
@@ -256,24 +425,58 @@ if __name__ == '__main__':
         if count > 2:
             break
     loader.shutdown()
-    STL10.show_multi_samples(x) # celebAでも使える
+    cf.show_multi_samples(x) # celebAでも使える
     
     # STL10 の例
     data_source = r'D:\Python\STL10\stl10_binary\train_X.bin'
+    label_source = r'D:\Python\STL10\stl10_binary\train_y.bin'
+    label_names_file = r'D:\Python\STL10\stl10_binary\class_names.txt' 
+   
     loader = STL10BinaryLoader(
         data_source,
+        label_source,
         batch_size=50,
         resize=(48, 48),
         normalize=True,
         data_size=1000,
     )
+
+    label_names = loader.label_names(label_names_file)
+
     count = 0
-    for x in loader:
+    for x, y in loader:
         count += 1
-        print('STL10', type(x), x.shape, x.dtype)
+        print('STL10', type(x), x.shape, x.dtype, type(y), y.shape, y.dtype)
         if count > 2:
             break
     loader.shutdown()
 
-    #from pyaino import STL10
-    STL10.show_multi_samples(x)
+    # STL10のlabelは0～9でなく1～10(0)
+    cf.show_multi_samples(x, label_list=label_names, target=y-1)
+
+    # CIFAR10
+    data_source = r'C:\Python312\Lib\site-packages\cifar-10-batches-py'
+
+    
+    loader = CIFAR10Loader(
+        data_source,
+        train=True,
+        batch_size=50,
+        normalize=True
+    )
+
+    label_names = loader.label_names()
+
+    count = 0
+    for x, y in loader:
+        count += 1
+        print('CIFAR10', type(x), x.shape, x.dtype, type(y), y.shape, y.dtype)
+        if count > 2:
+            break
+    loader.shutdown()
+    
+    cf.show_multi_samples(x, label_list=label_names, target=y)
+
+    x, t = loader[123]
+    l = label_names[t]
+    cf.show_sample(x, l, t)
