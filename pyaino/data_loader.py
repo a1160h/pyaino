@@ -161,9 +161,12 @@ class ImageLoader:
         if isinstance(item, tuple):
             x, y = item
             x = self._formatting(numpy.expand_dims(x, axis=0))[0]
+            x = np.asarray(x)
+            y = np.asarray(y)
             return x, y
         else:
             x = self._formatting(numpy.expand_dims(item, axis=0))[0]
+            x = np.asarray(x)
             return x
     
     def __len__(self):
@@ -462,7 +465,7 @@ if __name__ == '__main__':
         data_source,
         train=True,
         batch_size=50,
-        normalize=True
+        normalize=False
     )
 
     label_names = loader.label_names()
@@ -478,5 +481,5 @@ if __name__ == '__main__':
     cf.show_multi_samples(x, label_list=label_names, target=y)
 
     x, t = loader[123]
-    l = label_names[t]
+    l = label_names[int(t)]
     cf.show_sample(x, l, t)
