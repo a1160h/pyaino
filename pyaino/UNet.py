@@ -198,7 +198,7 @@ class UNet:
         self.time_mlp_used = None
         self.label_mlp_used = None
 
-        # Stem
+        # Stem 入力直は、ActやNormではなく、Convから
         self.stem = nn.Conv2dLayer(base_ch, stem_kernel, 0, **common_options)
 
         # 本体＝畳込みブロックとチャネル構成の決定
@@ -207,7 +207,7 @@ class UNet:
         c_bot  =  base_ch * (2 ** depth)
         c_up   = [base_ch * (2 ** i) for i in reversed(range(depth))]
 
-        # 畳込みブロックのオプション(入力直は活性化なし)
+        # 畳込みブロック
         options_for_blocks = {**common_options, 
                               'proj'          : proj,  # projの有効無効を指定
                               'residual'      : residual,
@@ -239,13 +239,9 @@ class UNet:
             self.concat.append(F.Concatenate())
             self.up.append(Conv(c_up[i], **options_for_blocks))
 
-        # 出力層
+        # 出力Head  チャネル数合わせのみで、ActもNormも無し
         options_for_ol = {**common_options,
-                          'pre_activation' : pre_activation,
                           'bias'           : bias_last,}
-        if pre_activation: # pre_activationの時は出力層も活性化関数を入れる
-            options_for_ol['activate'] = activate
-
         # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
         self.out = nn.Conv2dLayer(in_ch, 1, 0, **options_for_ol)
             
@@ -395,9 +391,10 @@ class CNN_MultiStageStack:
     def __init__(self, scale_direction='down', depth=3, in_ch=None, 
                  outtype=None, outdim=None, 
                  base_ch=32, bottleneck=True, bottleneck_ratio=0.5,
+                 stem_kernel=1,
                  residual=False, activate='ReLU', pre_activation=False,
                  batchnorm=None, layernorm=None, normaffine=False, 
-                 optimize='AdamT', w_decay=0.01,
+                 optimize='AdamT', w_decay=0.01, bias_last=False,
                  ):
                  
         warnings.warn(self.__class__.__name__
@@ -416,69 +413,57 @@ class CNN_MultiStageStack:
                           'optimize'   : optimize,
                           'w_decay'    : w_decay}
 
-        # 本体＝畳込みブロック
-        if bottleneck:
-            Conv = ConvBlockBottleneck
-            if pre_activation:
-                conv_activate = activate, activate, activate
-            else:    
-                conv_activate = None, activate, None
-        else:
-            Conv = ConvBlock
-            conv_activate = activate, activate
+        # Stem 入力直は、ActやNormではなく、Convから
+        self.stem = nn.Conv2dLayer(base_ch, stem_kernel, 0, **common_options)
 
-        options_for_blocks = {**common_options,
-                              #'activate'       : conv_activate, # 展開時に設定
-                              'residual'       : residual,
-                              'pre_activation' : pre_activation,}
-        if bottleneck:
-            options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
+        # 本体＝畳込みブロックとチャネル構成の決定
+        Conv = ConvBlockBottleneck if bottleneck else ConvBlock
 
-        options_for_ol = {**common_options,
-                          'pre_activation' : pre_activation,}
-        if pre_activation: # pre_activationの時は出力層も活性化関数を入れる
-            options_for_ol['activate'] = activate
-
-        if scale_direction in ('down', 'up'):
-            self.scale_direction = scale_direction
-        else:
-            raise ValueError(f"scale_direction must be 'up' or 'down'," \
-                             + f"got '{scale_direction}'")
-
-        # チャネル構成の決定
         if scale_direction == 'down':
             ch = [base_ch * (2 ** i) for i in range(depth)]
         elif scale_direction == 'up':
             ch = [base_ch * (2 ** i) for i in reversed(range(depth))]
 
-        # Down path
-        if scale_direction == 'down':
-            self.down , self.pool = [], []
-            for i in range(depth):
-                if pre_activation and i== 0: # 入力直後は活性化関数は通さない　
-                    act = (None, activate, activate) if bottleneck else (None, activate) 
-                else:    
-                    act = (activate, activate, activate) if bottleneck else (activate, activate) 
-                options = options_for_blocks | {'activate': act} 
-                self.down.append(Conv(ch[i], **options))
+        # 畳込みブロック　
+        options_for_blocks = {**common_options, 
+                              'residual'      : residual,
+                              'pre_activation': pre_activation,}
+        if bottleneck:
+            options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
 
-                if i == depth - 1: # 最終層はPoolingを避けてIdentity
+        if bottleneck and pre_activation: 
+            options_for_blocks['activate'] = activate, activate, activate
+        elif bottleneck:
+            options_for_blocks['activate'] = activate, activate, None
+        else:
+            options_for_blocks['activate'] = activate, activate
+
+        # Down path (Conv + Pool)
+        if scale_direction == 'down':
+            self.down, self.pool = [], []
+            for i in range(depth):
+                self.down.append(Conv(ch[i], **options_for_blocks))
+                # 最終層はPoolingを避けてIdentity
+                if i == depth - 1: 
                     self.pool.append(F.Assign())
                 else:    
                     self.pool.append(nn.Pooling2dLayer(2, dropout=True))
                     
-        # Up path（Upsample + concat + Conv）
+        # Up path（Upsample + Conv）
         elif scale_direction == 'up':
             self.upsample, self.up = [], []
             for i in range(depth):
                 self.upsample.append(nn.Interpolate2d(scale_factor=2, mode='bilinear'))
-                if pre_activation and i== 0: # 入力直後は活性化関数は通さない　
-                    act = (None, activate, activate) if bottleneck else (None, activate) 
-                else:    
-                    act = (activate, activate, activate) if bottleneck else (activate, activate) 
-                options = options_for_blocks | {'activate': act}   
-                self.up.append(Conv(ch[i], **options))
+                self.up.append(Conv(ch[i], **options_for_blocks))
 
+        else: 
+            raise ValueError(f"scale_direction must be 'up' or 'down'," \
+                             + f"got '{scale_direction}'")
+        self.scale_direction = scale_direction
+        
+        # 出力Head
+        options_for_ol = {**common_options,
+                          'bias' : bias_last,}
         # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
         if outtype is None:
             self.out = None
@@ -501,6 +486,8 @@ class CNN_MultiStageStack:
 
     def forward(self, x, train=True, dropout=0.0):
         #print('###debug0', train, dropout)
+        # Stem
+        x = self.stem(x)
         # Down
         if self.scale_direction == 'down':
             for i in range(self.depth):
@@ -528,6 +515,7 @@ class CNN_MultiStageStack:
         return self.forward(*args, **kwargs)
 
     def update(self, eta=0.001, **kwargs):
+        self.stem.update(eta=eta, **kwargs)
         if self.scale_direction == 'down':
             for i in range(self.depth):
                 self.down[i].update(eta=eta, **kwargs)
