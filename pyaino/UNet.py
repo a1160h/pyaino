@@ -1,5 +1,5 @@
 # UNet
-# 20260411 A.Inoue
+# 20260412 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -147,6 +147,7 @@ class UNet:
     def __init__(self, depth=3, in_ch=None,
                  time_embed=False, num_labels=None, embed_dim=128,  
                  base_ch=32, bottleneck=True, bottleneck_ratio=0.5,
+                 stem_kernel=1, 
                  residual=False, activate='ReLU', pre_activation=False,
                  batchnorm=None, layernorm=None, normaffine=False, 
                  optimize='AdamT', w_decay=0.01, bias_last=False, skip_ratio=None):
@@ -197,51 +198,60 @@ class UNet:
         self.time_mlp_used = None
         self.label_mlp_used = None
 
-        # 本体＝畳込みブロック
-        if bottleneck:
-            Conv = ConvBlockBottleneck
-            if pre_activation:
-                conv_activate = activate, activate, activate
-            else:    
-                conv_activate = None, activate, None
-        else:
-            Conv = ConvBlock
-            conv_activate = activate, activate
+        # Stem
+        self.stem = nn.Conv2dLayer(base_ch, stem_kernel, 0, **common_options)
 
-        options_for_blocks = {**common_options,
-                              'proj'          : proj,    # projの有効無効を指定
-                              #'activate'      : conv_activate, 活性化関数は展開時に設定
+        # 本体＝畳込みブロックとチャネル構成の決定
+        Conv = ConvBlockBottleneck if bottleneck else ConvBlock
+        c_down = [base_ch * (2 ** i) for i in range(depth)]
+        c_bot  =  base_ch * (2 ** depth)
+        c_up   = [base_ch * (2 ** i) for i in reversed(range(depth))]
+
+        # 畳込みブロックのオプション(入力直は活性化なし)
+        options_for_blocks = {**common_options, 
+                              'proj'          : proj,  # projの有効無効を指定
                               'residual'      : residual,
                               'pre_activation': pre_activation,}
         if bottleneck:
             options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
 
+        if bottleneck and pre_activation: 
+            options_for_blocks['activate'] = activate, activate, activate
+        elif bottleneck:
+            options_for_blocks['activate'] = activate, activate, None
+        else:
+            options_for_blocks['activate'] = activate, activate
+            
+        # Down path
+        self.down , self.pool = [], []
+        for i in range(depth):
+            self.down.append(Conv(c_down[i], **options_for_blocks))
+            self.pool.append(nn.Pooling2dLayer(2))
+                
+        # Bottleneck
+        self.bot = Conv(c_bot, **options_for_blocks)
+
+        # Up path（Upsample + concat + Conv）
+        self.upsample, self.concat, self.up = [], [], []
+        for i in range(depth):
+            self.upsample.append(nn.Interpolate2d(scale_factor=2,
+                                          mode='bilinear', align='center'))
+            self.concat.append(F.Concatenate())
+            self.up.append(Conv(c_up[i], **options_for_blocks))
+
+        # 出力層
         options_for_ol = {**common_options,
                           'pre_activation' : pre_activation,
                           'bias'           : bias_last,}
         if pre_activation: # pre_activationの時は出力層も活性化関数を入れる
             options_for_ol['activate'] = activate
 
+        # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
+        self.out = nn.Conv2dLayer(in_ch, 1, 0, **options_for_ol)
+            
+        # down->upのスキップ接続　
         options_for_skip_proj = {'optimize' : optimize, 'w_decay' : w_decay,}
 
-        print(options_for_blocks, options_for_ol, options_for_skip_proj)
-
-        # チャネル構成の決定
-        c_down = [base_ch * (2 ** i) for i in range(depth)]
-        c_bot  =  base_ch * (2 ** depth)
-        c_up   = [base_ch * (2 ** i) for i in reversed(range(depth))]
-
-        # Down path
-        self.down , self.pool = [], []
-        for i in range(depth):
-            if pre_activation and i== 0: # 入力直後は活性化関数は通さない　
-                act = (None, activate, activate) if bottleneck else (None, activate) 
-            else:    
-                act = (activate, activate, activate) if bottleneck else (activate, activate) 
-            options = options_for_blocks | {'activate': act} 
-            self.down.append(Conv(c_down[i], **options))
-            self.pool.append(nn.Pooling2dLayer(2))
-                
         # Skip projection (弱スキップ:カーネルサイズ1でskip_ratioに従いチャネル圧縮)
         if skip_ratio is not None and skip_ratio > 0:
             self.skip_proj = []
@@ -249,19 +259,6 @@ class UNet:
                 proj_ch = max(1, round(c_down[i] * skip_ratio))
                 self.skip_proj.append(nn.Conv2dLayer(
                                       proj_ch, 1, 0, **options_for_skip_proj)) 
-
-        # Bottleneck
-        self.bot = Conv(c_bot, **options_for_blocks)
-
-        # Up path（Upsample + concat + Conv）
-        self.upsample, self.concat, self.up = [], [], []
-        for i in range(depth):
-            self.upsample.append(nn.Interpolate2d(scale_factor=2, mode='bilinear'))
-            self.concat.append(F.Concatenate()) 
-            self.up.append(Conv(c_up[i], **options_for_blocks))
-
-        # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
-        self.out = nn.Conv2dLayer(in_ch, 1, 0, **options_for_ol)
 
     def fix_out_ch(self, shape):
         """ 出力のConv2dの出力チャネル数の確定(入力の形状を見て合わせる) """
@@ -312,6 +309,9 @@ class UNet:
         shapes = []
         zs = []    
 
+        # Stem
+        x = self.stem(x)
+
         # Down
         for i in range(self.depth):
             shapes.append(x.shape) # Down前の元の形状を記録
@@ -356,7 +356,7 @@ class UNet:
             self.time_mlp.update(eta=eta, **kwargs)     
         if self.label_mlp is not None and self.label_mlp_used:
             self.label_mlp.update(eta=eta, **kwargs)     
-
+        self.stem.update(eta=eta, **kwargs)
         for i in range(self.depth):
             self.down[i].update(eta=eta, **kwargs)
         self.bot.update(eta=eta, **kwargs)
