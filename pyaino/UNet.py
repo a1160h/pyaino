@@ -143,63 +143,73 @@ class ConvBlockBottleneck(ConvBlock):
 
 class UNet:
     """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
-
-    def __init__(self, depth=3, in_ch=None,
-                 time_embed=False, num_labels=None, embed_dim=128,  
-                 base_ch=32, bottleneck=True, bottleneck_ratio=0.5,
-                 stem_kernel=1, 
-                 residual=False, activate='ReLU', pre_activation=False,
-                 batchnorm=None, layernorm=None, normaffine=False, 
-                 optimize='AdamT', w_decay=0.01, bias_last=False, skip_ratio=None):
-        warnings.warn(self.__class__.__name__
-                      +"Use this module with 'set_derivative(True)'.")
-        
-        self.in_ch = in_ch
-        self.time_embed = time_embed
-        self.num_labels = num_labels
-        self.embed_dim = embed_dim 
+    def __init__(self, depth=3, in_ch=None, base_ch=32,
+        bottleneck=True, bottleneck_ratio=0.5,
+        **kwargs):
+        # ---- U-Net core skeleton ----
         self.depth = depth
-        self.optimize = optimize
+        self.in_ch = in_ch
         self.base_ch = base_ch
         self.bottleneck = bottleneck
         self.bottleneck_ratio = bottleneck_ratio
-        self.skip_ratio = skip_ratio # スキップ接続の強度調整 0～1を想定
 
-        common_options = {'batchnorm'  : batchnorm,
-                          'layernorm'  : layernorm,
-                          'normaffine' : normaffine,
-                          'optimize'   : optimize,
-                          'w_decay'    : w_decay}
+        # ---- embedding / conditioning ----
+        self.time_embed  = kwargs.pop('time_embed', False)
+        self.num_labels  = kwargs.pop('num_labels',  None)
+        self.embed_dim   = kwargs.pop('embed_dim',    128)
+
+        # ---- architecture variations ----
+        self.stem_kernel = kwargs.pop('stem_kernel',    1)
+        self.skip_ratio  = kwargs.pop('skip_ratio',  None)
+        self.residual    = kwargs.pop('residual',   False)
+        self.bias_last   = kwargs.pop('bias_last',  False)
+
+        # ---- activation / normalization ----
+        self.activate    = kwargs.pop('activate',  'ReLU')
+        self.pre_activation = kwargs.pop('pre_activation', False)
+        self.optimize    = kwargs.pop('optimize', 'AdamT')
+        self.w_decay     = kwargs.pop('w_decay',     0.01)
+
+        norm_options =   {'batchnorm' : kwargs.pop('batchnorm',    None),
+                          'layernorm' : kwargs.pop('layernorm',    None),
+                          'normaffine': kwargs.pop('normaffine',  False),}
+        
+        common_options = {**norm_options,
+                          'optimize': self.optimize, 'w_decay': self.w_decay} 
+
+        if kwargs: # Safety check
+            raise TypeError(f"Unexpected keyword arguments: {list(kwargs.keys())}")
+
 
         # timeおよびlabelのembeddingとその次元変換用のmlp
-        if time_embed or (num_labels is not None):
-            options_for_mlpn = {**common_options, 'activate': activate,}
-            options_for_mlpo = {'optimize': optimize, 'w_decay': w_decay}
+        if self.time_embed or (self.num_labels is not None):
+            options_for_mlpn = {**common_options, 'activate': self.activate,}
+            options_for_mlpo = {'optimize': self.optimize, 'w_decay': self.w_decay}
             proj = True  # Convのprojを有効に
         else:
             proj = False # Convのprojを無効に
 
-        if time_embed:
+        if self.time_embed:
             self.time_mlp = nn.Sequential(
-                nn.PositionalEncoding(dimension=embed_dim),
+                nn.PositionalEncoding(dimension=self.embed_dim),
                 nn.NeuronLayer(base_ch*4, **options_for_mlpn),
-                nn.LinearLayer(embed_dim, **options_for_mlpo))
+                nn.LinearLayer(self.embed_dim, **options_for_mlpo))
         else:
             self.time_mlp = None
 
-        if num_labels is not None:
+        if self.num_labels is not None:
             self.label_mlp = nn.Sequential(
-                nn.Embedding(num_labels, embed_dim, optimize=optimize),
+                nn.Embedding(self.num_labels, self.embed_dim, optimize=self.optimize),
                 nn.NeuronLayer(base_ch*4, **options_for_mlpn),
-                nn.LinearLayer(embed_dim, **options_for_mlpo))
+                nn.LinearLayer(self.embed_dim, **options_for_mlpo))
         else:
             self.label_mlp = None
 
-        self.time_mlp_used = None
-        self.label_mlp_used = None
+        self.time_mlp_used = None; self.label_mlp_used = None # forward()でフラグとして使用
 
         # Stem 入力直は、ActやNormではなく、Convから
-        self.stem = nn.Conv2dLayer(base_ch, stem_kernel, 0, **common_options)
+        stem_pad = 1 if self.stem_kernel > 1 else 0 # 仮処置20260413AI
+        self.stem = nn.Conv2dLayer(base_ch, self.stem_kernel, 1, stem_pad, **common_options)
 
         # 本体＝畳込みブロックとチャネル構成の決定
         Conv = ConvBlockBottleneck if bottleneck else ConvBlock
@@ -210,17 +220,17 @@ class UNet:
         # 畳込みブロック
         options_for_blocks = {**common_options, 
                               'proj'          : proj,  # projの有効無効を指定
-                              'residual'      : residual,
-                              'pre_activation': pre_activation,}
+                              'residual'      : self.residual,
+                              'pre_activation': self.pre_activation,}
         if bottleneck:
             options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
 
-        if bottleneck and pre_activation: 
-            options_for_blocks['activate'] = activate, activate, activate
+        if bottleneck and self.pre_activation: 
+            options_for_blocks['activate'] = self.activate, self.activate, self.activate
         elif bottleneck:
-            options_for_blocks['activate'] = activate, activate, None
+            options_for_blocks['activate'] = self.activate, self.activate, None
         else:
-            options_for_blocks['activate'] = activate, activate
+            options_for_blocks['activate'] = self.activate, self.activate
             
         # Down path
         self.down , self.pool = [], []
@@ -241,15 +251,15 @@ class UNet:
 
         # 出力Head  チャネル数合わせのみで、ActもNormも無し
         options_for_ol = {**common_options,
-                          'bias'           : bias_last,}
+                          'bias'           : self.bias_last,}
         # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
         self.out = nn.Conv2dLayer(in_ch, 1, 0, **options_for_ol)
             
         # down->upのスキップ接続　
-        options_for_skip_proj = {'optimize' : optimize, 'w_decay' : w_decay,}
+        options_for_skip_proj = {'optimize' : self.optimize, 'w_decay' : self.w_decay,}
 
         # Skip projection (弱スキップ:カーネルサイズ1でskip_ratioに従いチャネル圧縮)
-        if skip_ratio is not None and skip_ratio > 0:
+        if self.skip_ratio is not None and self.skip_ratio > 0:
             self.skip_proj = []
             for i in range(depth):
                 proj_ch = max(1, round(c_down[i] * skip_ratio))
@@ -278,8 +288,7 @@ class UNet:
 
     def forward(self, x, timesteps=None, labels=None, train=True):
         self.fix_out_ch(x.shape)
-        self.time_mlp_used = False
-        self.label_mlp_used = False
+        self.time_mlp_used = False; self.label_mlp_used = False 
         # time/label embedding -> mlp
         if (self.time_mlp is not None) and (timesteps is not None):
             t0 = timesteps
@@ -287,13 +296,13 @@ class UNet:
             if (t0 < 0).any() or (t0 >= 1000).any(): # 仮20260107AI
                 print('###debug t0', t0)
             time_ctx = self.time_mlp(t0, train=train)
-            self.time_mlp_used = True
+            self.time_mlp_used = True  
 
         if (self.label_mlp is not None) and (labels is not None):
             label_ctx = self.label_mlp(labels, train=train)
-            self.label_mlp_used = True
-        # 注入ベクトルの確定
-        if self.time_mlp_used and self.label_mlp_used:
+            self.label_mlp_used = True 
+        # 注入ベクトルの確定(使ったことを受けて設定)
+        if self.time_mlp_used and self.label_mlp_used: 
             v = time_ctx + label_ctx
         elif self.time_mlp_used:
             v = time_ctx
@@ -384,6 +393,307 @@ class UNet:
             raise ValueError(f"t must be scalar or shape (B,), got {t_arr.shape}, B={B}")
 
         return t_arr.astype(np.int32, copy=False)
+
+
+class UNet2:
+    """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
+    def __init__(self, depth=3, in_ch=None, base_ch=32,
+        bottleneck=True, bottleneck_ratio=0.5,
+        **kwargs):
+        # ---- U-Net core skeleton ----
+        self.depth = depth
+        self.in_ch = in_ch
+        self.base_ch = base_ch
+
+        # ---- bottleneck (bool or tuple) ----
+        if isinstance(bottleneck, bool):
+            self.bottleneck_down = bottleneck
+            self.bottleneck_bot  = bottleneck
+            self.bottleneck_up   = bottleneck
+        elif isinstance(bottleneck, (tuple, list)):
+            if len(bottleneck) != 3:
+                raise ValueError("bottleneck must be (down, bot, up)")
+            self.bottleneck_down, self.bottleneck_bot, self.bottleneck_up = bottleneck
+        else:
+            raise TypeError("bottleneck must be bool or tuple")
+
+        # ---- bottleneck_ratio (float or tuple) ----
+        if isinstance(bottleneck_ratio, (int, float)):
+            self.bottleneck_ratio_down = bottleneck_ratio
+            self.bottleneck_ratio_bot  = bottleneck_ratio
+            self.bottleneck_ratio_up   = bottleneck_ratio
+        elif isinstance(bottleneck_ratio, (tuple, list)):
+            if len(bottleneck_ratio) != 3:
+                raise ValueError("bottleneck_ratio must be (down, bot, up)")
+            (self.bottleneck_ratio_down,
+             self.bottleneck_ratio_bot,
+             self.bottleneck_ratio_up) = bottleneck_ratio
+        else:
+            raise TypeError("bottleneck_ratio must be float or tuple")
+
+        # ---- embedding / conditioning ----
+        self.time_embed  = kwargs.pop('time_embed', False)
+        self.num_labels  = kwargs.pop('num_labels',  None)
+        self.embed_dim   = kwargs.pop('embed_dim',    128)
+
+        # ---- architecture variations ----
+        self.stem_kernel = kwargs.pop('stem_kernel', 1)
+        self.skip_ratio  = kwargs.pop('skip_ratio',  None)
+        self.residual    = kwargs.pop('residual',   False)
+        self.bias_last   = kwargs.pop('bias_last',  False)
+
+        # ---- activation / normalization ----
+        self.activate    = kwargs.pop('activate',  'ReLU')
+        self.pre_activation = kwargs.pop('pre_activation', False)
+        self.optimize    = kwargs.pop('optimize', 'AdamT')
+        self.w_decay     = kwargs.pop('w_decay',     0.01)
+
+        norm_options = {
+            'batchnorm' : kwargs.pop('batchnorm',    None),
+            'layernorm' : kwargs.pop('layernorm',    None),
+            'normaffine': kwargs.pop('normaffine',  False),
+        }
+
+        common_options = {
+            **norm_options,
+            'optimize': self.optimize,
+            'w_decay' : self.w_decay,
+        }
+
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {list(kwargs.keys())}")
+
+        # timeおよびlabelのembeddingとその次元変換用のmlp
+        if self.time_embed or (self.num_labels is not None):
+            options_for_mlpn = {**common_options, 'activate': self.activate}
+            options_for_mlpo = {'optimize': self.optimize, 'w_decay': self.w_decay}
+            proj = True   # Convのprojを有効に
+        else:
+            proj = False  # Convのprojを無効に
+
+        if self.time_embed:
+            self.time_mlp = nn.Sequential(
+                nn.PositionalEncoding(dimension=self.embed_dim),
+                nn.NeuronLayer(base_ch * 4, **options_for_mlpn),
+                nn.LinearLayer(self.embed_dim, **options_for_mlpo)
+            )
+        else:
+            self.time_mlp = None
+
+        if self.num_labels is not None:
+            self.label_mlp = nn.Sequential(
+                nn.Embedding(self.num_labels, self.embed_dim, optimize=self.optimize),
+                nn.NeuronLayer(base_ch * 4, **options_for_mlpn),
+                nn.LinearLayer(self.embed_dim, **options_for_mlpo)
+            )
+        else:
+            self.label_mlp = None
+
+        self.time_mlp_used = None
+        self.label_mlp_used = None  # forward()でフラグとして使用
+
+        # Stem 入力直は、ActやNormではなく、Convから
+        stem_pad = 1 if self.stem_kernel > 1 else 0
+        self.stem = nn.Conv2dLayer(
+            base_ch, self.stem_kernel, 1, stem_pad, **common_options
+        )
+
+        # チャネル構成
+        c_down = [base_ch * (2 ** i) for i in range(depth)]
+        c_bot  =  base_ch * (2 ** depth)
+        c_up   = [base_ch * (2 ** i) for i in reversed(range(depth))]
+
+        # pathごとに ConvBlock / ConvBlockBottleneck を切り替える
+        ConvDown = ConvBlockBottleneck if self.bottleneck_down else ConvBlock
+        ConvBot  = ConvBlockBottleneck if self.bottleneck_bot  else ConvBlock
+        ConvUp   = ConvBlockBottleneck if self.bottleneck_up   else ConvBlock
+
+        def make_block_options(use_bottleneck, ratio):
+            opts = {
+                **common_options,
+                'proj'          : proj,
+                'residual'      : self.residual,
+                'pre_activation': self.pre_activation,
+            }
+            if use_bottleneck:
+                opts['bottleneck_ratio'] = ratio
+
+            if use_bottleneck and self.pre_activation:
+                opts['activate'] = (self.activate, self.activate, self.activate)
+            elif use_bottleneck:
+                opts['activate'] = (self.activate, self.activate, None)
+            else:
+                opts['activate'] = (self.activate, self.activate)
+            return opts
+
+        options_down = make_block_options(self.bottleneck_down, self.bottleneck_ratio_down)
+        options_bot  = make_block_options(self.bottleneck_bot,  self.bottleneck_ratio_bot)
+        options_up   = make_block_options(self.bottleneck_up,   self.bottleneck_ratio_up)
+
+        # ---- Down ----
+        self.down, self.pool = [], []
+        for i in range(depth):
+            self.down.append(ConvDown(c_down[i], **options_down))
+            self.pool.append(nn.Pooling2dLayer(2))
+
+        # ---- Bottleneck ----
+        self.bot = ConvBot(c_bot, **options_bot)
+
+        # ---- Up (Upsample + conacat + Conv) ---- 
+        self.upsample, self.concat, self.up = [], [], []
+        for i in range(depth):
+            self.upsample.append(
+                nn.Interpolate2d(scale_factor=2, mode='bilinear', align='center')
+            )
+            self.concat.append(F.Concatenate())
+            self.up.append(ConvUp(c_up[i], **options_up))
+
+        # ---- Output(Conv1x1 in_chに合わせる) ----
+        options_for_ol = {**common_options, 'bias': self.bias_last}
+        self.out = nn.Conv2dLayer(in_ch, 1, 0, **options_for_ol)
+
+        # ---- down->upのスキップ接続 ----
+        options_for_skip_proj = {'optimize': self.optimize, 'w_decay' : self.w_decay}
+
+        # Skip projection (弱スキップ:カーネルサイズ1でskip_ratioに従いチャネル圧縮)
+        if self.skip_ratio is not None and self.skip_ratio > 0:
+            self.skip_proj = []
+            for i in range(depth):
+                proj_ch = max(1, round(c_down[i] * self.skip_ratio))
+                self.skip_proj.append(
+                    nn.Conv2dLayer(proj_ch, 1, 0, **options_for_skip_proj)
+                )
+
+    def fix_out_ch(self, shape):
+        """ 出力のConv2dの出力チャネル数の確定(入力の形状を見て合わせる) """
+        if self.out.config[3] is not None:
+            return
+        else:
+            self.in_ch = shape[1]  # shape=(B,C,Ih,Iw)
+            list_out_config = list(self.out.config)
+            list_out_config[3] = self.in_ch
+            self.out.config = tuple(list_out_config)
+
+    def center_crop(self, x, crop_h, crop_w):
+        h, w = x.shape[-2:]
+        start_h = (h - crop_h) // 2
+        start_w = (w - crop_w) // 2
+        return x[:, :, start_h:start_h+crop_h, start_w:start_w+crop_w]
+
+    def forward(self, x, timesteps=None, labels=None, train=True):
+        self.fix_out_ch(x.shape)
+        self.time_mlp_used = False
+        self.label_mlp_used = False
+
+        # time/label embedding -> mlp
+        if (self.time_mlp is not None) and (timesteps is not None):
+            t0 = timesteps
+            t0 = self.normalize_t(t0, x.shape[0])    # バッチサイズだけ合わせる
+            if (t0 < 0).any() or (t0 >= 1000).any():
+                print('###debug t0', t0)
+            time_ctx = self.time_mlp(t0, train=train)
+            self.time_mlp_used = True
+
+        if (self.label_mlp is not None) and (labels is not None):
+            label_ctx = self.label_mlp(labels, train=train)
+            self.label_mlp_used = True
+
+        # 注入ベクトルの確定
+        if self.time_mlp_used and self.label_mlp_used:
+            v = time_ctx + label_ctx
+        elif self.time_mlp_used:
+            v = time_ctx
+        elif self.label_mlp_used:
+            v = label_ctx
+        else:
+            v = None
+
+        shapes = []
+        zs = []
+
+        # Stem
+        x = self.stem(x)
+
+        # Down
+        for i in range(self.depth):
+            shapes.append(x.shape)            # Down前の元の形状を記録
+            z = self.down[i](x, v, train=train)
+            x = self.pool[i](z)
+            zs.append(z)
+
+        # Bottleneck
+        x = self.bot(x, v, train=train)
+
+        # Up
+        for i in range(self.depth):
+            shape = shapes.pop()
+            x = self.upsample[i](x)
+            if x.shape[-2:] != shape[-2:]:
+                x = self.center_crop(x, shape[-2], shape[-1])
+
+            z = zs.pop()
+            if self.skip_ratio is None:
+                x = self.concat[i](x, z, axis=1)
+            elif self.skip_ratio > 0:
+                z = self.skip_proj[self.depth - 1 - i](z)
+                x = self.concat[i](x, z, axis=1)
+            elif self.skip_ratio == 0:
+                pass
+            else:
+                raise ValueError("skip_ratio must be None or >= 0")
+
+            x = self.up[i](x, v, train=train)
+
+        assert not zs
+
+        # Output
+        y = self.out(x, train=train)
+        return y
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def update(self, eta=0.001, **kwargs):
+        if self.time_mlp is not None and self.time_mlp_used:
+            self.time_mlp.update(eta=eta, **kwargs)
+        if self.label_mlp is not None and self.label_mlp_used:
+            self.label_mlp.update(eta=eta, **kwargs)
+
+        self.stem.update(eta=eta, **kwargs)
+
+        for i in range(self.depth):
+            self.down[i].update(eta=eta, **kwargs)
+
+        self.bot.update(eta=eta, **kwargs)
+
+        if self.skip_ratio is not None and self.skip_ratio > 0:
+            for i in range(self.depth):
+                self.skip_proj[i].update(eta=eta, **kwargs)
+
+        for i in range(self.depth):
+            self.up[i].update(eta=eta, **kwargs)
+
+        self.out.update(eta=eta, **kwargs)
+
+    def normalize_t(self, t, B=1):
+        """
+        x: (B,C,H,W)
+        t: int (scalar) or array-like (B,)
+        returns: t_vec (B,) int32
+        """
+        if isinstance(t, (int,)):
+            return np.full((B,), t, dtype=np.int32)
+
+        t_arr = np.asarray(t)
+        if getattr(t_arr, "ndim", 0) == 0:
+            return np.full((B,), int(t_arr), dtype=np.int32)
+
+        if t_arr.shape != (B,):
+            raise ValueError(f"t must be scalar or shape (B,), got {t_arr.shape}, B={B}")
+
+        return t_arr.astype(np.int32, copy=False)
+
+
 
 class CNN_MultiStageStack:
     """ UNetを起源とする汎用的なCNN """

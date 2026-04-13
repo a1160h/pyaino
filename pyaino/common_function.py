@@ -1,5 +1,5 @@
 # common_function
-# 2026.04.06 A.Inoue 
+# 2026.04.13 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2570,8 +2570,10 @@ def show_multi_samples(data, n=(10,5), label_list=None, target=None,
         max_picel = np.max(data, axis=maxis, keepdims=True)
         min_picel = np.min(data, axis=maxis, keepdims=True) 
         rdata = (data - min_picel)/(max_picel - min_picel)
-    # C=3でC軸を探し、転置してBHWCの並びに
-    rdata = rdata.transpose(0, 2, 3, 1) if rdata.shape[1]==3 else rdata
+    # C=1|3でC軸を探し、転置してBHWCの並びに
+    if rdata.shape[1] in (1, 3):
+        rdata = rdata.transpose(0, 2, 3, 1)
+    cmap = 'gray' if rdata.shape[-1] == 1 else None # 転置後のチャネル軸を見る
     n_data = len(rdata)
     for j in range(0, n_data, n[0]*n[1]):   # はじめのn個、次のn個と進める
         x = rdata[j:]
@@ -2581,7 +2583,7 @@ def show_multi_samples(data, n=(10,5), label_list=None, target=None,
         m = min(n[0]*n[1], n_data - j)      # n個以上残っていればn個、n個に満たない時はその端数
         for i in range(m):
             plt.subplot(n[1], n[0], i+1)    # nもfigsizeに合わせて横×縦
-            plt.imshow(x[i].tolist())
+            plt.imshow(x[i].tolist(), cmap=cmap)
             if target is not None and label_list is not None:
                 plt.title(label_list[int(t[i])])
             plt.axis('off')
