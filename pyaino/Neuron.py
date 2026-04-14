@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.09 A.Inoue
+# 2026.04.10 A.Inoue
 
 import copy
 import warnings
@@ -18,13 +18,13 @@ from pyaino.Initializer import init_weight
 class Sequential:
     """ 複数の層を積み上げて一括して扱う """
     def __init__(self, *layers, **kwargs):
-        self.layers = [l for l in layers]
+        self.layers = [layer for layer in layers]
         print(self.layers)
 
     def forward(self, x, **kwargs):
         y = x
-        for l in self.layers:
-            y = l.forward(y, **kwargs)
+        for layer in self.layers:
+            y = layer.forward(y, **kwargs)
         return y
 
     def backward(self, gy=None):
@@ -32,23 +32,86 @@ class Sequential:
             gx = self.layers[-1].backward()
         else:
             gx = self.layers[-1].backward(gy)
-        for l in reversed(self.layers[:-1]):
-            gx = l.backward(gx)
+        for layer in reversed(self.layers[:-1]):
+            gx = layer.backward(gx)
         return gx
 
     def update(self, eta=0.001, **kwargs):
-        for l in self.layers:
-            if hasattr(l, 'update'): 
-                l.update(eta=eta, **kwargs)
+        for layer in self.layers:
+            if hasattr(layer, 'update'): 
+                layer.update(eta=eta, **kwargs)
                 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
     def summary(self):
-        for l in self.layers:
-            print(l.__class__.__name__, end=' ')
-        if hasattr(l, 'config'):
-            print(l.config)
+        for layer in self.layers:
+            print(layer.__class__.__name__, end=' ')
+        if hasattr(layer, 'config'):
+            print(layer.config)
+        else:
+            print('\n')
+
+class SequentialWithLoss:
+    """
+    最後の層をLinearLayerCrossEntropyまたは損失関数として、
+    複数の層を積み上げて一括して扱う
+    """
+    def __init__(self, *layers, **kwargs):
+        self.layers = [layer for layer in layers]
+
+        if isinstance(self.layers[-1], lf.LossFunctionBase):
+            self.type = 0 # 通常の損失関数
+        elif isinstance(self.layers[-1], LinearLayerCrossEntropy):
+            self.type = 1 # LLCE
+        else:    
+            raise TypeError("Last layer must be either",
+                            "a subclass of LossFunctions or LinearLayerCrossEntropy",
+                            f"but {type(layers[-1]).__name__}")
+        print(self.layers)
+
+    def forward(self, x, t=None, **kwargs):
+        y = x
+        # 最終層以前まで
+        for layer in self.layers[:-1]: 
+            y = layer.forward(y, **kwargs)
+        # 以下、最終層の扱い    
+        if self.type==0:  # 通常の損失関数
+            if t is None:    
+                return y
+            l = self.layers[-1].forward(y, t)
+            return y, l
+        if self.type==1:  # LLCE
+            if t is None:
+                return self.layers[-1].forward(y)
+            y, l = self.layers[-1](y, t)
+            return y, l
+
+    def backward(self, *args, **kwargs): # 外部の勾配には未対応20260414AI
+        if self.type==0:  # 通常の損失関数
+            if gy is None:
+                gx = self.layers[-1].backward()
+            else:
+                gx = gy + self.layers[-1].backward()
+        if self.type==1:  # LLCE
+            gx = self.layers[-1].backward()
+        for layer in reversed(self.layers[:-1]):
+            gx = layer.backward(gx)
+        return gx
+
+    def update(self, eta=0.001, **kwargs):
+        for layer in self.layers:
+            if hasattr(layer, 'update'): 
+                layer.update(eta=eta, **kwargs)
+                
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def summary(self):
+        for layer in self.layers:
+            print(layer.__class__.__name__, end=' ')
+        if hasattr(layer, 'config'):
+            print(layer.config)
         else:
             print('\n')
 
@@ -550,13 +613,14 @@ class BaseLayer(Function):
     def __init__(self, **kwargs):
         super().__init__()
         print('Initialize', self.__class__.__name__, self.config)
-        matmul         = kwargs.pop('matmul',          False) # MatMulLinearを使う 
-        self.bias      = kwargs.get('bias',             True) # dot_linearのbias有無
-        self.scale     = kwargs.get('scale',           False) # ReParameteraization
-        self.full_cnnt = kwargs.pop('full_connection', False) # 全結合層を明示
-        pre_activation = kwargs.pop('pre_activation',  False) # pre/post切替
-        activate       = kwargs.pop('activate',         None) # pre/post phaseに渡す
-
+        matmul            = kwargs.pop('matmul',          False) # MatMulLinearを使う 
+        self.bias         = kwargs.get('bias',             True) # dot_linearのbias有無
+        self.scale        = kwargs.get('scale',           False) # ReParameteraization
+        self.full_cnnt    = kwargs.pop('full_connection', False) # 全結合層を明示
+        pre_activation    = kwargs.pop('pre_activation',  False) # pre/post切替
+        activate          = kwargs.pop('activate',         None) # pre/post phaseに渡す
+        self.use_residual = kwargs.pop('residual',        False) # 残差接続の有無
+                                                                 # postphaseにも渡す
         self.parameters = WeightsAndBiases(self, **kwargs)
         self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
 
@@ -634,46 +698,45 @@ class BaseLayer(Function):
         return y     
         
 
-    def __forward__(self, x, *, train=False, dropout=0.0):
-        
-        #print('###', self.__class__.__name__, 'forward x =', x.shape)
-        #if hasattr(self, 'full_cnnt'):
-        #    print('full_connection =', self.full_cnnt)
+    def __forward__(self, x, residual=None, *, train=False, dropout=0.0):
+        # 残差接続の有無と入力の対応チャック
+        if self.use_residual:
+            if residual is None:
+                raise ValueError("use_residual=True, but residual is None.")
+        else:
+            if residual is not None:
+                raise ValueError("use_residual=False, but residual is given.")
 
-        x = self.align_config_and_input(x)
         # 前処理
+        x = self.align_config_and_input(x)
         x = self.prephase.forward(x)
         # コアの順伝播
         y = self._forward(x)
         # 後処理
-        y = self.postphase.forward(y, train=train, dropout=dropout)
-
+        y = self.postphase.forward(y, residual=residual, train=train, dropout=dropout)
         y = self.align_output(y)
-        #print('### forward y =', y.shape)
         return y    
             
 
     def __backward__(self, grad_y, **kwargs):
-        #print('###', self.__class__.__name__, 'backward grad_y =', grad_y.shape)
         if self.did_reshape_y: 
             m, n = self.config
             grad_y = grad_y.reshape(-1, n)
 
         # 後処理の逆伝播
-        grad_y = self.postphase.backward(grad_y, **kwargs)
+        grad_y, grad_r = self.postphase.backward(grad_y, **kwargs)
         # コアの逆伝播
         grad_x = self._backward(grad_y)
         # 前処理の逆伝播
         grad_x = self.prephase.backward(grad_x)
         
-        #print('### backward grad_x =', grad_x.shape)
-        #return grad_x
-
         if self.did_reshape_x:
             x, = self.inputs 
-            return grad_x.reshape(*x.shape)
-        else:
+            grad_x = grad_x.reshape(*x.shape)
+            
+        if not self.use_residual:
             return grad_x
+        return grad_x, grad_r
 
 
     def _forward(self, *args, **kwargs):
@@ -748,14 +811,14 @@ class PrePhase:
 class PostPhase:  
     def __init__(self, layer=None, **kwargs):
         #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
-        activate        = kwargs.pop('activate',    None) # Post-activation
-        dropout         = kwargs.pop('dropout',    False) # ドロップアウト可否(forwardで指定)
-        batchnorm       = kwargs.pop('batchnorm',  False) # バッチ正規化の適用有無
-        layernorm       = kwargs.pop('layernorm',  False) # 層正規化の適用有無
-        normdim         = kwargs.pop('normdim',     None) # 正規化の軸指定(2d)
-        normaffine      = kwargs.pop('normaffine', False) # 正規化のスケール＆バイアス
-        activate_option = kwargs.copy()                        # 残りは活性化のオプション
-        norm_option     = kwargs.copy()                        # 残りは正規化のオプション
+        activate          = kwargs.pop('activate',    None) # Post-activation
+        dropout           = kwargs.pop('dropout',    False) # ドロップアウト可否(forwardで指定)
+        batchnorm         = kwargs.pop('batchnorm',  False) # バッチ正規化の適用有無
+        layernorm         = kwargs.pop('layernorm',  False) # 層正規化の適用有無
+        normdim           = kwargs.pop('normdim',     None) # 正規化の軸指定(2d)
+        normaffine        = kwargs.pop('normaffine', False) # 正規化のスケール＆バイアス
+        activate_option   = kwargs.copy()                   # 残りは活性化のオプション
+        norm_option       = kwargs.copy()                   # 残りは正規化のオプション
 
         self.activator = cf.eval_in_module(activate, Activators, **activate_option) \
                          if activate is not None else None
@@ -791,25 +854,31 @@ class PostPhase:
         if self.Norm:
             self.Norm.update(eta=eta, **kwargs)
         
-    def forward(self, y, *, train=False, dropout=0.0):
-        #print('    postphase f', y.shape)
+    def forward(self, y, residual=None, *, train=False, dropout=0.0):
         if self.Norm:
-            y = self.Norm.forward(y, train=train)      # バッチor層ノーマライゼーション
+            y = self.Norm.forward(y, train=train)   # バッチor層ノーマライゼーション
+
+        if residual is not None:                       
+            y = y + residual # 加算点（与えられたものはそのまま加える）
+            
         if self.activator: 
-            y = self.activator.forward(y)                  # 活性化関数
+            y = self.activator.forward(y)           # 活性化関数
+
         if self.DO:
-            y = self.DO.forward(y, dropout=dropout)    # ドロップアウト
+            y = self.DO.forward(y, dropout=dropout) # ドロップアウト
         return y    
         
     def backward(self, grad_y, **kwargs):
-        #print('    postphase b', grad_y.shape)
         if self.DO:
-            grad_y = self.DO.backward(grad_y)          # ドロップアウト
+            grad_y = self.DO.backward(grad_y)       # ドロップアウト
         if self.activator:    
             grad_y = self.activator.backward(grad_y, **kwargs) # 活性化関数
+            
+        grad_r = grad_y      # 加算点のもう一方の枝への局所勾配をそのまま返す
+
         if self.Norm:
-            grad_y = self.Norm.backward(grad_y)        # バッチor層ノーマライゼーション
-        return grad_y
+            grad_y = self.Norm.backward(grad_y)     # バッチor層ノーマライゼーション
+        return grad_y, grad_r
 
 #### 基本的な Neuron層 ##############################################
 # m:上流のニューロン数、n:自身のニューロン数、activate:活性化関数、optimize:最適化、
@@ -3362,14 +3431,14 @@ class AttentionUnit(Function):
         self.mask = None # 無効トークンのマスク
        
     def __forward__(self, q, k, v, *, mask=None, dropout=0.0):
-        B,Tv,C = v.shape
-        B,Tk,C = k.shape
         B,Tq,C = q.shape
+        B,Tk,C = k.shape
+        B,Tv,C = v.shape
         h = self.head
         H = C // h
-        v = v.reshape(B,Tv,h,H).transpose(0,2,1,3) # (B,Tv,C)->(B,h,Tv,H)
-        k = k.reshape(B,Tk,h,H).transpose(0,2,1,3) # (B,Tk,C)->(B,h,Tk,H)
         q = q.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
+        k = k.reshape(B,Tk,h,H).transpose(0,2,1,3) # (B,Tk,C)->(B,h,Tk,H)
+        v = v.reshape(B,Tv,h,H).transpose(0,2,1,3) # (B,Tv,C)->(B,h,Tv,H)
         a = np.matmul(q, k.transpose(0,1,3,2))     # (B,h,Tq,H)@(B,h,H,Tk)->(B,h,Tq,Tk)
         if self.scale:
             a *= np.array(H ** -0.5, dtype=a.dtype)
@@ -3404,20 +3473,20 @@ class AttentionUnit(Function):
         a = self.DO.forward(a, dropout=dropout)
         y = np.matmul(a, v)            # (B,h,Tq,Tk)@(B,h,Tv,H)->(B,h,Tq,H), Tv=Tk
         y = y.transpose(0,2,1,3).reshape(B,Tq,C)     # (B,h,Tq,H)->(B,Tq,C)
-        self.k = k                                   # key
         self.q = q                                   # query
+        self.k = k                                   # key
         self.v = v                                   # value
         self.a = a                                   # attention_weight
         self.y = y
         return y                                     # (B,Tq,C)
 
     def __backward__(self, gy):
-        k = self.k
         q = self.q
+        k = self.k
         v = self.v
         a = self.a
-        B, h, Tk, H = k.shape
         B, h, Tq, H = q.shape
+        B, h, Tk, H = k.shape
         B, h, Tv, H = v.shape
         C = h * H
         gy = gy.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
@@ -3439,11 +3508,11 @@ class AttentionUnit(Function):
             ga *= np.array(H ** -0.5, dtype=ga.dtype)
 
         gq = np.matmul(ga, k)                      # (B,h,Tq,Tk)@(B,h,Tk,H)->(B,h,Tq,H)
-        #gk = np.matmul(q.transpose(0,1,3,2), ga)  # <-これはNG 20250525AI
         gk = np.matmul(ga.transpose(0,1,3,2), q)   # (B,h,Tk,Tq)@(B,h,Tq,H)->(B,h,Tk,H)
-        gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
-        gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)
+        #gk = np.matmul(q.transpose(0,1,3,2), ga)  # <-これはNG 20250525AI
         gq = gq.transpose(0,2,1,3).reshape(B,Tq,C) # (B,h,Tq,H)->(B,Tq,C)
+        gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)
+        gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
         return gq, gk, gv
 
 #### 時系列データをまとめて処理する Attention層 ############################
@@ -3491,7 +3560,9 @@ class SelfAttention(Function):
                                     #spctrnorm=1,
                                     **kwargs)
 
-        self.attention = AttentionUnit(head=n_head, causality='tri', **kwargs)
+        causality = kwargs.pop('causality', 'tri')
+
+        self.attention = AttentionUnit(head=n_head, causality=causality, **kwargs)
                          #scale=scale, temperature=temperature, entropy_decay=entropy_decay)
         self.linear_o = LinearLayer(matmul=True, bias=True,
                                     #scale=True, 
