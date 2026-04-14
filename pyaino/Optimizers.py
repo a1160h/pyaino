@@ -75,7 +75,7 @@ class OptimizerBase:
         # 勾配クリッピング 無指定では__call__()しない
         if any(kwargs): # kwargsは勾配クリッピングの指定のみ
             if self.gradient_clipping is None:
-                self.gradient_clipping = Gradient_clipping()
+                self.gradient_clipping = GradientClipping()
             eta *= self.gradient_clipping(gradient, **kwargs)
             
         # 学習率調整の諸手法 learning rate scheduler　　

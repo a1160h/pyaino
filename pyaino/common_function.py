@@ -1,5 +1,5 @@
 # common_function
-# 2026.04.13 A.Inoue 
+# 2026.04.14 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1162,7 +1162,7 @@ class Mesurement:
         self.batch_size = batch_size
         self.bind = bind
     
-    def __call__(self, x, t, n=None):
+    def __call__(self, x, t, n=None, shuffle=True):
         if n is None or n > len(x): # 指定しないか、データ数より大きな数を指定した場合        
             n = len(x)
             x_sample = x
@@ -1172,11 +1172,12 @@ class Mesurement:
             #    print('与えられた入力のサンプル数は指定したサンプル数より小さいです')
             #    n = len(x)
             index_rand = np.arange(len(x))
-            np.random.shuffle(index_rand)    # 
+            if shuffle:
+                np.random.shuffle(index_rand)   
             index_rand = index_rand[:n]      # n個だけindexを取出す
             #print(type(index_rand), type(x), type(c))
-            x_sample = x[index_rand, :]
-            t_sample = t[index_rand, :]
+            x_sample = x[index_rand]
+            t_sample = t[index_rand]
 
         ln = 0; an = 0; nn = 0
         n2 = n if n < self.batch_size else self.batch_size  
