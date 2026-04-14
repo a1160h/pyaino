@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260408 A.Inoue
+# 20260414 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -198,10 +198,12 @@ class Function:
         for x in inputs:
             self.check_decency(x) # チェックだけ 仮に全チェック20250503AI
         # inputsをHDArrayにするが、元々そうでない場合には別物になる(高階微分やグラフ可視化では問題)
-        self.inputs = [x if isinstance(x, HDArray) and hasattr(x, 'generation')
-                       else HDArray(x) for x in inputs] # backwardで勾配セットの準備
+        # backwardで勾配セットの準備  Noneの対処20260414AI
+        self.inputs = [x if x is None or (isinstance(x, HDArray) and hasattr(x, 'generation'))
+                       else HDArray(x) for x in inputs]
+        self.generation = max(x.generation for x in self.inputs if x is not None)
 
-        self.generation = max([x.generation for x in self.inputs])
+        #self.generation = max([x.generation for x in self.inputs])
         # 出力はどのみち新しく作られるものだから、別物になるのは構わない
         outputs = [HDArray(y) for y in outputs] # ysがHDAを継承したとしても必要
         outputs = [self.set_creator_and_generation(y) for y in outputs]
@@ -215,12 +217,18 @@ class Function:
         if Config.preserve_weakref_obj:
             self.outputs_copy = [y() for y in self.outputs] # weakrefでdeadしない為に
         #outputs = [y() for y in self.outputs]
+
         debug_print('', self.__class__.__name__, '世代', self.generation,
-            '\n 入力', '世代', [x.generation for x in self.inputs],  len(self.inputs),
-                [id(x) for x in self.inputs], [x.shape if isinstance(x, np.ndarray) else x for x in self.inputs],
+            '\n 入力', '世代', [x.generation for x in self.inputs if x is not None],
+                    len(self.inputs),
+                [id(x) for x in self.inputs],
+                    [x.shape if isinstance(x, np.ndarray) else x for x in self.inputs],
             '\n 出力', '世代', [y.generation for y in outputs], len(outputs),
-                [id(y) for y in outputs],[y.shape if isinstance(y, np.ndarray) else y for y in outputs],
+                [id(y) for y in outputs],
+                    [y.shape if isinstance(y, np.ndarray) else y for y in outputs],
             '\n<forward ↑>\n')
+
+        
         self.graph_exist = True # 仮20241003
         return outputs[0] if len(outputs)<=1 else outputs
     
@@ -238,7 +246,8 @@ class Function:
         if seen_var is None:
             seen_var = set()
             #print('<bw>initialize seen_var', seen_var)
-        debug_print(self.__class__.__name__, id(self), 'backward', 'gys =', [id(gy) for gy in gys],
+        debug_print(self.__class__.__name__, id(self), 'backward',
+                    'gys =', [id(gy) for gy in gys],
                     Config.create_graph, Config.higher_derivative, Config.derivative,
                     Config.backtrace_duration, Config.operator_state)
 
