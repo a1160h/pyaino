@@ -1,5 +1,5 @@
 # data_loader
-# 2026.04.11 A.Inoue
+# 2026.04.14 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -155,7 +155,7 @@ class ImageLoader:
         self.future = self.executor.submit(self._prefetch_loop)
         return self
 
-    def __getitem__(self, idx):
+    def __getitem__bkup(self, idx):
         item = self._load_item(idx)
 
         if isinstance(item, tuple):
@@ -168,6 +168,55 @@ class ImageLoader:
             x = self._formatting(numpy.expand_dims(item, axis=0))[0]
             x = np.asarray(x)
             return x
+
+
+    def __getitem__(self, idx):
+        # --- 単一 index ---
+        if isinstance(idx, (int, numpy.integer)):
+            item = self._load_item(int(idx))
+
+            if isinstance(item, tuple):
+                x, y = item
+                x = self._formatting(numpy.expand_dims(x, axis=0))[0]
+                x = np.asarray(x)
+                y = np.asarray(y)
+                return x, y
+            else:
+                x = self._formatting(numpy.expand_dims(item, axis=0))[0]
+                x = np.asarray(x)
+                return x
+
+        # --- slice ---
+        elif isinstance(idx, slice):
+            indices = list(range(*idx.indices(self.data_size)))
+
+        # --- list / ndarray ---
+        elif isinstance(idx, (list, tuple, numpy.ndarray)):
+            indices = list(idx)
+
+        else:
+            raise TypeError(f"Unsupported index type: {type(idx)}")
+
+        # --- 複数取得 ---
+        batch = [self._load_item(i) for i in indices]
+
+        # (x, y) 判定
+        if isinstance(batch[0], tuple):
+            xs, ys = zip(*batch)
+            xs = numpy.stack(xs)
+            ys = numpy.asarray(ys)
+
+            xs = self._formatting(xs)
+            xs = np.asarray(xs)
+            ys = np.asarray(ys)
+            return xs, ys
+
+        else:
+            xs = numpy.stack(batch)
+            xs = self._formatting(xs)
+            xs = np.asarray(xs)
+            return xs
+
     
     def __len__(self):
         return self.data_size
