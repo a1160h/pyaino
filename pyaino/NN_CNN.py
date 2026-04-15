@@ -104,10 +104,15 @@ class NN_CNN_Base:
         self.error_layer = None 
         if t is None:
             return y
-        if not hasattr(self, 'loss_function') or y.size!=t.size:
+
+        #if not hasattr(self, 'loss_function') or y.size!=t.size:
+        #    raise Exception("Can't get loss by forward.")
+        #if y.shape!=t.shape:
+        #    y = y.reshape(t.shape)
+
+        if not hasattr(self, 'loss_function'):
             raise Exception("Can't get loss by forward.")
-        if y.shape!=t.shape:
-            y = y.reshape(t.shape)
+
         l = self.loss_function.forward(y, t)
         return y, l
         

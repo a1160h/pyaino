@@ -1,5 +1,5 @@
 # common_function
-# 2026.04.14 A.Inoue 
+# 2026.04.15 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1151,7 +1151,92 @@ def get_accuracy(y, t, mchx=False, y_label=False):
     else:
         return accuracy
 
-class Mesurement:
+
+
+class Measurement:
+    def __init__(self, model, get_acc=None, batch_size=200, bind=False):
+        self.model = model
+        self.get_acc = get_acc if get_acc is not None else get_accuracy
+        self.batch_size = batch_size
+        self.bind = bind
+
+        self.error = []
+        self.accuracy = []
+
+    def __call__(self, x, t, n=None, shuffle=True, mchx=False):
+        x_sample, t_sample = self._sample_data(x, t, n=n, shuffle=shuffle)
+        sample_size = len(x_sample)
+
+        total_loss = 0.0
+        total_acc = 0.0
+        total_count = 0
+
+        predictions = np.empty(sample_size, dtype=int) if mchx else None
+
+        for start in range(0, sample_size, self.batch_size):
+            end = start + self.batch_size
+            x_batch = x_sample[start:end]
+            t_batch = t_sample[start:end]
+
+            y_batch, loss_batch = self._forward_and_loss(x_batch, t_batch)
+            acc_batch = self.get_acc(y_batch, t_batch)
+
+            batch_count  = len(x_batch)
+            total_loss  += loss_batch * batch_count
+            total_acc   += acc_batch  * batch_count
+            total_count += batch_count
+
+            if mchx:
+                predictions[start:end] = np.argmax(y_batch, axis=-1)
+
+        mean_loss = float(total_loss / total_count)
+        mean_acc = total_acc / total_count
+
+        self.error.append(mean_loss)
+        self.accuracy.append(mean_acc)
+
+        if mchx:
+            errata = (predictions == t_sample)
+            return mean_loss, mean_acc, errata, predictions
+
+        return mean_loss, mean_acc
+
+    def _sample_data(self, x, t, n=None, shuffle=True):
+        data_size = len(x)
+
+        if n is None or n >= data_size:
+            return x, t
+
+        indices = np.arange(data_size)
+        if shuffle:
+            np.random.shuffle(indices)
+
+        indices = indices[:n]
+        return x[indices], t[indices]
+
+    def _forward_and_loss(self, x_batch, t_batch):
+        if self.bind:
+            y_batch, loss_batch = self.model.forward(x_batch, t_batch)
+        else:
+            y_batch = self.model.forward(x_batch)
+            loss_batch = self.model.loss_function.forward(y_batch, t_batch)
+
+        return y_batch, loss_batch
+
+    def progress(self):
+        return self.error, self.accuracy
+
+    def graph(self):
+        graph_for_error(self.error, self.accuracy)
+
+
+
+class Mesurement(Measurement):
+    def __init__(self, *args, **kwargs):
+        warnings.warn('Call Measurement instead of Mesurement.')
+        super().__init__(*args, **kwargs)
+
+class Mesurement_bkup:
     def __init__(self, model, get_acc=None, batch_size=200, bind=False):
         self.model = model
         if get_acc is not None:
@@ -1162,7 +1247,7 @@ class Mesurement:
         self.batch_size = batch_size
         self.bind = bind
     
-    def __call__(self, x, t, n=None, shuffle=True):
+    def __call__(self, x, t, n=None, shuffle=True, mchx=False):
         if n is None or n > len(x): # 指定しないか、データ数より大きな数を指定した場合        
             n = len(x)
             x_sample = x
@@ -1180,7 +1265,8 @@ class Mesurement:
             t_sample = t[index_rand]
 
         ln = 0; an = 0; nn = 0
-        n2 = n if n < self.batch_size else self.batch_size  
+        n2 = n if n < self.batch_size else self.batch_size
+        rt = np.empty(n)
         for i in range(0, n, n2):
             xi = x_sample[i:i+n2]
             ti = t_sample[i:i+n2]
@@ -1194,11 +1280,21 @@ class Mesurement:
             ln += li * ni
             an += ai * ni
             nn += ni
+
+            if mchx:
+                rt[i:i+n2] = np.argmax(yi, axis=-1) # 結果ターゲットid     
+            
         l   = ln / nn
         acc = an / nn
 
         self.error.append(float(ln / nn))
         self.accuracy.append(an / nn)
+
+        if mchx: # 正誤表を要求された場合
+            errata = np.array(rt==t_sample, dtype=bool) # 正誤表(ブール値)
+            rt = rt.astype(int)
+            return float(ln / nn), an / nn, errata, rt
+        
         return float(ln / nn), an / nn
 
     def __call__bkup(self, x, t, n=None):
@@ -2562,8 +2658,8 @@ def show_sample(data, label=None, shape=None):
     plt.show()
 
 # -- 複数サンプルを表示(端数にも対応) --
-def show_multi_samples(data, n=(10,5), label_list=None, target=None,
-                       figsize=(18, 10), maxis=(1,2,3),
+def show_multi_samples(data, target=None, label_list=None, 
+                       n=(10,5), figsize=(18, 10), maxis=(1,2,3),
                        save=False, file=None,
                        ):
     # 画素データを0～1に補正

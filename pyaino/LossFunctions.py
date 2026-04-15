@@ -1,28 +1,49 @@
 # LossFunctions
-# 2025.08.17 A.Inoue
+# 2026.04.14 A.Inoue
 from pyaino.Config import *
 from pyaino import nucleus
 from pyaino import Functions as F
 import warnings
 
 class LossFunctionBase(nucleus.Function):
-    def __init__(self, axis=None, **kwargs):
+    def __init__(self, axis=None, label2onehot=False, onehot2label=False):
         super().__init__()
         self.t = None
         self.k = None
         self.axis = axis # 指定した軸について損失を合算する
+        self.label2onehot = label2onehot
+        self.onehot2label = onehot2label
         pass
 
     def __forward__(self, y, t):
-        self.t = t # 従来互換のため
         self.k = y.size if self.axis is None else y.size//y.shape[self.axis]
-        l = self._forward(y, t)
+
+        if self.label2onehot and y.shape != t.shape: # tが正解ラベル 
+            self.t = np.eye(y.shape[-1], dtype=Config.dtype)[t]
+        elif self.onehot2label and y.shape == t.shape: # tがone_hot
+            self.t = np.argmax(t, axis=self.axis)
+            warnings.warn('Given target is one_hot. Target category recommended.')
+        else:
+            self.t = t
+            
+        if self.onehot2label and y.ndim > 2:
+            y = y.reshape(-1, y.shape[-1])
+            self.t = self.t.reshape(-1)
+
+        l = self._forward(y, self.t)
         return l / self.k
 
     def __backward__(self, gl=1):
-        y, t = self.inputs
-        gy = self._backward(gl, y, t)
+        y, _ = self.inputs # yは元のまま、tは成型後のものを使う
+        y_shape = y.shape
+
+        if self.onehot2label and y.ndim > 2:
+            y = y.reshape(-1, y.shape[-1])
+
+        gy = self._backward(gl, y, self.t)
         gy /= self.k
+
+        gy.reshape(*y_shape)
         return gy.astype(Config.dtype)
 
     def __call__(self, *args, **kwargs):
@@ -39,8 +60,8 @@ class MeanSquaredError(LossFunctionBase):
         return gl * (y - t)
 
 class CrossEntropyError(LossFunctionBase):
-    def __init__(self, axis=-1, **kwargs):
-        super().__init__(axis=axis, **kwargs)
+    def __init__(self, axis=-1, label2onehot=True):
+        super().__init__(axis=axis, label2onehot=label2onehot)
 
     def _forward(self, y, t):
         return - np.sum(t * np.log(y + 1e-7))        # メモリ使用量削減のため演算順序拘束
@@ -59,21 +80,14 @@ class CrossEntropyError2(LossFunctionBase):
         return gl * ((y - t) / (y * (1 - y) + 1e-7)) # メモリ使用量削減のため演算順序拘束
 
 class CrossEntropyErrorMasked(LossFunctionBase):
-    def __init__(self, axis=-1, ignore=None):
-        super().__init__(axis=axis)
+    def __init__(self, axis=-1, ignore=None, onehot2label=True):
+        super().__init__(axis=axis, onehot2label=onehot2label)
         self.ignore_label = ignore
         self.valid_mask = None
         self.valid_rate = None
 
     def _forward(self, y, t):
         """ y:probabilities確率、t:正解値ラベルから交差エントロピーを求める """
-        if y.shape==t.shape: # tがone_hotの場合
-            t = np.argmax(t, axis=self.axis)
-            warnings.warn('Given target is one_hot. Target category recommended.')
-        if y.ndim > 2:
-            y = y.reshape(-1, y.shape[-1])
-            t = t.reshape(-1)
-
         if self.ignore_label is not None:
             self.valid_mask = (t != self.ignore_label)
         else:
@@ -88,20 +102,14 @@ class CrossEntropyErrorMasked(LossFunctionBase):
 
     def _backward(self, gl, y, t):
         """ y:probabilitiesに対する勾配gyを返す """
-        y_shape = y.shape
-        if y.shape==t.shape: # tがone_hotの場合
-            t = np.argmax(t, axis=self.axis)
-        if y.ndim > 2:
-            y = y.reshape(-1, y.shape[-1])
-            t = t.reshape(-1)
         gy = np.zeros_like(y)
         gy[range(len(t)), t] = -1 / y[range(len(t)), t]
         gy[~self.valid_mask] = 0
-        return gy.reshape(*y_shape) / self.valid_rate
+        return gy / self.valid_rate
 
 class CrossEntropyErrorForLogits(LossFunctionBase):
-    def __init__(self, axis=-1, ignore=None):
-        super().__init__(axis=axis)
+    def __init__(self, axis=-1, ignore=None, onehot2label=True):
+        super().__init__(axis=axis, onehot2label=onehot2label)
         self.ignore = ignore
         self.log_probs = None
         self.t = None
@@ -110,12 +118,6 @@ class CrossEntropyErrorForLogits(LossFunctionBase):
         self.valid_rate = None
 
     def _forward(self, y, t):
-        if y.shape==t.shape: # tがone_hotの場合
-            t = np.argmax(t, axis=self.axis)
-            warnings.warn('Given target is one_hot. Target category recommended.')
-        if y.ndim > 2:
-            y = y.reshape(-1, y.shape[-1])
-            t = t.reshape(-1)
         B, num_classes = y.shape
 
         max_y = np.max(y, axis=1, keepdims=True)
@@ -137,17 +139,10 @@ class CrossEntropyErrorForLogits(LossFunctionBase):
         return loss / self.valid_rate
 
     def _backward(self, gl, y, t):
-        y_shape = y.shape
-        if y.shape==t.shape: # tがone_hotの場合
-            t = np.argmax(t, axis=self.axis)
-        if y.ndim > 2:
-            y = y.reshape(-1, y.shape[-1])
-            t = t.reshape(-1)
         grad = np.exp(self.log_probs)    # softmax 相当
         grad[range(len(t)), self.safe_t] -= 1.0
         grad *= self.mask[:, np.newaxis] # ignore ラベルの勾配を 0 に
-
-        return grad.reshape(*y_shape) / self.valid_rate
+        return grad / self.valid_rate
 
 class CrossEntropyErrorMasked_bkup(LossFunctionBase):
     def __init__(self, axis=-1, **kwargs):
@@ -477,6 +472,7 @@ if __name__=='__main__':
         plt.plot(y.tolist(), label='y')
         plt.plot(t.tolist(), label='t')
         plt.plot(gy.tolist(), label='gy')
+        plt.title(type(loss).__name__)
         plt.legend()
         plt.show()
 

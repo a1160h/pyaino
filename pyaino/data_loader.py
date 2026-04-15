@@ -1,5 +1,5 @@
 # data_loader
-# 2026.04.14 A.Inoue
+# 2026.04.15 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -171,8 +171,13 @@ class ImageLoader:
 
 
     def __getitem__(self, idx):
+        """
+        与えられたidxに対応するデータを返す
+        idxは環境依存のnpあるいは非依存のnumpyの両方に対応するが、内部の処理はnumpy
+
+        """
         # --- 単一 index ---
-        if isinstance(idx, (int, numpy.integer)):
+        if isinstance(idx, (int, numpy.integer, np.integer)):
             item = self._load_item(int(idx))
 
             if isinstance(item, tuple):
@@ -190,9 +195,13 @@ class ImageLoader:
         elif isinstance(idx, slice):
             indices = list(range(*idx.indices(self.data_size)))
 
-        # --- list / ndarray ---
-        elif isinstance(idx, (list, tuple, numpy.ndarray)):
+        # --- list / tuple ---
+        elif isinstance(idx, (list, tuple)):
             indices = list(idx)
+
+        # --- ndarray ---
+        elif isinstance(idx, (numpy.ndarray, np.ndarray)):
+            indices = idx.tolist()
 
         else:
             raise TypeError(f"Unsupported index type: {type(idx)}")
