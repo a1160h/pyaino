@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.10 A.Inoue
+# 2026.04.16 A.Inoue
 
 import copy
 import warnings
@@ -691,12 +691,21 @@ class BaseLayer(Function):
 
     def align_output(self, y):
         self.did_reshape_y = False
-        if self.typeid == 0 and not self.full_cnnt: # NNの出力形状のままではない
-            m, n = self.config
-            y = y.reshape((-1,) + self.original_x_shape[1:-1] + (n,)) 
-            self.did_reshape_y = True
-        return y     
+        if self.typeid != 0:
+            return y
+        # 以下はtypeid==0の場合
+        if self.full_cnnt:
+            return y
         
+        if len(self.original_x_shape) > 2: # x.ndim > 2
+            raise ValueError(
+                f"x.shape={self.original_x_shape} bad. May need to set full_connection be True.")
+        # 元のxの形状にyの形状を合せる
+        m, n = self.config
+        y = y.reshape((-1,) + self.original_x_shape[1:-1] + (n,)) 
+        self.did_reshape_y = True
+        return y     
+            
 
     def __forward__(self, x, residual=None, *, train=False, dropout=0.0):
         # 残差接続の有無と入力の対応チャック

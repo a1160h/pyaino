@@ -1,5 +1,5 @@
 # UNet
-# 20260412 A.Inoue
+# 20260416 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -12,17 +12,17 @@ import warnings
 import copy
 
 class ConvBlock:
-    def __init__(self, out_ch, proj=False, 
+    def __init__(self, out_ch, stride=1, proj=False, 
                  residual=False, activate=(None, None), pre_activation=False, 
                  **kwargs):
-        print('__init__', self.__class__.__name__, out_ch, kwargs)
+        print('__init__', self.__class__.__name__, out_ch, stride, kwargs)
         self.out_ch = out_ch
         # Conv 本体（bottleneck 構造）
         self.convs = [
-            nn.Conv2dLayer(out_ch, 3, 1,
+            nn.Conv2dLayer(out_ch, 3, stride, 1,
                            activate=activate[0], pre_activation=pre_activation,
                            **kwargs),
-            nn.Conv2dLayer(out_ch, 3, 1,
+            nn.Conv2dLayer(out_ch, 3, 1, 1,
                            activate=activate[1], pre_activation=pre_activation,
                            residual=residual, # 残差接続の注入点
                            **kwargs)
@@ -38,7 +38,7 @@ class ConvBlock:
         self.residual = residual      # 残差接続の有無 
         #self.shortcut = None          # 残差接続の機構
         if residual:    
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, 0, **opt_for_opt)
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
         #self.shortcut_option = kwargs # 遅延初期化Lazy Initializationに渡す
     
     def forward(self, x, v=None, train=True):
@@ -80,7 +80,7 @@ class ConvBlockBottleneck(ConvBlock):
     - mid_ch -> mid_ch (3x3)
     - mid_ch -> out_ch (1x1)
     """
-    def __init__(self, out_ch, proj=False, bottleneck_ratio=0.5, min_mid_ch=16,
+    def __init__(self, out_ch, stride=1, proj=False, bottleneck_ratio=0.5, min_mid_ch=16,
                  residual=False, activate=(None, None, None), pre_activation=False,
                  **kwargs):
         print('__init__', self.__class__.__name__, out_ch,
@@ -92,13 +92,13 @@ class ConvBlockBottleneck(ConvBlock):
 
         # Conv 本体（bottleneck 構造）
         self.convs = [
-            nn.Conv2dLayer(mid_ch, 1, 0,# 1x1: in_ch  -> mid_ch
+            nn.Conv2dLayer(mid_ch, 1, 1, 0,# 1x1: in_ch  -> mid_ch
                            activate=activate[0], pre_activation=pre_activation,
                            **kwargs), 
-            nn.Conv2dLayer(mid_ch, 3, 1,# 3x3: mid_ch -> mid_ch（padding=1 前提）
+            nn.Conv2dLayer(mid_ch, 3, stride, 1,# 3x3: mid_ch -> mid_ch（padding=1 前提）
                            activate=activate[1], pre_activation=pre_activation,
                            **kwargs), 
-            nn.Conv2dLayer(out_ch, 1, 0,# 1x1: mid_ch -> out_ch
+            nn.Conv2dLayer(out_ch, 1, 1, 0,# 1x1: mid_ch -> out_ch
                            activate=activate[2], pre_activation=pre_activation,
                            residual=residual, # 残差接続の注入点
                            **kwargs),
@@ -114,7 +114,7 @@ class ConvBlockBottleneck(ConvBlock):
         self.residual = residual
         #self.shortcut = None          # 残差接続の機構
         if residual:
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, 0, **opt_for_opt)
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
         #self.shortcut_option = kwargs # 遅延初期化Lazy Initializationに渡す
 
     def forward(self, x, v=None, train=True):
@@ -397,6 +397,7 @@ class UNet:
 
 class UNet2:
     """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
+    # down/bot/up 個別にbottleneck率を指定できるように拡張
     def __init__(self, depth=3, in_ch=None, base_ch=32,
         bottleneck=True, bottleneck_ratio=0.5,
         **kwargs):
