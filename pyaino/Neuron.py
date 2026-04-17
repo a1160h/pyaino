@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.16 A.Inoue
+# 2026.04.17 A.Inoue
 
 import copy
 import warnings
@@ -364,11 +364,11 @@ class LinearLayer(Function):
             m, n = None, None
         self.config = m, n                                # m:入力幅、n:ニューロン数
         print('Initialize', self.__class__.__name__, self.config)
-        matmul          = kwargs.pop('matmul',     False) # MatMulLinearを使う
+        self.matmul     = kwargs.pop('matmul',     False) # MatMulLinearを使う
         self.bias       = kwargs.get('bias',        True) # dot_linearのbias有無
         self.scale      = kwargs.get('scale',      False) # ReParameteraization
         self.parameters = WeightsAndBiases(self, **kwargs)
-        self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
+        self.dot_linear = F.ScaleDotLinear(self.matmul, self.bias, self.scale)
         self.prephase   = PrePhase(self, **kwargs) 
 
     def update(self, eta=0.001, **kwargs):
@@ -376,7 +376,7 @@ class LinearLayer(Function):
         self.prephase.update(eta=eta, **kwargs)
         
     def fix_configuration(self, shape):
-        if self.dot_linear.matmul:
+        if self.matmul:
             m = shape[-1]
         else:
             m = 1
@@ -613,7 +613,7 @@ class BaseLayer(Function):
     def __init__(self, **kwargs):
         super().__init__()
         print('Initialize', self.__class__.__name__, self.config)
-        matmul            = kwargs.pop('matmul',          False) # MatMulLinearを使う 
+        self.matmul       = kwargs.pop('matmul',          False) # MatMulLinearを使う 
         self.bias         = kwargs.get('bias',             True) # dot_linearのbias有無
         self.scale        = kwargs.get('scale',           False) # ReParameteraization
         self.full_cnnt    = kwargs.pop('full_connection', False) # 全結合層を明示
@@ -622,7 +622,7 @@ class BaseLayer(Function):
         self.use_residual = kwargs.pop('residual',        False) # 残差接続の有無
                                                                  # postphaseにも渡す
         self.parameters = WeightsAndBiases(self, **kwargs)
-        self.dot_linear = F.ScaleDotLinear(matmul, self.bias, self.scale)
+        self.dot_linear = F.ScaleDotLinear(self.matmul, self.bias, self.scale)
 
         # カテゴリ辞書はここで作る
         if not BaseLayer.categories:
@@ -646,8 +646,11 @@ class BaseLayer(Function):
 
         self.original_x_shape  = None # この層が受け取るxの元の形状
         self.canonical_x_shape = None # この層が内部で扱う正準なxの形状
+        self.canonical_y_shape = None # この層で処理したままのyの内部的な形状
+        self.final_y_shape     = None # この層が外部に出す最終的なyの形状
         self.did_reshape_x = None
         self.did_reshape_y = None
+        self.feature_axis_preserved = None # 特徴次元を保っているかを示す
 
     def fix_configuration(self, shape):
         raise NotImplementedError('fix_configuration method for BaseLayer')
@@ -683,28 +686,38 @@ class BaseLayer(Function):
             self.canonical_x_shape = c_shape
 
         self.did_reshape_x = False
-        if x.shape[1:] == self.canonical_x_shape[1:]: # 合致していればそのまま
+        self.feature_axis_preserved = None # 元の最後の軸がそのまま特徴次元か？
+
+        if x.shape[1:] == self.canonical_x_shape[1:]:
+            self.feature_axis_preserved = True
             return x
         else:
-            self.did_reshape_x = True 
+            self.did_reshape_x = True
+            self.feature_axis_preserved = (x.shape[-1]==self.config[0])
             return x.reshape(*self.canonical_x_shape)
 
     def align_output(self, y):
+        self.final_y_shape     = y.shape
+        self.canonical_y_shape = y.shape
         self.did_reshape_y = False
+        # NeuronLayerだけの特殊事情
         if self.typeid != 0:
             return y
         # 以下はtypeid==0の場合
         if self.full_cnnt:
             return y
         
-        if len(self.original_x_shape) > 2: # x.ndim > 2
-            raise ValueError(
-                f"x.shape={self.original_x_shape} bad. May need to set full_connection be True.")
-        # 元のxの形状にyの形状を合せる
-        m, n = self.config
-        y = y.reshape((-1,) + self.original_x_shape[1:-1] + (n,)) 
-        self.did_reshape_y = True
-        return y     
+        if (not self.did_reshape_x) and self.feature_axis_preserved:
+            return y
+        
+        # 元のxの形状に応じて最終的なyの形状を決める
+        if self.did_reshape_x and self.feature_axis_preserved:
+            self.final_y_shape = (-1,) + self.original_x_shape[1:-1] + self.config[1]
+            self.did_reshape_y = True
+            return y.reshape(self.final_y_shape)
+        
+        raise ValueError(
+          f"x.shape={self.original_x_shape} bad. May need to set 'full_connection=True'.")
             
 
     def __forward__(self, x, residual=None, *, train=False, dropout=0.0):
@@ -740,8 +753,7 @@ class BaseLayer(Function):
         grad_x = self.prephase.backward(grad_x)
         
         if self.did_reshape_x:
-            x, = self.inputs 
-            grad_x = grad_x.reshape(*x.shape)
+            grad_x = grad_x.reshape(*self.original_x_shape)
             
         if not self.use_residual:
             return grad_x
@@ -904,7 +916,7 @@ class NeuronLayer(BaseLayer): # ニューロンの基本機能
         super().__init__(**kwargs)
 
     def fix_configuration(self, shape):
-        if self.dot_linear.matmul:
+        if self.matmul:
             m = shape[-1]
         else:
             m = 1
