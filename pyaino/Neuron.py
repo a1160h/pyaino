@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.17 A.Inoue
+# 2026.04.18 A.Inoue
 
 import copy
 import warnings
@@ -691,28 +691,26 @@ class BaseLayer(Function):
         if x.shape[1:] == self.canonical_x_shape[1:]:
             self.feature_axis_preserved = True
             return x
-        else:
-            self.did_reshape_x = True
-            self.feature_axis_preserved = (x.shape[-1]==self.config[0])
-            return x.reshape(*self.canonical_x_shape)
+        self.did_reshape_x = True
+        self.feature_axis_preserved = (x.shape[-1]==self.config[0]) # True/False
+        return x.reshape(*self.canonical_x_shape)   # (-1,m)
 
     def align_output(self, y):
-        self.final_y_shape     = y.shape
+        # 仮設定(そのままor後で上書き)
+        self.final_y_shape     = y.shape 
         self.canonical_y_shape = y.shape
         self.did_reshape_y = False
-        # NeuronLayerだけの特殊事情
+        # Convなどは出力は整形しない(そのまま)
         if self.typeid != 0:
             return y
-        # 以下はtypeid==0の場合
-        if self.full_cnnt:
-            return y
         
-        if (not self.did_reshape_x) and self.feature_axis_preserved:
+        # 以下はtypeid==0(NeuronLayer)の場合 
+        if self.full_cnnt or not self.did_reshape_x: # 整形をしない場合
             return y
-        
         # 元のxの形状に応じて最終的なyの形状を決める
         if self.did_reshape_x and self.feature_axis_preserved:
-            self.final_y_shape = (-1,) + self.original_x_shape[1:-1] + self.config[1]
+            m, n = self.config
+            self.final_y_shape = (-1,) + self.original_x_shape[1:-1] + (n,)
             self.did_reshape_y = True
             return y.reshape(self.final_y_shape)
         
