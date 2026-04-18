@@ -1,5 +1,5 @@
 # LossFunctions
-# 2026.04.14 A.Inoue
+# 2026.04.18 A.Inoue
 from pyaino.Config import *
 from pyaino import nucleus
 from pyaino import Functions as F
@@ -43,8 +43,8 @@ class LossFunctionBase(nucleus.Function):
         gy = self._backward(gl, y, self.t)
         gy /= self.k
 
-        gy.reshape(*y_shape)
-        return gy.astype(Config.dtype)
+        gy = gy.reshape(*y_shape).astype(Config.dtype)
+        return gy
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
