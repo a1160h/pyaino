@@ -5,7 +5,8 @@ from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
 import copy
 from functools import reduce
-import itertools 
+import itertools
+import safe_np as snp
 
 class Assign(Function):
     def __forward__(self, x):
@@ -317,7 +318,7 @@ class SumTo(Function):
             if target_shape[i] != x.shape[i]:
                 axis += i,
 
-        y = np.sum(x, axis=axis, keepdims=True) # 下記の為に次元保持
+        y = snp.sum(x, axis=axis, keepdims=True) # 下記の為に次元保持
         self.gy_shape = y.shape                 # backwardで必要(操作したxの形状に)
         y = y.reshape(self.shape)
         return y
@@ -325,7 +326,7 @@ class SumTo(Function):
     def __backward__(self, gy):
         x, = self.inputs 
         gx = gy.reshape(self.gy_shape)          # 先ずは次元数を合わせる
-        gx = np.broadcast_to(gx, x.shape)       # それから所望のbroadcast
+        gx = snp.broadcast_to(gx, x.shape)       # それから所望のbroadcast
         return gx
 
 def sum_to(x, shape):
@@ -337,7 +338,7 @@ class BroadcastTo(Function):
         self.shape = shape
 
     def __forward__(self, x):
-        y = np.broadcast_to(x, self.shape)
+        y = snp.broadcast_to(x, self.shape)
         return y
 
     def __backward__(self, gy):
@@ -403,7 +404,7 @@ class Sum(SumMeanVar):
     """ 和 """
     def __forward__(self, x):
         super().__forward__(x)
-        y = np.sum(x, axis=self.axis, keepdims=self.keepdims)
+        y = snp.sum(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
 def sum(x, axis=None, keepdims=False):
@@ -413,7 +414,7 @@ class Mean(SumMeanVar):
     """ 平均 """
     def __forward__(self, x):
         super().__forward__(x)
-        y = np.mean(x, axis=self.axis, keepdims=self.keepdims)
+        y = snp.mean(x, axis=self.axis, keepdims=self.keepdims)
         return y
     
     def __backward__(self, gy):
@@ -428,13 +429,13 @@ class Var(SumMeanVar):
     """ 分散 """
     def __forward__(self, x):
         super().__forward__(x)
-        y = np.var(x, axis=self.axis, keepdims=self.keepdims)
+        y = snp.var(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
         x, = self.inputs
-        mu = x.mean(axis=self.axis, keepdims=True)
+        mu = snp.mean(x, axis=self.axis, keepdims=True)
         gx = gy * (2/self.n) * (x - mu)
         return gx
 
@@ -445,15 +446,15 @@ class Std(SumMeanVar):
     """ 標準偏差 """
     def __forward__(self, x):
         super().__forward__(x)
-        y = np.std(x, axis=self.axis, keepdims=self.keepdims)
+        y = snp.std(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
         x, = self.inputs
         y = self.get_outputs()
-        mu = x.mean(axis=self.axis, keepdims=True)
-        yr = y.reshape(self.gy_shape)
+        mu = snp.mean(x, axis=self.axis, keepdims=True)
+        yr = snp.reshape(y, self.gy_shape)
         gvar = gy * 0.5 / (yr + 1e-12) # std = sqrt(var) の逆伝播　
         dvar_dx = (2/self.n) * (x - mu)
         gx = gvar * dvar_dx
@@ -466,7 +467,7 @@ class SquareSum(SumMeanVar):
     """ 二乗和 """
     def __forward__(self, x):
         super().__forward__(x)
-        y = np.sum(x**2, axis=self.axis, keepdims=self.keepdims)
+        y = snp.sum(x**2, axis=self.axis, keepdims=self.keepdims)
         return y
 
     def __backward__(self, gy):
@@ -479,7 +480,7 @@ class SquareMean(SumMeanVar):
     """ 二乗平均 """
     def __forward__(self, x):
         super().__forward__(x)
-        y = np.mean(x**2, axis=self.axis, keepdims=self.keepdims)
+        y = snp.mean(x**2, axis=self.axis, keepdims=self.keepdims)
         return y
 
     def __backward__(self, gy):
@@ -492,7 +493,7 @@ class RootSumSquare(SumMeanVar):
     """ 二乗和平方根 """
     def __forward__(self, x):
         super().__forward__(x)
-        sqsm = np.sum(x**2, axis=self.axis, keepdims=self.keepdims)
+        sqsm = snp.sum(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqsm)
         return y
 
@@ -500,7 +501,7 @@ class RootSumSquare(SumMeanVar):
         gy = super().__backward__(gy)
         x, = self.inputs
         y = self.get_outputs()
-        yr = y.reshape(self.gy_shape) # gyと形状を揃える
+        yr = snp.reshape(y, self.gy_shape) # gyと形状を揃える
         gsqsm = gy * 0.5 / (yr + 1e-12)    # RMS = sqrt(sqmu)の逆伝播
         gx = 2 * x * gsqsm
         return gx
@@ -509,7 +510,7 @@ class RootMeanSquare(SumMeanVar):
     """ 二乗平均平方根(RootMeanSquare) """
     def __forward__(self, x):
         super().__forward__(x)
-        sqmu = np.mean(x**2, axis=self.axis, keepdims=self.keepdims)
+        sqmu = snp.mean(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqmu)
         return y
 
@@ -517,7 +518,7 @@ class RootMeanSquare(SumMeanVar):
         gy = super().__backward__(gy)
         x, = self.inputs
         y = self.get_outputs()
-        yr = y.reshape(self.gy_shape) # gyと形状を揃える
+        yr = snp.reshape(y, self.gy_shape) # gyと形状を揃える
         gsqmu = gy * 0.5 / (yr + 1e-12)    # RMS = sqrt(sqmu)の逆伝播
         gx = (1/self.n) * 2 * x * gsqmu
         return gx
@@ -599,22 +600,22 @@ class MaxMin(Function):
     def __backward__(self, gy):
         """ 逆伝播は共通 """
         gy = gy if isinstance(gy, np.ndarray) else np.array(gy, dtype=Config.dtype) 
-        gy = np.broadcast_to(gy, self.y_shape)   # 先ずはyの形状に合わせる
-        gy = gy.reshape(self.z_shape)            # 次にxに次元を揃える(keepdimsの形状)
+        gy = snp.broadcast_to(gy, self.y_shape)  # 先ずはyの形状に合わせる
+        gy = snp.reshape(gy, self.z_shape)       # 次にxに次元を揃える(keepdimsの形状)
         gx = gy * self.cond                      # yに抽出されたところにgyを入れる
         return gx
 
 class Max(MaxMin):
     """ 最大値を抽出 """
     def __forward__(self, x):
-        y = np.max(x, axis=self.axis, keepdims=self.keepdims)
+        y = snp.max(x, axis=self.axis, keepdims=self.keepdims)
         self.condition(x, y, self.axis)
         return y
 
 class Min(MaxMin):
     """ 最小値を抽出 """
     def __forward__(self, x):
-        y = np.min(x, axis=self.axis, keepdims=self.keepdims)
+        y = snp.min(x, axis=self.axis, keepdims=self.keepdims)
         self.condition(x, y, self.axis)
         return y
 
@@ -624,24 +625,6 @@ class GetItem(Function):
     def __init__(self, slices):
         super().__init__()
         self.slices = slices
-        # 環境に応じた関数の選択
-        try:
-            self.add_at = np.add.at
-            #print('getitemには add.at を使う')
-        except:
-            try:
-                self.add_at = np.scatter_add
-                #print('getitemには scatter_add を使う')
-            except:
-                try:
-                    self.add_at = np._cupyx.scatter_add
-                    #print('getitemには cupyxのscatter_add を使う')
-                except:
-                    def f(x, y, z): # xのyの位置にzを加算する
-                        for i, idx in enumerate(y):
-                            x[idx] += z[i]
-                    self.add_at = f        
-                    #print('getitemはforループで関数を定義して使う')
 
     def __forward__(self, x):
         self.x_shape = x.shape
@@ -651,9 +634,9 @@ class GetItem(Function):
 
     def __backward__(self, gy):
         gy = gy if isinstance(gy, np.ndarray) else np.array(gy, dtype=Config.dtype) 
-        gy = np.broadcast_to(gy, self.y_shape)   # 先ずはyの形状に合わせる
+        gy = snp.broadcast_to(gy, self.y_shape)   # 先ずはyの形状に合わせる
         gx = np.zeros(self.x_shape, dtype=Config.dtype)
-        self.add_at(gx, self.slices, gy)
+        snp.add_at(gx, self.slices, gy)
         return gx
 
 def getitem(x, slices):
@@ -669,12 +652,12 @@ class Transpose_bkup(Function):
             self.axes = axes
 
     def __forward__(self, x):
-        y = np.transpose(x, self.axes)
+        y = snp.transpose(x, self.axes)
         return y
 
     def __backward__(self, gy):
-        axes = np.argsort(np.array(self.axes)) # cupy対応
-        gx = np.transpose(gy, axes.tolist())   # cupy対応 
+        axes = snp.argsort(np.array(self.axes)) # cupy対応
+        gx = snp.transpose(gy, axes.tolist())   # cupy対応 
         return gx
 
 class Transpose(Function):
@@ -691,12 +674,12 @@ class Transpose(Function):
             self.axes, = axes
 
     def __forward__(self, x):
-        y = np.transpose(x, self.axes)
+        y = snp.transpose(x, self.axes)
         return y
 
     def __backward__(self, gy):
-        axes = np.argsort(np.array(self.axes)) # cupy対応
-        gx = np.transpose(gy, axes.tolist())   # cupy対応 
+        axes = snp.argsort(np.array(self.axes)) # cupy対応
+        gx = snp.transpose(gy, axes.tolist())   # cupy対応 
         return gx
 
 def transpose(x, *axes):
@@ -714,12 +697,12 @@ class Reshape(Function):
             self.shape, = shape # タプルにする
         
     def __forward__(self, x):
-        y = np.reshape(x, self.shape)
+        y = snp.reshape(x, self.shape)
         return y
 
     def __backward__(self, gy):
         x, = self.inputs
-        gx = np.reshape(gy, x.shape)
+        gx = snp.reshape(gy, x.shape)
         return gx
 
 def reshape(x, *shape):
@@ -748,8 +731,8 @@ class MatMul(Function):
         x0, x1 = self.inputs
         #x0T = x0.T if x0.ndim <= 2 else x0.transpose(*range(x0.ndim)[:-2], -1, -2)
         #x1T = x1.T if x1.ndim <= 2 else x1.transpose(*range(x1.ndim)[:-2], -1, -2)
-        x0T = x0.T if x0.ndim <= 2 else np.transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
-        x1T = x1.T if x1.ndim <= 2 else np.transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
+        x0T = x0.T if x0.ndim <= 2 else snp.transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
+        x1T = x1.T if x1.ndim <= 2 else snp.transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
         gx0 = np.matmul(gy, x1T)
         gx1 = np.matmul(x0T, gy)
         return gx0, gx1
@@ -774,7 +757,7 @@ class DotLinear(Function):
         gx = dot(gy, w.T)
         gw = dot(x.T, gy)
         if self.bias:
-            gb = np.sum(gy, axis=0)
+            gb = snp.sum(gy, axis=0)
         else:
             gb = None
         return gx, gw, gb
@@ -833,7 +816,7 @@ class MatMulLinear(Function):
         gyf = gy.reshape(-1, gy.shape[-1])
         gw = np.dot(x_T, gyf)
         if self.bias:
-            gb = np.sum(gyf, axis=0)
+            gb = snp.sum(gyf, axis=0)
         else:
             gb = None
         return gx, gw, gb
@@ -853,11 +836,11 @@ class MatMulLinear_bkup(Function):
     def __backward__(self, gy):
         # wやbの次元数
         x, w, b = self.inputs
-        x_T = x.T if x.ndim <= 2 else np.transpose(x, (*range(x.ndim)[:-2], -1, -2))
+        x_T = x.T if x.ndim <= 2 else snp.transpose(x, (*range(x.ndim)[:-2], -1, -2))
         gx = np.matmul(gy, w.T)
         gw = np.matmul(x_T, gy)
         if self.bias:
-            gb = np.sum(gy, axis=0)
+            gb = snp.sum(gy, axis=0)
         else:
             gb = None
         return gx, gw, gb
@@ -881,7 +864,7 @@ class DualDotLinear(Function):
         gw = np.dot(x.T, gy)
         gv = np.dot(r.T, gy)
         if self.bias:
-            gb = np.sum(gy, axis=0)
+            gb = snp.sum(gy, axis=0)
         else:
             gb = None
         return gx, gr, gw, gv, gb
@@ -917,17 +900,17 @@ class ScaleDotLinear(Function):
             gw *= g
         
         if self.bias:
-            gb = np.sum(gyf, axis=0)
+            gb = snp.sum(gyf, axis=0)
         else:
             gb = None
 
         if self.scale:
             if np.abs(g) > self.eps: # 通常
                 z = y - b if self.bias else y # z=g*(x@w)
-                gg = np.sum(z * gy) / g       # gg=Σgy*(x@w)
+                gg = snp.sum(z * gy) / g       # gg=Σgy*(x@w)
             else:                    # gが0に近いときだけ再計算
                 xw = self.dot(x, w)                    
-                gg = np.sum(gy * xw)
+                gg = snp.sum(gy * xw)
         else:
             gg = None
         return gx, gw, gb, gg
@@ -951,8 +934,8 @@ class Normalize(Function):
         self.mask = None
     
     def __forward__(self, x):
-        mu = np.mean(x, axis=self.axis, keepdims=True)
-        sigma = np.std(x, axis=self.axis, keepdims=True)
+        mu = snp.mean(x, axis=self.axis, keepdims=True)
+        sigma = snp.std(x, axis=self.axis, keepdims=True)
         z = x - mu
         y = z / (sigma + self.eps)
         self.sigma = HDArray(sigma)
@@ -971,16 +954,16 @@ class Normalize(Function):
         # y = z / sigma の逆伝播 
         gz = gy / sigma
         gsigma = -gy * y / sigma   # -gy * z / sigma ** 2
-        #gsigma = np.sum(gsigma, axis=self.axis, keepdims=True)
+        #gsigma = snp.sum(gsigma, axis=self.axis, keepdims=True)
         gsigma = sum(gsigma, axis=self.axis, keepdims=True)
         # z = x - mu の逆伝播
         gx0 = gz
-        #gmu = np.sum(-gz, axis=self.axis, keepdims=True)
+        #gmu = snp.sum(-gz, axis=self.axis, keepdims=True)
         gmu = sum(-gz, axis=self.axis, keepdims=True)
-        # mu = np.mean(x) の逆伝播
-        #gx1 = np.broadcast_to(gmu, x.shape) / n
-        gx1 = broadcast_to(gmu, x.shape) / n
-        # sigma = np.std(x) の逆伝播
+        # mu = snp.mean(x) の逆伝播
+        gx1 = snp.broadcast_to(gmu, x.shape) / n
+        #gx1 = broadcast_to(gmu, x.shape) / n
+        # sigma = snp.std(x) の逆伝播
         gx2 = gsigma * y / n   # dvar * dvar_gx = (gsigma * 0.5 / sigma) * ((2/n) * (x - mu))
         gx = gx0 + gx1 + gx2
         return gx * (1 - self.mask) + gy * self.mask
@@ -993,8 +976,8 @@ class NormalizeSimple(Function):
         self.eps = eps
     
     def __forward__(self, x):
-        mu = np.mean(x, axis=self.axis, keepdims=True)
-        sigma = np.std(x, axis=self.axis, keepdims=True)
+        mu = snp.mean(x, axis=self.axis, keepdims=True)
+        sigma = snp.std(x, axis=self.axis, keepdims=True)
         z = x - mu
         y = z / (sigma + self.eps)
         self.sigma = sigma
@@ -1008,13 +991,13 @@ class NormalizeSimple(Function):
         # y = z / sigma の逆伝播 
         gz = gy / sigma
         gsigma = -gy * y / sigma   # -gy * z / sigma ** 2
-        gsigma = np.sum(gsigma, axis=self.axis, keepdims=True)
+        gsigma = snp.sum(gsigma, axis=self.axis, keepdims=True)
         # z = x - mu の逆伝播
         gx0 = gz
-        gmu = np.sum(-gz, axis=self.axis, keepdims=True)
-        # mu = np.mean(x) の逆伝播
-        gx1 = np.broadcast_to(gmu, x.shape) / n
-        # sigma = np.std(x) の逆伝播
+        gmu = snp.sum(-gz, axis=self.axis, keepdims=True)
+        # mu = snp.mean(x) の逆伝播
+        gx1 = snp.broadcast_to(gmu, x.shape) / n
+        # sigma = snp.std(x) の逆伝播
         gx2 = gsigma * y / n   # dvar * dvar_gx = (gsigma * 0.5 / sigma) * ((2/n) * (x - mu))
         return gx0 + gx1 + gx2
 
@@ -1071,8 +1054,8 @@ class Normalize_bkup(Function):
         
     def forward(self, x):
         self.x = x
-        mu =  np.mean(x, axis=self.axis, keepdims=True)
-        std = np.std(x, axis=self.axis, keepdims=True)
+        mu =  snp.mean(x, axis=self.axis, keepdims=True)
+        std = snp.std(x, axis=self.axis, keepdims=True)
         self.mu   = mu
         self.std  = std
         y = (x - mu) / (std + 1e-12)
@@ -1083,9 +1066,9 @@ class Normalize_bkup(Function):
         istd = 1/self.std
         iN = self.mu.size / self.x.size # muおよびstdを求める際に畳んだ大きさ
         xc = self.x - self.mu
-        gy_sum = np.sum(gy * xc, axis=self.axis, keepdims=True)
+        gy_sum = snp.sum(gy * xc, axis=self.axis, keepdims=True)
         gz = (gy - (self.y * gy_sum * istd * iN)) * istd
-        gz_sum = np.sum(gz, axis=self.axis, keepdims=True)
+        gz_sum = snp.sum(gz, axis=self.axis, keepdims=True)
         gx = gz - (gz_sum * iN)
         return gx
 
@@ -1097,7 +1080,7 @@ class L2Normalize_bkup(Function):
     
     def forward(self, x):
         x = np.array(x)
-        l2n = np.sum(x**2, axis=self.axis, keepdims=True)**0.5
+        l2n = snp.sum(x**2, axis=self.axis, keepdims=True)**0.5
         y = x / l2n
         self.x = x
         self.l2n = l2n
@@ -1120,14 +1103,14 @@ class Concatenate(Function):
     def __forward__(self, x0, x1, axis=0):
         self.shapes = x0.shape, x1.shape
         self.axis = axis
-        return np.concatenate((x0, x1), axis=axis)
+        return snp.concatenate((x0, x1), axis=axis)
 
     def __backward__(self, gy=1):
         shapes = self.shapes
         axis= self.axis
-        splits = np.cumsum(np.array([shape[axis] for shape in shapes[:-1]]))
+        splits = snp.cumsum(np.array([shape[axis] for shape in shapes[:-1]]))
         splits = splits.tolist()
-        gx0, gx1 = np.split(gy, splits, axis=axis)
+        gx0, gx1 = snp.split(gy, splits, axis=axis)
         return gx0, gx1
         
 
@@ -1142,10 +1125,10 @@ class ECat(Function):
     def __forward__(self, *xs, axis=0):
         self.n = len(xs)
         self.axis = axis
-        return np.concatenate(xs, axis=axis)
+        return snp.concatenate(xs, axis=axis)
 
     def __backward__(self, gy):
-        return np.split(gy, self.n, axis=self.axis)
+        return snp.split(gy, self.n, axis=self.axis)
 
 def ecat(*args, **kwargs):
     return ECat()(*args, **kwargs)
@@ -1155,10 +1138,10 @@ class Split(Function):
     def __forward__(self, x, n, axis=0):
         self.n = n
         self.axis = axis
-        return np.split(x, n, axis=axis)
+        return snp.split(x, n, axis=axis)
 
     def __backward__(self, *gys):
-        return np.concatenate(gys, axis=self.axis)
+        return snp.concatenate(gys, axis=self.axis)
 
 def split(*args, **kwargs):
     return Split()(*args, **kwargs)
@@ -1178,7 +1161,7 @@ class Tile(Function):
         self.x_shape = None
 
     def __forward__(self, x):
-        y = np.tile(x, self.reps)
+        y = snp.tile(x, self.reps)
         self.x_ndim = x.ndim
         self.x_shape = x.shape
         return y
@@ -1187,7 +1170,7 @@ class Tile(Function):
         gx = gy.reshape(self.x_shape + self.reps) # 元の形に戻すため
         #gx = f.sum_to(gy, self.x_shape)          # 以下は、この動作と同じ
         for ax in self.reps:                      # repsの軸ごとに
-            gx = np.sum(gx, axis=self.x_ndim) 
+            gx = snp.sum(gx, axis=self.x_ndim) 
         return gx
 
 def tile(x, reps):
@@ -1204,11 +1187,11 @@ class Pairwise(Function):
 
     def __forward__(self, x):
         axis = self.axis % x.ndim
-        p = np.expand_dims(x, axis)
-        q = np.expand_dims(x, axis + 1)
+        p = snp.expand_dims(x, axis)
+        q = snp.expand_dims(x, axis + 1)
 
         if self.broadcast:
-            p, q = np.broadcast_arrays(p, q)
+            p, q = snp.broadcast_arrays(p, q)
 
         if self.mask:
             sz = x.shape[axis]
@@ -1219,21 +1202,21 @@ class Pairwise(Function):
             shape[axis + 1] = sz
             self.ne = mask.reshape(shape)
 
-            p = np.where(self.ne, p, 0)
-            q = np.where(self.ne, q, 0)
+            p = snp.where(self.ne, p, 0)
+            q = snp.where(self.ne, q, 0)
 
         return p, q
 
     def __backward__(self, gp, gq):
         if self.mask and self.ne is not None:
-            gp = np.where(self.ne, gp, 0)
-            gq = np.where(self.ne, gq, 0)
+            gp = snp.where(self.ne, gp, 0)
+            gq = snp.where(self.ne, gq, 0)
 
         ndim = gp.ndim
         axis = self.axis % (ndim - 1)
 
-        gxp = np.sum(gp, axis=axis)
-        gxq = np.sum(gq, axis=axis + 1)
+        gxp = snp.sum(gp, axis=axis)
+        gxq = snp.sum(gq, axis=axis + 1)
         gx = gxp + gxq
         return gx
 
@@ -1246,10 +1229,10 @@ class Pairwise_bkup(Function):
         self.mask = diagonal_mask
 
     def __forward__(self, x):
-        p = np.expand_dims(x, self.axis)
-        q = np.expand_dims(x, self.axis-1)
+        p = snp.expand_dims(x, self.axis)
+        q = snp.expand_dims(x, self.axis-1)
         if self.broadcast:
-            p, q = np.broadcast_arrays(p, q)
+            p, q = snp.broadcast_arrays(p, q)
         if self.mask:
             self.ne = ~np.eye(x.shape[self.axis], dtype=bool)
             p *= self.ne
@@ -1260,8 +1243,8 @@ class Pairwise_bkup(Function):
         if self.mask:
             gp *= self.ne
             gq *= self.ne
-        gxp = np.sum(gp, axis=self.axis)
-        gxq = np.sum(gq, axis=self.axis-1)
+        gxp = snp.sum(gp, axis=self.axis)
+        gxq = snp.sum(gq, axis=self.axis-1)
         gx = gxp + gxq
         return gx
 
@@ -1276,7 +1259,7 @@ class UpperTriangle(Function):
         if x.shape[-1] != x.shape[-2]:
             raise ValueError("末尾2軸が正方行列である必要があります")
         N = x.shape[-1]
-        triu_rows, triu_cols = np.triu_indices(N, k=self.k)
+        triu_rows, triu_cols = snp.triu_indices(N, k=self.k)
         self.mask = np.zeros((N, N), dtype=bool)
         self.mask[triu_rows, triu_cols] = True 
         y = x[..., self.mask]
@@ -1297,7 +1280,7 @@ class Take(Function):
         self.fix_add_at()
 
     def __forward__(self, x):
-        y = np.take(x, self.indices, axis=self.axis)
+        y = snp.take(x, self.indices, axis=self.axis)
         return y
 
     def __backward__(self, gy):
@@ -1310,9 +1293,9 @@ class Take(Function):
         
         # 対象軸を一番前に持ってきながら、勾配をindicesの位置に設定
         gx = np.zeros_like(x, dtype=Config.dtype)
-        self.add_at(np.moveaxis(gx, axis, 0),
+        self.add_at(snp.moveaxis(gx, axis, 0),
                     indices,
-                    np.moveaxis(gy_trans, axis, 0))
+                    snp.moveaxis(gy_trans, axis, 0))
         return gx
 
     def fix_add_at(self):
@@ -1404,11 +1387,11 @@ class TakePair(Function):
         if self.take is None:
             self.fix_configuration(x.shape)
         y = self.take(x)
-        y = np.moveaxis(y, self.axis+1, 0) 
+        y = snp.moveaxis(y, self.axis+1, 0) 
         return y[0], y[1]
     
     def __backward__(self, gy0, gy1):
-        gy = np.stack([gy0, gy1], axis=self.axis+1)       
+        gy = snp.stack([gy0, gy1], axis=self.axis+1)       
         gx = self.take.backward(gy)
         return gx
 
@@ -1458,7 +1441,7 @@ class Step(Function):
         self.c = c
         
     def __forward__(self, x):
-        return np.where(x <= self.c, 0, 1)
+        return snp.where(x <= self.c, 0, 1)
 
 def step(x, c=0):
     return Step(c)(x)
@@ -1505,7 +1488,7 @@ class Argmax(Function):
         self.keepdims = keepdims
 
     def __forward__(self, x):
-        return np.argmax(x, axis=self.axis, keepdims=self.keepdims)
+        return snp.argmax(x, axis=self.axis, keepdims=self.keepdims)
 
 class Argmin(Function):
     def __init__(self, axis=None, keepdims=False):
@@ -1514,7 +1497,7 @@ class Argmin(Function):
         self.keepdims = keepdims
 
     def __forward__(self, x):
-        return np.argmin(x, axis=self.axis, keepdims=self.keepdims)
+        return snp.argmin(x, axis=self.axis, keepdims=self.keepdims)
 
 class Argsort(Function):
     def __init__(self, axis=None):
@@ -1522,7 +1505,7 @@ class Argsort(Function):
         self.axis = axis
 
     def __forward__(self, x):
-        return np.argsort(x, axis=self.axis)
+        return snp.argsort(x, axis=self.axis)
 
 ############################################ 
 # 以下、Activatorsから仮移植 
@@ -1551,16 +1534,16 @@ class Tanh(Function):
 
 class Softmax(Function):
     def __forward__(self, x):
-        max_x = np.max(x, axis=-1, keepdims=True) #if dimx>1 else np.max(x)
+        max_x = snp.max(x, axis=-1, keepdims=True) #if dimx>1 else snp.max(x)
         exp_a = np.exp(x - max_x)  # オーバーフロー対策
-        sum_exp_a = np.sum(exp_a, axis=-1, keepdims=True) #if dimx>1 else np.sum(exp_a) 
+        sum_exp_a = snp.sum(exp_a, axis=-1, keepdims=True) #if dimx>1 else snp.sum(exp_a) 
         y = exp_a / (sum_exp_a + 1e-7)
         return y
 
     def __backward__(self, gy): # ソフトマックス本来の逆伝播
         y = self.get_outputs()
         gx = y * gy
-        sumgx = np.sum(gx, axis=-1, keepdims=True)
+        sumgx = snp.sum(gx, axis=-1, keepdims=True)
         gx -= y * sumgx
         return gx
 
