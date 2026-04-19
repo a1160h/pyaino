@@ -20,21 +20,29 @@ class Sequential:
     """ 複数の層を積み上げて一括して扱う """
     def __init__(self, *layers, **kwargs):
         self.layers = [layer for layer in layers]
+        self.error_layer = None
+        self.outputshape = {}
         print(self.layers)
 
     def forward(self, x, **kwargs):
         y = x
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
+            self.error_layer = layer
             y = layer.forward(y, **kwargs)
+            self.outputshape[str(i)+layer.__class__.__name__] = y.shape # デバグ用
+        self.error_layer = None    
         return y
 
     def backward(self, gy=None):
+        self.error_layer = self.layers[-1]
         if gy is None:
             gx = self.layers[-1].backward()
         else:
             gx = self.layers[-1].backward(gy)
         for layer in reversed(self.layers[:-1]):
+            self.error_layer = layer
             gx = layer.backward(gx)
+        self.error_layer = None    
         return gx
 
     def update(self, eta=0.001, **kwargs):
@@ -69,26 +77,34 @@ class SequentialWithLoss:
             raise TypeError("Last layer must be either",
                             "a subclass of LossFunctions or LinearLayerCrossEntropy",
                             f"but {type(layers[-1]).__name__}")
+        self.error_layer = None
+        self.outputshape = {}
         print(self.layers)
 
     def forward(self, x, t=None, **kwargs):
         y = x
         # 最終層以前まで
-        for layer in self.layers[:-1]: 
+        for i, layer in enumerate(self.layers[:-1]): 
+            self.error_layer = layer                                    # デバグ用
             y = layer.forward(y, **kwargs)
-        # 以下、最終層の扱い    
+            self.outputshape[str(i)+layer.__class__.__name__] = y.shape # デバグ用
+        # 以下、最終層の扱い
+        self.error_layer = self.layers[-1]
         if self.type==0:  # 通常の損失関数
             if t is None:    
                 return y
             l = self.layers[-1].forward(y, t)
+            self.error_layer = None 
             return y, l
         if self.type==1:  # LLCE
             if t is None:
                 return self.layers[-1].forward(y)
             y, l = self.layers[-1](y, t)
+            self.error_layer = None 
             return y, l
 
     def backward(self, *args, **kwargs): # 外部の勾配には未対応20260414AI
+        self.error_layer = self.layers[-1]
         if self.type==0:  # 通常の損失関数
             if gy is None:
                 gx = self.layers[-1].backward()
@@ -97,7 +113,9 @@ class SequentialWithLoss:
         if self.type==1:  # LLCE
             gx = self.layers[-1].backward()
         for layer in reversed(self.layers[:-1]):
+            self.error_layer = layer
             gx = layer.backward(gx)
+        self.error_layer = None    
         return gx
 
     def update(self, eta=0.001, **kwargs):

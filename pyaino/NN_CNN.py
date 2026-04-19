@@ -1,5 +1,5 @@
 # NN_CNN
-# 2026.04.07 A.Inoue　
+# 2026.04.19 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -129,6 +129,7 @@ class NN_CNN_Base:
         for layer in reversed(self.layers):
             self.error_layer = layer
             gx = layer.backward(gx)
+        self.error_layer = None    
         return gx
 
     def __call__(self, *args, **kwargs):
