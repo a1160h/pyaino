@@ -1,5 +1,5 @@
 # Activators
-# 2025.09.20 A.Inoue
+# 2026.04.19 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -28,6 +28,8 @@ class Identity(ActivatorBase):
     def __backward__(self, gy): 
         return gy
 
+def identity(x):
+    return Identity()(x)
 
 class Step(ActivatorBase):
     def __init__(self, t=0):
@@ -95,6 +97,9 @@ class Tanh(ActivatorBase):
         gx = gy * (1 - y * y)
         return gx
 
+def tanh(x):
+    return Tanh()(x)
+
 class ReLU(ActivatorBase):
     def __forward__(self, x):
         y = np.maximum(x, 0)
@@ -105,6 +110,9 @@ class ReLU(ActivatorBase):
         gx = gy * (x > 0)
         return gx
     
+def relu(x):
+    return ReLU()(x)
+
 class ReLU_bkup(ActivatorBase):
     def __forward__(self, x):
         y = np.where(x<=0, 0, x)
@@ -114,9 +122,6 @@ class ReLU_bkup(ActivatorBase):
         x, = self.inputs
         gx = gy * np.where(x<=0, 0, 1)
         return gx #.astype(Config.dtype)
-
-def relu(x):
-    return ReLU().__forward__(x)
 
 class LReLU(ActivatorBase):
     def __init__(self, **kwargs):
@@ -132,6 +137,9 @@ class LReLU(ActivatorBase):
         mask = x > 0
         gx = gy * (mask.astype(Config.dtype) + (~mask).astype(Config.dtype) * self.c)
         return gx
+
+def lrelu(x, c=0.01):
+    return LReLU(c=c)(x)
     
 class LReLU_bkup(ActivatorBase):
     def __init__(self, **kwargs):
@@ -162,6 +170,9 @@ class ELU(ActivatorBase):
         gx = gy * np.where(x<=0, (y + self.c), 1)
         return gx #.astype(Config.dtype)
 
+def elu(x):
+    return ELU(c=c)(x)
+
 class Swish(ActivatorBase):
     def __init__(self, eps=1e-7, **kwargs):
         super().__init__()
@@ -187,7 +198,7 @@ class Swish(ActivatorBase):
         return gx
 
 def swish(x, beta=1.0):
-    return Swish(beta).forward(x)
+    return Swish(beta=beta)(x)
 
 class Softplus(ActivatorBase):
     def __forward__(self, x):
@@ -200,7 +211,7 @@ class Softplus(ActivatorBase):
         return gx
 
 def softplus(x):
-    return Softplus().forward(x)
+    return Softplus()(x)
     
 class Mish(ActivatorBase):
     def __init__(self, eps=1e-7, **kwargs):
@@ -219,6 +230,9 @@ class Mish(ActivatorBase):
         ts = y / (x + self.eps)
         gx = gy * (ts + (1 - np.square(ts)) * x / (1 + np.exp(-x))) 
         return gx
+
+def mish(x):
+    return Mish()(x)
 
 class GELU(Function):
     """ GELU "erf"(exact). """
@@ -242,7 +256,7 @@ class GELU(Function):
                     self.erf = np.vectorize(erf)
                     print('Use math for erf and is vectorized.')
                 except:
-                    raise Exception('No erf available on your computer.') 
+                    raise AttributeError('No erf available on your computer.') 
 
         # 定数を用意
         self.c = np.array(np.sqrt(2.0 / np.pi), dtype=Config.dtype)   # √(2/π)
@@ -279,8 +293,10 @@ class GELU(Function):
         
         phi = np.exp(-0.5 * x * x) * self.inv_sqrt2
         gx  = gy * (Phi + x * phi)
-        return gx    
-    
+        return gx
+
+def gelu(x):
+    return GELU()(x)
 
 class GELUap(Function):
     """ GELUap  "tanh" (Hendrycks & Gimpel approx) """
@@ -309,6 +325,9 @@ class GELUap(Function):
         dgelu_dx = 0.5 * (1.0 + t) + 0.5 * x * dt_dx
         return gy * dgelu_dx
 
+def geluap(x):
+    return GELUap()(x)
+
 class Softmax(ActivatorBase):
     def __init__(self, temperature=1.0, **kwargs):
         super().__init__()
@@ -329,6 +348,9 @@ class Softmax(ActivatorBase):
         gx -= y * sumdx
         gx = gx / self.temperature # 温度スケーリング
         return gx
+
+def softmax(x, temperature=1.0):
+    return Softmax(temperature=temperature)(x)
 
 class Softmax2(ActivatorBase):
     def __init__(self, temperature=1.0):
@@ -356,6 +378,9 @@ class Softmax2(ActivatorBase):
             # 逆伝播の計算
             dx[i] = np.dot(jacobian, gy[i])
         return dx / self.temperature  # 温度の影響を考慮
+
+def softmax2(x, temperature=1.0):
+    return Softmax2(temperature=temperature)(x)
 
 class TargetSelector:
     """ ターゲットラベルに対する gather と scatter """
