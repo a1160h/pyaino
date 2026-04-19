@@ -2,122 +2,188 @@
 # 20260418 A.Inoue
 
 from pyaino.Config import *
+if np.__name__ == "cupy":
+    import cupy
+else:
+    cupy = None
+import numpy
+from functools import lru_cache
+
 
 """
-CuPy の高レベル API（cp.reshape, cp.transposeなど）は内部で余計な引数を付けるので使いたくない
-ndarray メソッド（gy.reshape(), gy.transpose()）は Pyaino の自動微分に捕まるので使えない
+CuPy の高レベル API（cp.reshape, cp.transposeなど）は
+内部で余計な引数を付けるので使いたくない
+ndarray メソッド（gy.reshape(), gy.transpose()）は
+pyaino の自動微分に捕まるので使えない
 NumPy の API も使わない
 だから CuPy の低レベル実装（core.core）を使う
-NumPy のときは普通のもの(np.reshape, np.transposeなど)を使う
+NumPy のときは高レベル API (普通のもの np.reshape, np.transposeなど)
+をそのまま使うが、逆にpyainoの自動微分を避ける（安全策）ため、ここで定義
+（本来pyainoの自動微分は変数がHDArrayかどうかを見ているのでこれは安全策）
 
 """
-# NumPy / CuPy のどちらかで動作する安全ラッパー
 
-# safe_np.py
+def _resolve_attr(obj, path):
+    """
+    'a.b.c' のような属性パスを辿って取得する。
+    見つからなければ None を返す。
+    """
+    for attr in path.split("."):
+        obj = getattr(obj, attr, None)
+        if obj is None:
+            return None
+    return obj
 
-import numpy as np
+def _get_cupy12_modules():
+    modules = []
+    for path in ("_core.core", "core.core"):
+        mod = _resolve_attr(cupy, path)
+        if mod is not None:
+            modules.append(mod)
+    return modules
 
-if np.__name__ == 'cupy':
-    # CuPy の低レベル API を取得（12系/13系 両対応）
+def _get_cupy13_modules():
+    modules = []
+    core = getattr(cupy, "_core", None)
+    if core is not None:
+        for attr in dir(core):
+            if attr.startswith("_routines_"):
+                mod = getattr(core, attr, None)
+                if mod is not None:
+                    modules.append(mod)
+    return modules
+
+
+@lru_cache(None)
+def _load_cupy_func(name):
+    """
+    CuPy の内部関数を探索して返す（キャッシュ付き）。
+    見つからなければ cupy.<name> を返す。
+
+    - "reshape" → "reshape", "_reshape" の両方を探索
+    - CuPy 12 / 13+ に対応
+    """
+    if cupy is None:
+        raise RuntimeError(
+            f"_load_cupy_func('{name}') called but CuPy is not available")
+
+    # 候補名
+    candidate_names = (name, f"_{name}")
+
+    # 探索対象モジュール
+    modules = []
+    modules.extend(_get_cupy12_modules())
+    modules.extend(_get_cupy13_modules())
+
+    # 探索
+    for mod in modules:
+        for cand in candidate_names:
+            func = getattr(mod, cand, None)
+            if callable(func):
+                return func
+        
+    # フォールバック
+    func = getattr(cupy, name, None)
+    if callable(func):
+        return func
+
+    raise AttributeError(f"{name} not found in CuPy internals or public API.")
+
+
+# ------------------------------------------------------------
+# NumPy / CuPy の切り替え
+# ------------------------------------------------------------
+if np.__name__ == "cupy":
+    reshape      = _load_cupy_func("reshape")
+    broadcast_to = _load_cupy_func("broadcast_to")
+    moveaxis     = _load_cupy_func("moveaxis")
+    ascontiguousarray = _load_cupy_func("ascontiguousarray")
+    transpose    = _load_cupy_func("transpose")
+
+    # ここからは高レベル API を使う
+    concatenate  = cupy.concatenate
+    stack        = cupy.stack
+    hstack       = cupy.hstack
+    vstack       = cupy.vstack
+    dstack       = cupy.dstack
+    split        = cupy.split
+    tile         = cupy.tile
+    repeat       = cupy.repeat
+
+    sum          = cupy.sum
+    mean         = cupy.mean
+    std          = cupy.std
+    var          = cupy.var
+    prod         = cupy.prod
+    max          = cupy.max
+    min          = cupy.min
+    argmax       = cupy.argmax
+    argmin       = cupy.argmin
+
+    sort         = cupy.sort
+    argsort      = cupy.argsort
+
+    where        = cupy.where
+    clip         = cupy.clip
+    expand_dims  = cupy.expand_dims
+    squeeze      = cupy.squeeze
+
+    triu_indices = cupy.triu_indices
+    tril_indices = cupy.tril_indices
+
+    # --------------------------------------------------------
+    # add.at のフォールバック処理
+    # --------------------------------------------------------
     try:
-        core = np.core.core
-    except Exception:
-        core = np._core.core
-
-    # CuPy の低レベル関数（Pyaino に捕まらず、余計な引数も付かない）
-    reshape      = core.reshape
-    transpose    = core.transpose
-    broadcast_to = core.broadcast_to
-    broadcast_arrays  = core.broadcast_arrays
-    moveaxis     = core.moveaxis
-    sum          = core.sum
-    mean         = core.mean
-    std          = core.std
-    var          = core.var
-    max          = core.max
-    min          = core.min
-    prod         = core.prod
-
-    # 追加分
-    expand_dims  = core.expand_dims
-    squeeze      = core.squeeze
-    clip         = core.clip
-    where        = core.where
-    cumsum       = core.cumsum
-    cumprod      = core.cumprod
-    split        = core.split
-    concatenate  = core.concatenate 
-    stack        = core.stack
-    hstack       = core.hstack
-    vstack       = core.vstack
-    dstack       = core.dstack
-
-    tile         = core.tile
-    repeat       = core.repeat
-    take         = core.take
-    put          = core.put
-    argmax       = core.argmax
-    argmin       = core.argmin
-    sort         = core.sort
-    argsort      = core.argsort
-    ascontiguousarray = core.ascontiguousarray
-    triu_indices = core.triu_indices
-    tril_indices = core.tril_indices
+        add_at = cupy.add.at
+    except AttributeError:
+        try:
+            add_at = cupy.scatter_add
+        except AttributeError:
+            try:
+                import cupyx
+                add_at = cupyx.scatter_add
+            except AttributeError:
+                def add_at(x, y, z):
+                    for idx, val in zip(y, z):
+                        x[idx] += val
 
 else:
-    # NumPy の通常 API（こちらは安全）
-    reshape      = np.reshape
-    transpose    = np.transpose
-    broadcast_to = np.broadcast_to
-    broadcast_arrays  = np.broadcast_arrays
-    moveaxis     = np.moveaxis
-    sum          = np.sum
-    mean         = np.mean
-    std          = np.std
-    var          = np.var
-    max          = np.max
-    min          = np.min
-    prod         = np.prod
-
-    # 追加分
-    expand_dims  = np.expand_dims
-    squeeze      = np.squeeze
-    clip         = np.clip
-    where        = np.where
-    cumsum       = np.cumsum
-    cumprod      = np.cumprod
-    split        = np.split
-    concatenate  = np.concatenate
-
-    stack        = np.stack
-    hstack       = np.hstack
-    vstack       = np.vstack
-    dstack       = np.dstack
-
-    tile         = np.tile
-    repeat       = np.repeat
-    take         = np.take
-    put          = np.put
-    argmax       = np.argmax
-    argmin       = np.argmin
-    sort         = np.sort
-    argsort      = np.argsort
-    ascontiguousarray = np.ascontiguousarray
-    triu_indices = np.triu_indices
-    tril_indices = np.tril_indices
-
-# 環境に応じた関数の選択
-try:
-    add_at = np.add.at
-except:
-    try:
-        add_at = np.scatter_add
-    except:
-        try:
-            add_at = np._cupyx.scatter_add
-        except:
-            def add_at(x, y, z): # xのyの位置にzを加算する
-                for idx, val in zip(y, z):
-                    x[idx] += val
-
+    # NumPy の場合は全部そのまま
+    reshape      = numpy.reshape
+    broadcast_to = numpy.broadcast_to
+    moveaxis     = numpy.moveaxis
+    ascontiguousarray = numpy.ascontiguousarray
+    transpose    = numpy.transpose
     
+    concatenate  = numpy.concatenate
+    stack        = numpy.stack
+    hstack       = numpy.hstack
+    vstack       = numpy.vstack
+    dstack       = numpy.dstack
+    split        = numpy.split
+    tile         = numpy.tile
+    repeat       = numpy.repeat
+
+    sum          = numpy.sum
+    mean         = numpy.mean
+    std          = numpy.std
+    var          = numpy.var
+    prod         = numpy.prod
+    max          = numpy.max
+    min          = numpy.min
+    argmax       = numpy.argmax
+    argmin       = numpy.argmin
+
+    sort         = numpy.sort
+    argsort      = numpy.argsort
+
+    where        = numpy.where
+    clip         = numpy.clip
+    expand_dims  = numpy.expand_dims
+    squeeze      = numpy.squeeze
+    
+    triu_indices = numpy.triu_indices
+    tril_indices = numpy.tril_indices
+
+    add_at = numpy.add.at
