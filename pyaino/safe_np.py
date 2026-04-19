@@ -109,6 +109,7 @@ if np.__name__ == "cupy":
     split        = cupy.split
     tile         = cupy.tile
     repeat       = cupy.repeat
+    take         = cupy.take
 
     sum          = cupy.sum
     mean         = cupy.mean
@@ -164,6 +165,7 @@ else:
     split        = numpy.split
     tile         = numpy.tile
     repeat       = numpy.repeat
+    take         = numpy.take
 
     sum          = numpy.sum
     mean         = numpy.mean

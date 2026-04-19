@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.18 A.Inoue
+# 2026.04.19 A.Inoue
 
 import copy
 import warnings
@@ -11,6 +11,7 @@ from pyaino import Optimizers
 from pyaino import common_function as cf
 from pyaino import LossFunctions as lf
 from pyaino import Functions as F
+from pyaino import safe_np as snp
 from pyaino.nucleus import HDArray
 from pyaino import Regularizers
 from pyaino.Initializer import init_weight
@@ -516,22 +517,6 @@ class LinearLayerCrossEntropy(LinearLayer):
 
 class TileTargetScanner:
     """ LinearLayerCrossEntropyのtile処理用の選択器 """
-    def __init__(self):
-        # 環境に応じた関数の選択
-        try:
-            self.add_at = np.add.at
-        except:
-            try:
-                self.add_at = np.scatter_add
-            except:
-                try:
-                    self.add_at = np._cupyx.scatter_add
-                except:
-                    def f(x, y, z): # xのyの位置にzを加算する
-                        for i, idx in enumerate(y):
-                            x[idx] += z[i]
-                    self.add_at = f        
-    
     def gather(self, zt, t, tile_z, window):
         """ tが処理窓内の時、tile_zからtに対応するlogitを選んでztにセットする """
         start, end = window
@@ -585,7 +570,7 @@ class TileTargetScanner:
         coords = np.where(t_in_tile)
         idx_in_tile = (t[coords] - start).astype(np.int32)
         index_tuple = coords + (idx_in_tile,)
-        self.add_at(tile_gz, index_tuple, value)
+        snp.add_at(tile_gz, index_tuple, value)
         return tile_gz
 
 
@@ -2199,23 +2184,6 @@ class Interpolate2dGeneral_bkup:
 class Interpolate2dNearest(Interpolate2d):
     """ 最近傍アップサンプリング別ルート実装 """
 
-    def __init__(self, scale_factor=None, size=None, mode='nearest'):
-        super().__init__(scale_factor, size, mode)
-        try:
-            self.add_at = np.add.at
-        except:
-            try:
-                self.add_at = np.scatter_add
-            except:
-                try:
-                    self.add_at = np._cupyx.scatter_add
-                except:
-                    def f(x, y, z): # xのyの位置にzを加算する
-                        for i, idx in enumerate(y):
-                            x[idx] += z[i]
-                    self.add_at = f        
-
-
     def __forward__(self, x):
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
@@ -2262,7 +2230,7 @@ class Interpolate2dNearest(Interpolate2d):
         # N 軸だけ Python ループ、H/W は add.at に任せる
         for n in range(B*N):
             #gx_flat[n][h0, w0] += gy_flat[n]
-            self.add_at(gx_flat[n], (ih2, iw2), gy_flat[n])
+            snp.add_at(gx_flat[n], (ih2, iw2), gy_flat[n])
 
         return gx
 
@@ -3052,25 +3020,6 @@ class ParametersForEmbedding:
         self.w, self.grad_w = None, None
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)
 
-        # 環境に応じた関数の選択
-        try:
-            self.add_at = np.add.at
-            print('embeddingには add.at を使う')
-        except:
-            try:
-                self.add_at = np.scatter_add
-                print('embeddingには scatter_add を使う')
-            except:
-                try:
-                    self.add_at = np._cupyx.scatter_add
-                    print('embeddingには cupyxのscatter_add を使う')
-                except:
-                    def f(x, y, z): # xのyの位置にzを加算する
-                        for i, idx in enumerate(y):
-                            x[idx] += z[i]
-                    self.add_at = f        
-                    print('embeddingはforループで関数を定義して使う')
-
     def __call__(self):
         if self.w is None:
             self.init_parameter()
@@ -3110,7 +3059,7 @@ class ParametersForEmbedding:
             self.grad_w = np.zeros_like(self.w, dtype=Config.dtype)
         elif self.grad_w.shape == self.w.shape:
             pass
-        self.add_at(self.grad_w, x, gy)
+        snp.add_at(self.grad_w, x, gy)
            
             
 #### 時系列データをまとめて処理する Embedding層 #######################

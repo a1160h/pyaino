@@ -1,12 +1,12 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20260127 A.Inoue
+# 20260419 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
 import copy
 from functools import reduce
 import itertools
-import safe_np as snp
+from pyaino import safe_np as snp
 
 class Assign(Function):
     def __forward__(self, x):
@@ -688,7 +688,7 @@ def transpose(x, *axes):
 def transpose_bkup(x, axes=(1, 0)):
     return Transpose(axes)(x)
 
-class Reshape(Function):
+class Reshape_bkup(Function):
     def __init__(self, *shape):
         super().__init__()
         if len(shape) > 1:
@@ -704,6 +704,23 @@ class Reshape(Function):
         x, = self.inputs
         gx = snp.reshape(gy, x.shape)
         return gx
+
+class Reshape(Function):
+    def __init__(self, *shape):
+        super().__init__()
+
+        # 正規化：常に tuple[int,...] にする
+        if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+            self.shape = tuple(shape[0])
+        else:
+            self.shape = shape
+
+    def __forward__(self, x):
+        return snp.reshape(x, self.shape)
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        return snp.reshape(gy, x.shape)
 
 def reshape(x, *shape):
     return Reshape(*shape)(x)
