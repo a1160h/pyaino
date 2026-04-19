@@ -1,5 +1,5 @@
 # safe_np.py
-# 20260418 A.Inoue
+# 20260419 A.Inoue
 
 from pyaino.Config import *
 if np.__name__ == "cupy":
@@ -110,6 +110,7 @@ if np.__name__ == "cupy":
     tile         = cupy.tile
     repeat       = cupy.repeat
     take         = cupy.take
+    put          = cupy.put
 
     sum          = cupy.sum
     mean         = cupy.mean
@@ -120,6 +121,10 @@ if np.__name__ == "cupy":
     min          = cupy.min
     argmax       = cupy.argmax
     argmin       = cupy.argmin
+    cumsum       = cupy.cumsum
+    cumprod      = cupy.cumprod
+    einsum       = cupy.einsum
+    
 
     sort         = cupy.sort
     argsort      = cupy.argsort
@@ -166,6 +171,7 @@ else:
     tile         = numpy.tile
     repeat       = numpy.repeat
     take         = numpy.take
+    put          = numpy.put
 
     sum          = numpy.sum
     mean         = numpy.mean
@@ -176,6 +182,9 @@ else:
     min          = numpy.min
     argmax       = numpy.argmax
     argmin       = numpy.argmin
+    cumsum       = numpy.cumsum
+    cumprod      = numpy.cumprod
+    einsum       = numpy.einsum
 
     sort         = numpy.sort
     argsort      = numpy.argsort
