@@ -836,6 +836,41 @@ class CNN_MultiStageStack:
         if self.out is not None:        
             self.out.update(eta=eta, **kwargs)
 
+
+class ResStage:
+    def __init__(self, depth=3, base_ch=16, stride=2,
+                 residual=True, pre_activation=False, **kwargs):
+        
+        activate  = kwargs.pop('activate',  'ReLU')
+        optimize  = kwargs.pop('optimize', 'AdamT')
+        w_decay   = kwargs.pop('w_decay',     0.01)
+        batchnorm = kwargs.pop('batchnorm',   True)
+
+        options = {'residual':residual,
+                   'activate':(activate, activate),
+                   'optimize':optimize,
+                   'w_decay' :w_decay,
+                   'batchnorm':batchnorm}
+        
+        strides = [i%2+1 for i in range(depth)]
+        chanels = [int(base_ch * 2**(0.5*i)) for i in range(depth)]
+        print(strides)
+        print(chanels)
+        if stride not in (1, 2):
+            raise ValueError('Invalid stride specified.')
+
+        self.blocks = nn.Sequential(
+            *[ConvBlock(chanels[i], strides[i], **options)
+              for i in range(depth)]
+            )
+        
+    def forward(self, x, train=True, dropout=0.0):
+        return self.blocks.forward(x, train=train)
+
+    def update(self, **kwargs):
+        self.blocks.update(**kwargs)
+
+
 class ClassificationHead:
     def __init__(self, classes=10, **kwargs):
         options_for_hidden = {'batchnorm'  : kwargs.pop('batchnorm',  False), 

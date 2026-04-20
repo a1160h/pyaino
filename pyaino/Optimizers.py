@@ -1,5 +1,5 @@
 # Optimizers
-# 2026.04.06 A.Inoue
+# 2026.04.20 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -257,7 +257,7 @@ class Momentum(OptimizerBase):
         self.vlcty -= (1 - self.momentum) * (self.vlcty - gradient) # 移動平均　
         return eta * self.vlcty
         
-class Momentum2(OptimizerBase):
+class Momentum2_bkup(OptimizerBase):
     def __init__(self, **kwargs): 
         self.momentum = kwargs.pop('momentum', 0.9)
         super().__init__(**kwargs)
@@ -268,6 +268,19 @@ class Momentum2(OptimizerBase):
             self.vlcty = np.zeros_like(gradient)
         self.vlcty = - eta * gradient + self.momentum * self.vlcty # 次回の前回更新量
         return - self.vlcty
+
+class Momentum2(OptimizerBase):
+    def __init__(self, **kwargs): 
+        self.momentum = kwargs.pop('momentum', 0.9)
+        super().__init__(**kwargs)
+        self.vlcty = None
+        
+    def __call__(self, gradient, eta):
+        if self.vlcty is None:
+            self.vlcty = np.zeros_like(gradient)
+        self.vlcty = self.momentum * self.vlcty + gradient
+        return eta * self.vlcty
+
     
 class RMSProp(OptimizerBase):
     def __init__(self, **kwargs): 
@@ -602,8 +615,8 @@ if __name__ == "__main__":
 
     func = F.Square()
 
-    opts = SGD, Momentum, RMSProp, AdaGrad, Adam, AdamT, AdamTS#, Adam2
-    eta = 0.01
+    opts = SGD, Momentum, Momentum2, RMSProp, AdaGrad, Adam, AdamT, AdamTS#, Adam2
+    eta = 0.001
 
     plt.figure(figsize=(10, 6))
     for o in opts:
