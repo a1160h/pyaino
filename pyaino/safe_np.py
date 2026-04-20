@@ -6,6 +6,12 @@ if np.__name__ == "cupy":
     import cupy
 else:
     cupy = None
+
+try:
+    import cupyx
+except ImportError:
+    cupyx = None
+    
 import numpy
 from functools import lru_cache
 
@@ -89,6 +95,20 @@ def _load_cupy_func(name):
 
     raise AttributeError(f"{name} not found in CuPy internals or public API.")
 
+# ------------------------------------------------------------
+# fallbackの用意
+# ------------------------------------------------------------
+def _fallback_add_at(x, indices, values):
+    for idx, val in zip(indices, values):
+        x[idx] += val
+    return None # x の破壊的更新   
+
+def _fallback_erf(x):
+    # numpyベース fallback（cupy配列なら一度CPUに戻る）
+    if cupy is not None and isinstance(x, cupy.ndarray):
+        return cupy.asarray(np.erf(cupy.asnumpy(x)))
+    else:
+        return np.erf(x)
 
 # ------------------------------------------------------------
 # NumPy / CuPy の切り替え
@@ -140,6 +160,7 @@ if np.__name__ == "cupy":
     # --------------------------------------------------------
     # add.at のフォールバック処理
     # --------------------------------------------------------
+    """
     try:
         add_at = cupy.add.at
     except AttributeError:
@@ -150,9 +171,25 @@ if np.__name__ == "cupy":
                 import cupyx
                 add_at = cupyx.scatter_add
             except AttributeError:
-                def add_at(x, y, z):
-                    for idx, val in zip(y, z):
-                        x[idx] += val
+                add_at = _fall_back_add_at
+    """
+
+    if cupyx is not None and hasattr(cupyx, "scatter_add"):
+        add_at = cupyx.scatter_add
+    elif cupy is not None and hasattr(cupy, "add") and hasattr(cupy.add, "at"):
+        add_at = cupy.add.at
+    else:
+        add_at = _fallback_add_at                
+
+
+    if cupyx is not None and hasattr(cupyx, "scipy") and hasattr(cupyx.scipy, "special"):
+        erf = cupyx.scipy.special.erf
+    elif cupy is not None and hasattr(cupy, "erf"):
+        # 将来版 or 一部環境対策
+        erf = cupy.erf
+    else:
+        erf = _fallback_erf
+
 
 else:
     # NumPy の場合は全部そのまま
@@ -198,3 +235,8 @@ else:
     tril_indices = numpy.tril_indices
 
     add_at = numpy.add.at
+    erf    = numpy.erf
+
+
+
+

@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20260419 A.Inoue
+# 20260420 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -1294,7 +1294,6 @@ class Take(Function):
         super().__init__()
         self.axis = axis
         self.indices = np.array(indices)
-        self.fix_add_at()
 
     def __forward__(self, x):
         y = snp.take(x, self.indices, axis=self.axis)
@@ -1310,29 +1309,10 @@ class Take(Function):
         
         # 対象軸を一番前に持ってきながら、勾配をindicesの位置に設定
         gx = np.zeros_like(x, dtype=Config.dtype)
-        self.add_at(snp.moveaxis(gx, axis, 0),
-                    indices,
-                    snp.moveaxis(gy_trans, axis, 0))
+        snp.add_at(snp.moveaxis(gx, axis, 0),
+                   indices,
+                   snp.moveaxis(gy_trans, axis, 0))
         return gx
-
-    def fix_add_at(self):
-        try:
-            self.add_at = np.add.at
-            print('add.at を使う')
-        except:
-            try:
-                self.add_at = np.scatter_add
-                print('scatter_add を使う')
-            except:
-                try:
-                    self.add_at = np._cupyx.scatter_add
-                    print('cupyxのscatter_add を使う')
-                except:
-                    def f(x, y, z): # xのyの位置にzを加算する
-                        for i, idx in enumerate(y):
-                            x[idx] += z[i]
-                    self.add_at = f        
-                    print('forループで関数を定義して使う')
 
 class Permutations(Function):
     " 多次元配列からaxisの指定する軸で順列を作る "

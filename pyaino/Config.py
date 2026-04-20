@@ -1,9 +1,9 @@
 # Config
 # 20260127 A.Inoue
-try:
-    import cupy as np
-except:
-    import numpy as np
+#try:
+#    import cupy as np
+#except:
+#    import numpy as np
 
 
 class Config:

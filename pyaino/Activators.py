@@ -1,8 +1,9 @@
 # Activators
-# 2026.04.19 A.Inoue
+# 2026.04.20 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
+from pyaino import safe_np as snp # GELUで使うerfをnumpy/cupy両方で提供
 import copy
 
 #### 活性化関数 ######################################################
@@ -236,35 +237,17 @@ def mish(x):
 
 class GELU(Function):
     """ GELU "erf"(exact). """
+    # erf は「誤差関数（Error Function）」を計算する NumPy の関数で、
+    # 主に正規分布の確率計算・統計・物理シミュレーションで使われる特別関数
     def __init__(self, eps=1e-7):
         super().__init__()
-        # 関数erfを用意 
-        try:        # cupy
-            #raise Exception() # for debug 
-            from np._cupyx.scipy.special import erf #as cupy_erf
-            self.erf = erf
-            print('Use cupyx.scipy.special for erf.')
-        except:     # numpy
-            try:    # scipy
-                #raise Exception() # for debyg
-                from scipy.special import erf
-                self.erf = erf
-                print('Use scipy for erf.')
-            except: # math 
-                try:
-                    from math import erf
-                    self.erf = np.vectorize(erf)
-                    print('Use math for erf and is vectorized.')
-                except:
-                    raise AttributeError('No erf available on your computer.') 
-
         # 定数を用意
         self.c = np.array(np.sqrt(2.0 / np.pi), dtype=Config.dtype)   # √(2/π)
         self.inv_sqrt2 = np.array(1.0 / np.sqrt(2.0), dtype=Config.dtype)
         self.eps = eps
 
     def __forward__(self, x):
-        z = self.erf(x * self.inv_sqrt2)
+        z = snp.erf(x * self.inv_sqrt2)
         y = 0.5 * x * (1.0 + z)
         #self.z = z
         return y
@@ -289,7 +272,7 @@ class GELU(Function):
         Phi = np.where(np.abs(x) > self.eps, y / x, 0.5)
         
         # 閉形式の勾配で高速に
-        #Phi = 0.5 * (1.0 + self.erf(x / np.sqrt(2.0)))
+        #Phi = 0.5 * (1.0 + snp.erf(x / np.sqrt(2.0)))
         
         phi = np.exp(-0.5 * x * x) * self.inv_sqrt2
         gx  = gy * (Phi + x * phi)
