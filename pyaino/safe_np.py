@@ -95,6 +95,66 @@ def _load_cupy_func(name):
 
     raise AttributeError(f"{name} not found in CuPy internals or public API.")
 
+def _cupy_reduction_bkup(a, method_name, axis, dtype, out, keepdims):
+    """
+    cupyの関数をndarrayメソッドに落として実行
+    不足するkeepdimsは中で付加、outはサポートせず例外にする
+
+    """
+    method = getattr(a, method_name, None)
+    if method is None:
+        raise AttributeError(f"CuPy ndarray has no method '{method_name}'")
+
+    # CuPy ndarray メソッドは out を受け取れない
+    if out is not None:
+        raise NotImplementedError(f"CuPy ndarray.{method_name} does not support 'out'")
+
+    # CuPy ndarray メソッドは (axis, dtype) のみ
+    res = method(axis, dtype)
+
+    # keepdims を自前で再現
+    if keepdims and axis is not None:
+        if not isinstance(axis, tuple):
+            axes = (axis,)
+        else:
+            axes = axis
+        for ax in sorted(axes):
+            res = cupy.expand_dims(res, ax)
+
+    return res
+
+def _cupy_reduction(a, method_name, axis, dtype, out, keepdims):
+    """
+    cupyの関数をndarrayメソッドに落として実行
+    不足するkeepdimsは中で付加、outはサポートせず例外にする
+
+    """
+    method = getattr(a, method_name, None)
+    if method is None:
+        raise AttributeError(f"CuPy ndarray has no method '{method_name}'")
+
+    # CuPy ndarray メソッドは out を受け取れない
+    if out is not None:
+        raise NotImplementedError(f"CuPy ndarray.{method_name} does not support 'out'")
+
+    # CuPy ndarray メソッドは (axis, dtype) のみ
+    res = method(axis, dtype)
+
+    # --- keepdims の再現 ---
+    if keepdims:
+        if axis is None:
+            # NumPy と同じ：全軸縮約 → (1,1,1,...)
+            return res.reshape((1,) * a.ndim)
+        else:
+            # axis が単数か複数かを正規化
+            axes = axis if isinstance(axis, tuple) else (axis,)
+            for ax in sorted(axes):
+                res = cupy.expand_dims(res, ax)
+
+    return res
+
+
+
 # ------------------------------------------------------------
 # fallbackの用意
 # ------------------------------------------------------------
@@ -132,20 +192,51 @@ if np.__name__ == "cupy":
     take         = cupy.take
     put          = cupy.put
 
-    sum          = cupy.sum
-    mean         = cupy.mean
-    std          = cupy.std
-    var          = cupy.var
-    prod         = cupy.prod
-    max          = cupy.max
-    min          = cupy.min
-    argmax       = cupy.argmax
-    argmin       = cupy.argmin
-    cumsum       = cupy.cumsum
-    cumprod      = cupy.cumprod
+    def sum(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "sum", axis, dtype, out, keepdims)
+
+    def mean(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "mean", axis, dtype, out, keepdims)
+
+    def std(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "std", axis, dtype, out, keepdims)
+
+    def var(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "var", axis, dtype, out, keepdims)
+
+    def prod(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "prod", axis, dtype, out, keepdims)
+
+    def max(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "max", axis, dtype, out, keepdims)
+
+    def min(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "min", axis, dtype, out, keepdims)
+
+    def argmax(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "argmax", axis, dtype, out, keepdims)
+
+    def argmin(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "argmin", axis, dtype, out, keepdims)
+
+    def cumsum(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "cumsum", axis, dtype, out, keepdims)
+
+    def cumprod(a, axis=None, dtype=None, out=None, keepdims=False):
+        return _cupy_reduction(a, "cumprod", axis, dtype, out, keepdims)
+  
+    #mean         = cupy.mean
+    #std          = cupy.std
+    #var          = cupy.var
+    #prod         = cupy.prod
+    #max          = cupy.max
+    #min          = cupy.min
+    #argmax       = cupy.argmax
+    #argmin       = cupy.argmin
+    #cumsum       = cupy.cumsum
+    #cumprod      = cupy.cumprod
     einsum       = cupy.einsum
     
-
     sort         = cupy.sort
     argsort      = cupy.argsort
 

@@ -1571,6 +1571,10 @@ class OverloadContents:
         HDArray.original_reshape = HDArray.reshape
         HDArray.original_transpose = HDArray.transpose
         HDArray.original_mean = HDArray.mean
+        HDArray.original_sum  = HDArray.sum
+        HDArray.original_var  = HDArray.var
+        HDArray.original_std  = HDArray.std
+        
 
     def overload(self):
         HDArray.__neg__  = neg 
@@ -1594,6 +1598,9 @@ class OverloadContents:
         HDArray.reshape = reshape
         HDArray.transpose = transpose
         HDArray.mean = mean
+        HDArray.sum  = sum
+        HDArray.var  = var
+        HDArray.std  = std
 
     def recover(self):
         HDArray.__neg__  = HDArray.original_neg 
@@ -1617,6 +1624,9 @@ class OverloadContents:
         HDArray.reshape = HDArray.original_reshape
         HDArray.transpose = HDArray.original_transpose
         HDArray.mean = HDArray.original_mean
+        HDArray.sum  = HDArray.original_sum
+        HDArray.var  = HDArray.original_var
+        HDArray.std  = HDArray.original_std
 
 def operator_overload():
     OperatorOverload().overload()
