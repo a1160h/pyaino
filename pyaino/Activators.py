@@ -1,5 +1,5 @@
 # Activators
-# 2026.04.20 A.Inoue
+# 2026.04.21 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -320,14 +320,14 @@ class Softmax(ActivatorBase):
         x = x / self.temperature   # 温度スケーリング
         max_x = np.max(x, axis=-1, keepdims=True) #if dimx>1 else np.max(x)
         exp_a = np.exp(x - max_x)  # オーバーフロー対策
-        sum_exp_a = np.sum(exp_a, axis=-1, keepdims=True) #if dimx>1 else np.sum(exp_a) 
+        sum_exp_a = snp.sum(exp_a, axis=-1, keepdims=True) #if dimx>1 else snp.sum(exp_a) 
         y = exp_a / (sum_exp_a + 1e-7)
         return y
 
     def __backward__(self, gy): # ソフトマックス本来の逆伝播
         y = self.get_outputs()
         gx = y * gy
-        sumdx = np.sum(gx, axis=-1, keepdims=True)
+        sumdx = snp.sum(gx, axis=-1, keepdims=True)
         gx -= y * sumdx
         gx = gx / self.temperature # 温度スケーリング
         return gx
@@ -344,7 +344,7 @@ class Softmax2(ActivatorBase):
         """Softmaxの順伝播"""
         x = x / self.temperature  # 温度スケーリング
         x_exp = np.exp(x - np.max(x, axis=-1, keepdims=True))  # オーバーフロー防止
-        y = x_exp / np.sum(x_exp, axis=-1, keepdims=True)
+        y = x_exp / snp.sum(x_exp, axis=-1, keepdims=True)
         return y
     
     def __backward__(self, gy):
@@ -394,7 +394,7 @@ class SoftmaxCrossEntropy(Function):
         # zはlogits, tは正解ラベル
         m = z.max(axis=-1, keepdims=True)
         expz = np.exp(z - m) # 最大値を引いてオーバーフロー対策
-        sum_exp = np.sum(expz, axis=-1, keepdims=True)
+        sum_exp = snp.sum(expz, axis=-1, keepdims=True)
         y = expz / sum_exp
         if t is None:
             return y
@@ -423,7 +423,7 @@ class SoftmaxWithLoss(ActivatorBase):
     def __forward__(self, x):
         y = x - x.max(axis=-1, keepdims=True)
         y = np.exp(y)
-        y /= y.sum(axis=-1, keepdims=True)
+        y /= snp.sum(y, axis=-1, keepdims=True)
         self.x_shape = x.shape  # B,T,V=x.shape
         return y
         
@@ -451,7 +451,7 @@ class SoftmaxWithLossMasked(ActivatorBase):
     def __forward__(self, x):
         y = x - x.max(axis=-1, keepdims=True)
         y = np.exp(y)
-        y /= y.sum(axis=-1, keepdims=True)
+        y /= snp.sum(y, axis=-1, keepdims=True)
         self.x_shape = x.shape  # B,T,V=x.shape
         return y
 
@@ -469,7 +469,7 @@ class SoftmaxWithLossMasked(ActivatorBase):
         mask = (t != self.ignore_label).reshape(-1)
         dx[np.arange(len(t)), t] -= 1     # tの指す所を-1
         if not self.sumup:
-            dx /= mask.sum()         # 評価数(バッチ数の代わり)
+            dx /= snp.sum(mask)         # 評価数(バッチ数の代わり)
         dx *= mask[:, np.newaxis]    # ignore_labelに該当するデータは勾配を0にする
         dx = dx.reshape(*self.x_shape)
         return dx
@@ -483,7 +483,7 @@ class SoftmaxWithLoss2(ActivatorBase):
         #dimx = x.ndim
         max_x = np.max(x, axis=-1, keepdims=True) #if dimx>1 else np.max(x)
         exp_a = np.exp(x - max_x)  # オーバーフロー対策
-        sum_exp_a = np.sum(exp_a, axis=-1, keepdims=True) #if dimx>1 else np.sum(exp_a) 
+        sum_exp_a = snp.sum(exp_a, axis=-1, keepdims=True) #if dimx>1 else snp.sum(exp_a) 
         y = exp_a / (sum_exp_a + 1e-7)
          
         return y

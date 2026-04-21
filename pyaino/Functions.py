@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20260420 A.Inoue
+# 20260421 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -320,12 +320,14 @@ class SumTo(Function):
 
         y = snp.sum(x, axis=axis, keepdims=True) # 下記の為に次元保持
         self.gy_shape = y.shape                 # backwardで必要(操作したxの形状に)
-        y = y.reshape(self.shape)
+        #y = y.reshape(self.shape)
+        y = snp.reshape(y, self.shape)
         return y
 
     def __backward__(self, gy):
         x, = self.inputs 
-        gx = gy.reshape(self.gy_shape)          # 先ずは次元数を合わせる
+        #gx = gy.reshape(self.gy_shape)          # 先ずは次元数を合わせる
+        gx = snp.reshape(gy, self.gy_shape)      # 先ずは次元数を合わせる
         gx = snp.broadcast_to(gx, x.shape)       # それから所望のbroadcast
         return gx
 
@@ -396,8 +398,9 @@ class SumMeanVar(Function):
     def __backward__(self, gy):
         """ 逆伝播:形状のややこしい操作があるので親クラスのbackwardを上書き """
         x, = self.inputs
-        gy = gy.reshape(self.gy_shape)          # gyは次元を合わせる
-        gy = broadcast_to(gy, x.shape)          # 畳まれた分をbroadcastして元に戻す
+        #gy = gy.reshape(self.gy_shape)          # gyは次元を合わせる
+        gy = snp.reshape(gy, self.gy_shape)          # gyは次元を合わせる
+        gy = snp.broadcast_to(gy, x.shape)          # 畳まれた分をbroadcastして元に戻す
         return gy
 
 class Sum(SumMeanVar):
@@ -592,7 +595,8 @@ class MaxMin(Function):
         elif isinstance(axis, int):
             axis = axis,                      
         self.z_shape = [1 if i in axis else s for i, s in enumerate(x.shape)] #xと同次元数のyの形
-        self.cond = x == y.reshape(self.z_shape) # xとyの比較
+        #self.cond = x == y.reshape(self.z_shape) # xとyの比較
+        self.cond = x == snp.reshape(y, self.z_shape) # xとyの比較
 
     def __forward__(self, *args, **kwargs):
         raise NotImplementedError()
@@ -828,9 +832,11 @@ class MatMulLinear(Function):
 
     def __backward__(self, gy):
         x, w, b = self.inputs
-        x_T = x.T if x.ndim <= 2 else x.reshape(-1, x.shape[-1]).T
+        #x_T = x.T if x.ndim <= 2 else x.reshape(-1, x.shape[-1]).T
+        x_T = x.T if x.ndim <= 2 else snp.reshape(x, (-1, x.shape[-1])).T
         gx = np.matmul(gy, w.T)
-        gyf = gy.reshape(-1, gy.shape[-1])
+        #gyf = gy.reshape(-1, gy.shape[-1])
+        gyf = snp.reshape(gy, (-1, gy.shape[-1]))
         gw = np.dot(x_T, gyf)
         if self.bias:
             gb = snp.sum(gyf, axis=0)
@@ -907,8 +913,10 @@ class ScaleDotLinear(Function):
     def __backward__(self, gy):
         x, w, b, g = self.inputs
         y = self.get_outputs()
-        x_T = x.T if x.ndim <= 2 else x.reshape(-1, x.shape[-1]).T
-        gyf = gy.reshape(-1, gy.shape[-1])
+        #x_T = x.T if x.ndim <= 2 else x.reshape(-1, x.shape[-1]).T
+        x_T = x.T if x.ndim <= 2 else snp.reshape(x, (-1, x.shape[-1])).T
+        #gyf = gy.reshape(-1, gy.shape[-1])
+        gyf = snp.reshape(gy, (-1, gy.shape[-1]))
         
         gx = self.dot(gy, w.T)
         gw = self.dot(x_T, gyf)
@@ -936,10 +944,12 @@ class Flatten(Function):
     """ 軸0はバッチとし、それ以下の軸を平坦化 """
     def __forward__(self, x):
         self.x_shape = x.shape
-        return x.reshape(self.x_shape[0], -1)
+        #return x.reshape(self.x_shape[0], -1)
+        return snp.reshape(x, (self.x_shape[0], -1))
 
     def __backward__(self, gy):
-        return gy.reshape(*self.x_shape)
+        #return gy.reshape(*self.x_shape)
+        return snp.reshape(gy, self.x_shape)
         
 class Normalize(Function):
     """ 平均0標準偏差1にする標準化(正規化の一種) """
@@ -1184,7 +1194,8 @@ class Tile(Function):
         return y
 
     def __backward__(self, gy):
-        gx = gy.reshape(self.x_shape + self.reps) # 元の形に戻すため
+        #gx = gy.reshape(self.x_shape + self.reps) # 元の形に戻すため
+        gx = snp.reshape(gy, (self.x_shape + self.reps)) # 元の形に戻すため
         #gx = f.sum_to(gy, self.x_shape)          # 以下は、この動作と同じ
         for ax in self.reps:                      # repsの軸ごとに
             gx = snp.sum(gx, axis=self.x_ndim) 
@@ -1217,7 +1228,7 @@ class Pairwise(Function):
             shape = [1] * p.ndim
             shape[axis] = sz
             shape[axis + 1] = sz
-            self.ne = mask.reshape(shape)
+            self.ne = snp.reshape(mask, shape)
 
             p = snp.where(self.ne, p, 0)
             q = snp.where(self.ne, q, 0)
@@ -1305,7 +1316,8 @@ class Take(Function):
         indices = self.indices.flatten()
         gx = np.zeros_like(x, dtype=Config.dtype)
         # 対称軸を平坦化
-        gy_trans = gy.reshape(*x.shape[:axis], -1, *x.shape[axis+1:])
+        #gy_trans = gy.reshape(*x.shape[:axis], -1, *x.shape[axis+1:])
+        gy_trans = snp.reshape(gy, (*x.shape[:axis], -1, *x.shape[axis+1:]))
         
         # 対象軸を一番前に持ってきながら、勾配をindicesの位置に設定
         gx = np.zeros_like(x, dtype=Config.dtype)
@@ -2128,3 +2140,10 @@ if __name__=='__main__':
     print(z)
     gys = func2.backward()
     print(gys)
+
+
+    print("reshape   =", snp.reshape, getattr(snp.reshape, "__module__", None))
+    print("transpose =", snp.transpose, getattr(snp.transpose, "__module__", None))
+    print("broadcast_to =", snp.broadcast_to, getattr(snp.broadcast_to, "__module__", None))
+    print("expand_dims  =", snp.expand_dims, getattr(snp.expand_dims, "__module__", None))
+

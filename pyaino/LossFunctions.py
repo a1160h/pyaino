@@ -1,7 +1,8 @@
 # LossFunctions
-# 2026.04.18 A.Inoue
+# 2026.04.21 A.Inoue
 from pyaino.Config import *
 from pyaino import nucleus
+from pyaino import safe_np as snp
 from pyaino import Functions as F
 import warnings
 
@@ -54,7 +55,7 @@ class MeanSquaredError(LossFunctionBase):
         super().__init__(axis=axis, **kwargs)
 
     def _forward(self, y, t):
-        return 0.5 * np.sum((y - t) ** 2)
+        return 0.5 * snp.sum((y - t) ** 2)
 
     def _backward(self, gl, y, t):
         return gl * (y - t)
@@ -64,7 +65,7 @@ class CrossEntropyError(LossFunctionBase):
         super().__init__(axis=axis, label2onehot=label2onehot)
 
     def _forward(self, y, t):
-        return - np.sum(t * np.log(y + 1e-7))        # メモリ使用量削減のため演算順序拘束
+        return - snp.sum(t * np.log(y + 1e-7))        # メモリ使用量削減のため演算順序拘束
 
     def _backward(self, gl, y, t):
         return (- gl) * (t / (y + 1e-7))
@@ -74,7 +75,7 @@ class CrossEntropyError2(LossFunctionBase):
         super().__init__(axis=axis, **kwargs)
 
     def _forward(self, y, t):
-        return -np.sum(t*np.log(y+1e-7)+(1-t)*np.log(1-y+1e-7))
+        return -snp.sum(t*np.log(y+1e-7)+(1-t)*np.log(1-y+1e-7))
 
     def _backward(self, gl, y, t):
         return gl * ((y - t) / (y * (1 - y) + 1e-7)) # メモリ使用量削減のため演算順序拘束
@@ -95,8 +96,8 @@ class CrossEntropyErrorMasked(LossFunctionBase):
 
         valid_indices = np.where(self.valid_mask)[0]
         log_y = np.log(y[valid_indices, t[valid_indices]])
-        l = -np.sum(log_y)
-        valid_rate = self.valid_mask.sum() / self.valid_mask.size # 有効部分の比率
+        l = -snp.sum(log_y)
+        valid_rate = snp.sum(self.valid_mask) / self.valid_mask.size # 有効部分の比率
         self.valid_rate = valid_rate
         return l / valid_rate
 
@@ -122,7 +123,7 @@ class CrossEntropyErrorForLogits(LossFunctionBase):
 
         max_y = np.max(y, axis=1, keepdims=True)
         y_stable = y - max_y
-        logsumexp = np.log(np.sum(np.exp(y_stable), axis=1, keepdims=True)) + max_y
+        logsumexp = np.log(snp.sum(np.exp(y_stable), axis=1, keepdims=True)) + max_y
         self.log_probs = y - logsumexp  # log-softmax
 
         if self.ignore is not None:
@@ -133,8 +134,8 @@ class CrossEntropyErrorForLogits(LossFunctionBase):
             self.safe_t = t
 
         nll = -self.log_probs[np.arange(B), self.safe_t] * self.mask
-        loss = np.sum(nll) 
-        self.valid_rate = np.sum(self.mask) / self.mask.size
+        loss = snp.sum(nll) 
+        self.valid_rate = snp.sum(self.mask) / self.mask.size
 
         return loss / self.valid_rate
 
@@ -157,7 +158,7 @@ class CrossEntropyErrorMasked_bkup(LossFunctionBase):
         t = t.reshape(-1, vr)
         if 0 <= self.ignore_label < vr:
             t[:, self.ignore_label] = 0
-        return -np.sum(t * np.log(y + 1e-7))
+        return -snp.sum(t * np.log(y + 1e-7))
            
     def _backward(self, gl, y, t):
         y_shape = y.shape
@@ -233,7 +234,7 @@ class PairwiseGap(nucleus.Function):
         sign = np.sign(self.diffs)
         grad = self.gap_error * sign
 
-        dx = np.sum(grad, axis=-1) - np.sum(grad, axis=-2)
+        dx = snp.sum(grad, axis=-1) - snp.sum(grad, axis=-2)
 
         # バッチスケール調整: (2 / n(n-1)) / batch_size
         batch_size = np.prod(np.array(x.shape[:-1]))
@@ -261,14 +262,14 @@ class PairwiseGap_bkup(nucleus.Function):
         x, = self.inputs
         n = x.shape[0]
         sign = np.sign(self.diffs)
-        grad = gy * (2 / (n * (n - 1))) * np.sum(self.gap_error * sign, axis=1)
+        grad = gy * (2 / (n * (n - 1))) * snp.sum(self.gap_error * sign, axis=1)
         return self.beta * grad
 
 class KullbackLeiblerDivergence():
     def forward(self, mu, log_var):
         self.mu      = mu
         self.log_var = log_var
-        loss = -0.5 * np.sum(1 + log_var - mu**2 - np.exp(log_var))
+        loss = -0.5 * snp.sum(1 + log_var - mu**2 - np.exp(log_var))
         return float(loss) / len(mu)
 
     def backward(self):
@@ -290,7 +291,7 @@ class MeanSquaredErrorForVAE:
         y = y.reshape(*t.shape)
         self.y = y
         self.t = t
-        rec_error = 0.5 * np.sum((y - t) ** 2) 
+        rec_error = 0.5 * snp.sum((y - t) ** 2) 
         return float(rec_error / len(y))
 
     def backward(self, gl=1):
@@ -311,7 +312,7 @@ class CrossEntropyErrorForVAE:
         y = y.reshape(*t.shape)
         self.y = y
         self.t = t
-        rec_error = - 0.5 * np.sum((1 + t)*np.log(0.5 + 0.5*y + 1e-7) \
+        rec_error = - 0.5 * snp.sum((1 + t)*np.log(0.5 + 0.5*y + 1e-7) \
                                  + (1 - t)*np.log(0.5 - 0.5*y + 1e-7)) 
         return float(rec_error / len(y))
 
@@ -333,7 +334,7 @@ class CrossEntropyErrorForVAE2:
         y = y.reshape(*t.shape)
         self.y = y
         self.t = t
-        rec_error = - np.sum(t*np.log(y+1e-7)+(1-t)*np.log(1-y+1e-7))
+        rec_error = - snp.sum(t*np.log(y+1e-7)+(1-t)*np.log(1-y+1e-7))
         return float(rec_error  / len(y))
 
     def backward(self, gl=1):
@@ -350,7 +351,7 @@ class LossFunctionForGAN:
     def forward(self, y, t):
         self.y = y
         self.t = t
-        loss = -np.sum(t * np.log(y + 1e-7) + (1 - t) * np.log(1 - y + 1e-7))
+        loss = -snp.sum(t * np.log(y + 1e-7) + (1 - t) * np.log(1 - y + 1e-7))
         return loss / len(y)
 
     def backward(self, gl=1):
@@ -361,7 +362,7 @@ class LossFunctionForGAN:
 
     def forward_for_gen(self, y):
         self.y = y
-        loss = -np.sum(np.log(1 - y + 1e-7))
+        loss = -snp.sum(np.log(1 - y + 1e-7))
         return loss / len(y)
 
     def backward_for_gen(self, gl=1):
@@ -377,7 +378,7 @@ class LossFunctionForGAN2:
     def forward(self, y, t):
         self.y = y
         self.t = t
-        loss = -np.sum(t * np.log(y + 1e-7) + (1 - t) * np.log(1 - y + 1e-7))
+        loss = -snp.sum(t * np.log(y + 1e-7) + (1 - t) * np.log(1 - y + 1e-7))
         return loss / len(y)
 
     def backward(self, gl=1):
@@ -388,7 +389,7 @@ class LossFunctionForGAN2:
 
     def forward_for_gen(self, y):
         self.y = y
-        loss = -np.sum(np.log(y + 1e-7))
+        loss = -snp.sum(np.log(y + 1e-7))
         return loss / len(y)
 
     def backward_for_gen(self, gl=1):
@@ -404,7 +405,7 @@ class LossFunctionForGAN3:
     def forward(self, y, t):
         self.y = y
         self.t = t
-        loss = -np.sum(t * np.log(y + 1e-7) + (1 - t) * np.log(1 - y + 1e-7))
+        loss = -snp.sum(t * np.log(y + 1e-7) + (1 - t) * np.log(1 - y + 1e-7))
         return loss / len(y)
 
     def backward(self, gl=1):
@@ -415,7 +416,7 @@ class LossFunctionForGAN3:
 
     def forward_for_gen(self, y):
         self.y = y
-        loss = -np.sum(np.log(y + 1e-7) + np.log(1 - y + 1e-7))
+        loss = -snp.sum(np.log(y + 1e-7) + np.log(1 - y + 1e-7))
         return loss / (2 * len(y))
 
     def backward_for_gen(self, gl=1):
@@ -431,7 +432,7 @@ class LossFunctionForGAN4:
     def forward(self, y, t):
         self.y = y
         self.t = t
-        loss = -np.sum(t * y - (1 - t) * y)
+        loss = -snp.sum(t * y - (1 - t) * y)
         return loss / len(y)
 
     def backward(self, gl=1):
@@ -442,7 +443,7 @@ class LossFunctionForGAN4:
 
     def forward_for_gen(self, y):
         self.y = y
-        loss = -np.sum(y)
+        loss = -snp.sum(y)
         return loss / len(y)
 
     def backward_for_gen(self, gl=1):
@@ -478,23 +479,28 @@ if __name__=='__main__':
 
     print('-- test CrossEntropyErrorMasked','-'*20)
     logits = np.arange(24).reshape(2,3,4)
-    t = np.array([[0,1,2],[1,2,-1]])
+    t = np.array([[0,1,2],[1,2,3]])
     print("logits\n", logits)
     print("t\n", t)
     y = np.exp(logits - np.max(logits, axis=-1, keepdims=True))
     y /= np.sum(y, axis=-1, keepdims=True)
     print("y = softmax(logits)\n", y)
-
-    
-    loss_f = CrossEntropyErrorMasked(ignore=-1)
+   
+    loss_f = CrossEntropyErrorMasked(ignore=3)
     print('\ntがターゲットラベルの場合')
     loss = loss_f.forward(y, t)
     print("loss:", loss)
     grad = loss_f.backward()
     print("grad:\n", grad)
 
+    print(loss_f.ignore_label)
+    print(loss_f.valid_mask)
+
     print('\ntがone hotの場合')
     loss = loss_f.forward(y, np.eye(y.shape[-1], dtype=int)[t])
     print("loss:", loss)
     grad = loss_f.backward()
     print("grad:\n", grad)
+
+    print(loss_f.ignore_label)
+    print(loss_f.valid_mask)
