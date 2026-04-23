@@ -1,5 +1,5 @@
 # data_loader
-# 2026.04.15 A.Inoue
+# 2026.04.23 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -465,7 +465,84 @@ class CIFAR10Loader(ImageLoader):
                  'truck']      # 9
         return names
     
-    
+class MNISTLoader(ImageLoader):
+    """
+    MNIST 用ローダ
+
+    data_source : MNIST のディレクトリ
+        例: MNIST/raw/ または ubyte ファイル群を含むディレクトリ
+
+    train=True  -> train-images-idx3-ubyte / train-labels-idx1-ubyte
+    train=False -> t10k-images-idx3-ubyte  / t10k-labels-idx1-ubyte
+    """
+
+    def __init__(self, data_source, train=True,
+                 batch_size=64, prefetch=8, shuffle=True,
+                 resize=None, target_order='CHW', normalize=None,
+                 data_size=None):
+
+        import struct
+
+        if train:
+            image_file = 'train-images.idx3-ubyte'
+            label_file = 'train-labels.idx1-ubyte'
+        else:
+            image_file = 't10k-images.idx3-ubyte'
+            label_file = 't10k-labels.idx1-ubyte'
+
+        image_path = os.path.join(data_source, image_file)
+        label_path = os.path.join(data_source, label_file)
+
+        with open(image_path, 'rb') as f:
+            magic, num, rows, cols = struct.unpack('>IIII', f.read(16))
+            if magic != 2051:
+                raise ValueError(f'Invalid MNIST image file: {image_path}')
+            self.data = numpy.frombuffer(f.read(), dtype=numpy.uint8)
+            self.data = self.data.reshape(num, 1, rows, cols)
+
+        with open(label_path, 'rb') as f:
+            magic, num = struct.unpack('>II', f.read(8))
+            if magic != 2049:
+                raise ValueError(f'Invalid MNIST label file: {label_path}')
+            self.labels = numpy.frombuffer(f.read(), dtype=numpy.uint8)
+
+        if len(self.data) != len(self.labels):
+            raise ValueError('MNIST images and labels size mismatch')
+
+        self.data_size = len(self.data)
+
+        if data_size is not None:
+            self.data = self.data[:data_size]
+            self.labels = self.labels[:data_size]
+            self.data_size = len(self.data)
+
+        super().__init__(
+            batch_size=batch_size,
+            prefetch=prefetch,
+            shuffle=shuffle,
+            resize=resize,
+            source_order='CHW',
+            target_order=target_order,
+            normalize=normalize,
+        )
+
+    def _load_item(self, idx):
+        x = self.data[idx]
+        y = self.labels[idx]
+
+        if self.resize is None:
+            return x, y
+
+        img = Image.fromarray(x[0], mode='L')
+        img = ImageOps.fit(img, self.resize, Image.LANCZOS)
+        x = numpy.asarray(img, dtype=numpy.uint8)
+        x = numpy.expand_dims(x, axis=0)
+
+        return x, y
+
+    def label_names(self):
+        return [str(i) for i in range(10)]
+
 if __name__ == '__main__':
     from pyaino import STL10
 
@@ -541,3 +618,26 @@ if __name__ == '__main__':
     x, t = loader[123]
     l = label_names[int(t)]
     cf.show_sample(x, l, t)
+
+    # MNIST
+    data_source = r'C:\Python312\Lib\site-packages\MNIST'
+
+    loader = MNISTLoader(
+        data_source,
+        train=True,
+        batch_size=50,
+        normalize=False
+    )
+
+    label_names = loader.label_names()
+
+    count = 0
+    for x, y in loader:
+        count += 1
+        print('MNIST', type(x), x.shape, x.dtype, type(y), y.shape, y.dtype)
+        if count > 2:
+            break
+    loader.shutdown()
+
+    cf.show_multi_samples(x, label_list=label_names, target=y)
+

@@ -1,5 +1,5 @@
 # common_function
-# 2026.04.15 A.Inoue 
+# 2026.04.23 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1124,7 +1124,38 @@ def split_train_test(*data, **kwargs):
 
     return train + test # リストの結合
 
-def get_accuracy(y, t, mchx=False, y_label=False):
+def get_accuracy(y, t, mchx=False):#, y_label=False):
+    '''
+    y:順伝播の結果と、対応する t:正解とを与え、分類の正解率を返す
+    mchx=Trueでは正誤表も返す
+    '''
+    if y.ndim == 1 and t.ndim == 1:  # 出力も正解もラベルの場合
+        result  = y
+        correct = t
+        size = len(t)
+    elif t.ndim == y.ndim - 1: # yは各クラスの確率またはlogitsと見なす
+        result = np.argmax(y, axis=-1)
+        correct = t
+        size = t.size 
+    elif t.ndim == y.ndim + 1:
+        result = y
+        correct = np.argmax(t, axis=-1)
+        size = y.size
+    elif t.ndim == y.ndim: # 出力も正解もそのまま扱う(本当はなんだか不明)
+        result  = y
+        correct = t
+        size = y.size #/ y.shape[-1] # 時系列データ対応
+    else:
+        raise ValueError('Wrong dimension of y or t')
+
+    errata = result == correct
+    accuracy = float(np.sum(errata) / size)
+    if mchx:
+        return accuracy, errata
+    else:
+        return accuracy
+
+def get_accuracy_bkup(y, t, mchx=False, y_label=False):
     '''
     y:順伝播の結果と、対応する t:正解とを与え、分類の正解率を返す
     mchx=Trueでは正誤表も返す
@@ -1152,7 +1183,6 @@ def get_accuracy(y, t, mchx=False, y_label=False):
         return accuracy
 
 
-
 class Measurement:
     def __init__(self, model, get_acc=None, batch_size=200, bind=False):
         self.model = model
@@ -1163,8 +1193,14 @@ class Measurement:
         self.error = []
         self.accuracy = []
 
-    def __call__(self, x, t, n=None, shuffle=True, mchx=False):
-        x_sample, t_sample = self._sample_data(x, t, n=n, shuffle=shuffle)
+        if self.bind or hasattr(self.model, 'loss_function'):
+            pass
+        else:
+            raise ValueError(
+                'The loss cannot be calculated. bind=True may needed.')
+
+    def __call__(self, x, t, n=None, shuffle=False, mchx=False):
+        x_sample, t_sample = self.sample_data(x, t, n=n, shuffle=shuffle)
         sample_size = len(x_sample)
 
         total_loss = 0.0
@@ -1178,7 +1214,7 @@ class Measurement:
             x_batch = x_sample[start:end]
             t_batch = t_sample[start:end]
 
-            y_batch, loss_batch = self._forward_and_loss(x_batch, t_batch)
+            y_batch, loss_batch = self.forward_and_loss(x_batch, t_batch)
             acc_batch = self.get_acc(y_batch, t_batch)
 
             batch_count  = len(x_batch)
@@ -1201,7 +1237,7 @@ class Measurement:
 
         return mean_loss, mean_acc
 
-    def _sample_data(self, x, t, n=None, shuffle=True):
+    def sample_data(self, x, t, n=None, shuffle=False):
         data_size = len(x)
 
         if n is None or n >= data_size:
@@ -1214,14 +1250,14 @@ class Measurement:
         indices = indices[:n]
         return x[indices], t[indices]
 
-    def _forward_and_loss(self, x_batch, t_batch):
+    def forward_and_loss(self, x, t):
         if self.bind:
-            y_batch, loss_batch = self.model.forward(x_batch, t_batch)
+            y, loss = self.model.forward(x, t)
         else:
-            y_batch = self.model.forward(x_batch)
-            loss_batch = self.model.loss_function.forward(y_batch, t_batch)
+            y = self.model.forward(x)
+            loss = self.model.loss_function.forward(y, t)
 
-        return y_batch, loss_batch
+        return y, loss
 
     def progress(self):
         return self.error, self.accuracy
@@ -1611,8 +1647,11 @@ def graph_for_error(*data, **kwargs):
     
     else:
         raise Exception('length of data and label mismatch.')
-       
+
     for d, l in zip(data, labels):
+        # リストにndarrayが入った形式の場合にはndarrayを外す
+        if isinstance(d, (list, tuple)) and isinstance(d[0], np.ndarray):
+            d = [x.item() for x in d]
         plt.plot(d, label=l)
     if legend:
         plt.legend()
@@ -3028,10 +3067,12 @@ def picture_varying_latent_variables(func, nz, C, Ih, Iw, axis=(0,1), n=81,
             x = offset.copy()
             x[axis[0]] = float(zi)
             x[axis[1]] = float(zj)
+
+            image = func(x.reshape(1, -1)) # 仮処置20260423AI
             if C <= 1:
-                image = func(x).reshape(Ih, Iw)
+                image = image.reshape(Ih, Iw)
             else:
-                image = func(x).reshape(C, Ih, Iw).transpose(1, 2, 0)
+                image = image.reshape(C, Ih, Iw).transpose(1, 2, 0)
             image = 1 - image if reverse==True else image
             image = (image - np.min(image)) / (np.max(image) - np.min(image)) # 画像をはっきり
             top  = i*Ih_spaced
