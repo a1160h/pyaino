@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.19 A.Inoue
+# 2026.04.23 A.Inoue
 
 import copy
 import warnings
@@ -2441,7 +2441,7 @@ class KullbackLeiblerDivergenceNormal(Function):
     def __forward__(self, mu, log_var):
         #self.inputs = mu, log_var
         kll = -0.5 * np.sum(1 + log_var - mu**2 - np.exp(log_var))
-        return kll / len(mu)
+        return kll/len(mu)
 
     def __backward__(self, gkll=1):
         mu, log_var = self.inputs
@@ -2459,17 +2459,17 @@ class MutualInformationLoss(Function):
     def __forward__(self, z, mu, log_var):
         log_qz_cond_x = self.log_normal_density(z, mu, log_var)
         log_pz = self.log_standard_normal(z)
-        mi_loss = np.mean(log_qz_cond_x - log_pz, axis=-1)
-        return mi_loss
+        mi_loss = np.sum(log_qz_cond_x - log_pz, axis=-1)
+        return mi_loss/len(z)
 
     def log_normal_density(self, z, mu, log_var):
         normalization = -0.5 * (F.log(2 * np.pi) + log_var)
         log_density = normalization - 0.5 * ((z - mu) ** 2 / F.exp(log_var))
-        return F.sum(log_density, axis=-1)
+        return np.sum(log_density, axis=-1)
 
     def log_standard_normal(self, z):
         log_density = -0.5 * z ** 2 - 0.5 * F.log(2 * np.pi)
-        return F.sum(log_density, axis=-1)
+        return np.sum(log_density, axis=-1)
 
     def __backward__(self, gmil=1):
         z, mu, log_var = self.inputs
