@@ -1,122 +1,179 @@
 # LossFunctions
-# 2026.04.21 A.Inoue
+# 2026.04.23 A.Inoue
 from pyaino.Config import *
 from pyaino import nucleus
 from pyaino import safe_np as snp
 from pyaino import Functions as F
-import warnings
+import math, warnings
 
 class LossFunctionBase(nucleus.Function):
-    def __init__(self, axis=None, label2onehot=False, onehot2label=False):
+    def __init__(self, reduction='mean', label2onehot=False, onehot2label=False):
+        """
+        reduction
+        none     : return loss per element / per structure
+        sum      : return an unnormalized global sum
+        mean     : return a fully normalized mean (implementation-level)
+        sample   : return E_x [ ℓ(x) ] (sample-level objective)
+
+        """
         super().__init__()
+        self.reduction = reduction
         self.t = None
-        self.k = None
-        self.axis = axis # 指定した軸について損失を合算する
+        self.l_shape = None
         self.label2onehot = label2onehot
         self.onehot2label = onehot2label
+        self._cached_denom = None
+        self.sample_size = None
         pass
 
-    def __forward__(self, y, t):
-        self.k = y.size if self.axis is None else y.size//y.shape[self.axis]
+    def _mean_denominator(self, l):
+        """reduction='mean' 時の分母。必要なら派生クラスで上書きする。"""
+        if l.ndim == 0:
+            return 1
+        return math.prod(l.shape)
 
-        if self.label2onehot and y.shape != t.shape: # tが正解ラベル 
+    def __forward__(self, y, t):
+        # tの整形
+        if self.label2onehot and y.shape != t.shape:   # tが正解ラベル 
             self.t = np.eye(y.shape[-1], dtype=Config.dtype)[t]
         elif self.onehot2label and y.shape == t.shape: # tがone_hot
-            self.t = np.argmax(t, axis=self.axis)
+            self.t = np.argmax(t, axis=-1)
             warnings.warn('Given target is one_hot. Target category recommended.')
         else:
             self.t = t
-            
+
+        # yのチェックと整形
+        if y.ndim == 0:
+            self.sample_size = 1
+        else:
+            self.sample_size = y.shape[0]
+
         if self.onehot2label and y.ndim > 2:
             y = y.reshape(-1, y.shape[-1])
             self.t = self.t.reshape(-1)
 
+        # 損失
         l = self._forward(y, self.t)
-        return l / self.k
+        self.l_shape = l.shape
+
+        # reduction
+        if self.reduction == 'mean':
+            denom = self._mean_denominator(l)
+            self._cached_denom = np.array(denom, dtype=Config.dtype)
+            return l.sum() / self._cached_denom
+        if self.reduction == 'sum':
+            return l.sum()
+        if self.reduction == 'sample':
+            return l.sum() / self.sample_size
+        if self.reduction is None or self.reduction == 'none':
+            return l
+        raise ValueError(f'Invalid reduction {self.reduction}')
 
     def __backward__(self, gl=1):
-        y, _ = self.inputs # yは元のまま、tは成型後のものを使う
+        y, _ = self.inputs
         y_shape = y.shape
-
+        # reduction の逆伝播
+        if self.reduction is None or self.reduction == 'none':
+            pass
+        else:
+            for ax in range(len(self.l_shape)):
+                gl = np.expand_dims(gl, axis=ax).astype(Config.dtype)
+            gl = np.broadcast_to(gl, self.l_shape)
+            if self.reduction == 'mean':
+                gl /= self._cached_denom
+            if self.reduction == 'sample':
+                gl /= self.sample_size
+        # yの整形の再現
         if self.onehot2label and y.ndim > 2:
             y = y.reshape(-1, y.shape[-1])
-
+        # 損失の逆伝播
         gy = self._backward(gl, y, self.t)
-        gy /= self.k
-
+        # gyの整形
         gy = gy.reshape(*y_shape).astype(Config.dtype)
         return gy
-
+    
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
 class MeanSquaredError(LossFunctionBase):
-    def __init__(self, axis=None, **kwargs):
-        super().__init__(axis=axis, **kwargs)
+    def __init__(self, reduction='mean', **kwargs):
+        super().__init__(reduction=reduction, **kwargs)
 
     def _forward(self, y, t):
-        return 0.5 * snp.sum((y - t) ** 2)
+        return 0.5 * (y - t) ** 2
 
     def _backward(self, gl, y, t):
         return gl * (y - t)
 
 class CrossEntropyError(LossFunctionBase):
-    def __init__(self, axis=-1, label2onehot=True):
-        super().__init__(axis=axis, label2onehot=label2onehot)
+    def __init__(self, reduction='mean', label2onehot=True):
+        super().__init__(reduction=reduction, label2onehot=label2onehot)
 
     def _forward(self, y, t):
-        return - snp.sum(t * np.log(y + 1e-7))        # メモリ使用量削減のため演算順序拘束
+        return - t * np.log(y + 1e-7)        # メモリ使用量削減のため演算順序拘束
 
     def _backward(self, gl, y, t):
         return (- gl) * (t / (y + 1e-7))
 
 class CrossEntropyError2(LossFunctionBase):
-    def __init__(self, axis=-1, **kwargs):
-        super().__init__(axis=axis, **kwargs)
+    def __init__(self, reduction='mean', **kwargs):
+        super().__init__(reduction=reduction, **kwargs)
 
     def _forward(self, y, t):
-        return -snp.sum(t*np.log(y+1e-7)+(1-t)*np.log(1-y+1e-7))
+        return - t * np.log(y + 1e-7) - (1 - t) * np.log(1 - y + 1e-7)
 
     def _backward(self, gl, y, t):
         return gl * ((y - t) / (y * (1 - y) + 1e-7)) # メモリ使用量削減のため演算順序拘束
 
 class CrossEntropyErrorMasked(LossFunctionBase):
-    def __init__(self, axis=-1, ignore=None, onehot2label=True):
-        super().__init__(axis=axis, onehot2label=onehot2label)
+    def __init__(self, reduction='mean', ignore=None, onehot2label=True):
+        super().__init__(reduction=reduction, onehot2label=onehot2label)
         self.ignore_label = ignore
         self.valid_mask = None
-        self.valid_rate = None
+
+    def _mean_denominator(self, l):
+        """ 親クラスを上書き、有効要素数を返す """
+        if self.valid_mask is None:
+            return super()._mean_denominator(l)
+        denom = int(snp.sum(self.valid_mask))
+        return max(denom, 1)
 
     def _forward(self, y, t):
-        """ y:probabilities確率、t:正解値ラベルから交差エントロピーを求める """
+        """ y: probabilities, t: 正解ラベル """
         if self.ignore_label is not None:
             self.valid_mask = (t != self.ignore_label)
         else:
             self.valid_mask = np.ones_like(t, dtype=bool)
 
+        l = np.zeros_like(t, dtype=Config.dtype)
         valid_indices = np.where(self.valid_mask)[0]
-        log_y = np.log(y[valid_indices, t[valid_indices]])
-        l = -snp.sum(log_y)
-        valid_rate = snp.sum(self.valid_mask) / self.valid_mask.size # 有効部分の比率
-        self.valid_rate = valid_rate
-        return l / valid_rate
+        if len(valid_indices) > 0:
+            l[valid_indices] = -np.log(y[valid_indices, t[valid_indices]] + 1e-7)
+        return l
 
     def _backward(self, gl, y, t):
-        """ y:probabilitiesに対する勾配gyを返す """
         gy = np.zeros_like(y)
-        gy[range(len(t)), t] = -1 / y[range(len(t)), t]
-        gy[~self.valid_mask] = 0
-        return gy / self.valid_rate
-
+        valid_indices = np.where(self.valid_mask)[0]
+        if len(valid_indices) > 0:
+            gy[valid_indices, t[valid_indices]] = (
+                -gl[valid_indices] / (y[valid_indices, t[valid_indices]] + 1e-7)
+            )
+        return gy
+    
 class CrossEntropyErrorForLogits(LossFunctionBase):
-    def __init__(self, axis=-1, ignore=None, onehot2label=True):
-        super().__init__(axis=axis, onehot2label=onehot2label)
+    def __init__(self, reduction='mean', ignore=None, onehot2label=True):
+        super().__init__(reduction=reduction, onehot2label=onehot2label)
         self.ignore = ignore
         self.log_probs = None
-        self.t = None
         self.mask = None
         self.safe_t = None
-        self.valid_rate = None
+
+    def _mean_denominator(self, l):
+        """ 親クラスを上書き、有効要素数を返す """
+        if self.mask is None:
+            return super()._mean_denominator(l)
+        denom = int(snp.sum(self.mask))
+        return max(denom, 1)
 
     def _forward(self, y, t):
         B, num_classes = y.shape
@@ -127,51 +184,25 @@ class CrossEntropyErrorForLogits(LossFunctionBase):
         self.log_probs = y - logsumexp  # log-softmax
 
         if self.ignore is not None:
-            self.mask = (t != self.ignore).astype(np.float32)
-            self.safe_t = np.where(t == self.ignore, 0, t)
+            self.mask = (t != self.ignore)
+            self.safe_t = np.where(self.mask, t, 0)
         else:
-            self.mask = np.ones_like(t, dtype=np.float32)
+            self.mask = np.ones_like(t, dtype=bool)
             self.safe_t = t
 
-        nll = -self.log_probs[np.arange(B), self.safe_t] * self.mask
-        loss = snp.sum(nll) 
-        self.valid_rate = snp.sum(self.mask) / self.mask.size
-
-        return loss / self.valid_rate
+        l = np.zeros(B, dtype=Config.dtype)
+        valid_indices = np.where(self.mask)[0]
+        if len(valid_indices) > 0:
+            l[valid_indices] = -self.log_probs[valid_indices, self.safe_t[valid_indices]]
+        return l
 
     def _backward(self, gl, y, t):
-        grad = np.exp(self.log_probs)    # softmax 相当
-        grad[range(len(t)), self.safe_t] -= 1.0
-        grad *= self.mask[:, np.newaxis] # ignore ラベルの勾配を 0 に
-        return grad / self.valid_rate
-
-class CrossEntropyErrorMasked_bkup(LossFunctionBase):
-    def __init__(self, axis=-1, **kwargs):
-        super().__init__(axis=axis, **kwargs)
-        self.ignore_label = kwargs.pop('ignore', -1)
-
-    def _forward(self, y, t):
-        vr = y.shape[-1]                  # 値幅(one_hotの幅)
-        if t.ndim < y.ndim:
-            t = np.eye(vr, dtype=bool)[t] # yの形状に合わせる(形状変化対応)
-        y = y.reshape(-1, vr)
-        t = t.reshape(-1, vr)
-        if 0 <= self.ignore_label < vr:
-            t[:, self.ignore_label] = 0
-        return -snp.sum(t * np.log(y + 1e-7))
-           
-    def _backward(self, gl, y, t):
-        y_shape = y.shape
-        vr = y_shape[-1]                  # 値幅(one_hotの幅)
-        if t.ndim < y.ndim:
-            t = np.eye(vr, dtype=bool)[t] # yの形状に合わせる(形状変化対応)
-        y = y.reshape(-1, vr)
-        t = t.reshape(-1, vr)
-        #gl = gl.reshape(-1, vr)          # glも形状を合わせる
-        gy = (- gl) * (t / (y + 1e-7))    # メモリ使用量削減のため演算順序拘束
-        if 0 <= self.ignore_label < vr:
-            gy[:, self.ignore_label] = 0
-        return gy.reshape(*y_shape)    
+        grad = np.exp(self.log_probs)
+        valid_indices = np.where(self.mask)[0]
+        if len(valid_indices) > 0:
+            grad[valid_indices, self.safe_t[valid_indices]] -= 1.0
+        grad[~self.mask] = 0
+        return grad * gl[:, np.newaxis]
 
 class MeanStdDeviation(nucleus.Function):
     """ 平均と標準偏差をtargetに近づくようにする関数 """
