@@ -1,5 +1,5 @@
 # LossFunctions
-# 2026.04.23 A.Inoue
+# 2026.04.25 A.Inoue
 from pyaino.Config import *
 from pyaino import nucleus
 from pyaino import safe_np as snp
@@ -43,10 +43,7 @@ class LossFunctionBase(nucleus.Function):
             self.t = t
 
         # yのチェックと整形
-        if y.ndim == 0:
-            self.sample_size = 1
-        else:
-            self.sample_size = y.shape[0]
+        self.sample_size = 1 if y.ndim == 0 else y.shape[0]
 
         if self.onehot2label and y.ndim > 2:
             y = y.reshape(-1, y.shape[-1])
@@ -72,23 +69,39 @@ class LossFunctionBase(nucleus.Function):
     def __backward__(self, gl=1):
         y, _ = self.inputs
         y_shape = y.shape
+        # glの整形
+        gl = np.asarray(gl, dtype=Config.dtype)
+        if gl.shape == ():
+            for _ in range(len(self.l_shape)):
+                gl = np.expand_dims(gl, axis=0)
+        elif gl.shape != self.l_shape:
+            gl = np.broadcast_to(gl, self.l_shape)
+        else:
+            pass
         # reduction の逆伝播
         if self.reduction is None or self.reduction == 'none':
-            pass
+            scale = 1
+        elif self.reduction == 'sum':
+            scale = 1
+        elif self.reduction == 'mean':
+            scale = self._cached_denom
+        elif self.reduction == 'sample':
+            scale = self.sample_size
         else:
-            for ax in range(len(self.l_shape)):
-                gl = np.expand_dims(gl, axis=ax).astype(Config.dtype)
-            gl = np.broadcast_to(gl, self.l_shape)
-            if self.reduction == 'mean':
-                gl /= self._cached_denom
-            if self.reduction == 'sample':
-                gl /= self.sample_size
+            raise ValueError(f'Invalid reduction {self.reduction}')
+        gl = gl / scale
+        
         # yの整形の再現
         if self.onehot2label and y.ndim > 2:
             y = y.reshape(-1, y.shape[-1])
         # 損失の逆伝播
-        gy = self._backward(gl, y, self.t)
-        # gyの整形
+        gy = self._backward(y, self.t)
+
+        while gl.ndim < gy.ndim: # ここで一旦glの形状をgyに合せる
+            gl = np.expand_dims(gl, axis=-1)
+        
+        gy = gl * gy
+        # 最後に元の y_shape に戻す
         gy = gy.reshape(*y_shape).astype(Config.dtype)
         return gy
     
@@ -102,18 +115,19 @@ class MeanSquaredError(LossFunctionBase):
     def _forward(self, y, t):
         return 0.5 * (y - t) ** 2
 
-    def _backward(self, gl, y, t):
-        return gl * (y - t)
+    def _backward(self, y, t):
+        return y - t
 
 class CrossEntropyError(LossFunctionBase):
     def __init__(self, reduction='mean', label2onehot=True):
+        # 分類で使う際は reduction='sample'
         super().__init__(reduction=reduction, label2onehot=label2onehot)
 
     def _forward(self, y, t):
         return - t * np.log(y + 1e-7)        # メモリ使用量削減のため演算順序拘束
 
-    def _backward(self, gl, y, t):
-        return (- gl) * (t / (y + 1e-7))
+    def _backward(self, y, t):
+        return - t / (y + 1e-7)
 
 class CrossEntropyError2(LossFunctionBase):
     def __init__(self, reduction='mean', **kwargs):
@@ -122,11 +136,11 @@ class CrossEntropyError2(LossFunctionBase):
     def _forward(self, y, t):
         return - t * np.log(y + 1e-7) - (1 - t) * np.log(1 - y + 1e-7)
 
-    def _backward(self, gl, y, t):
-        return gl * ((y - t) / (y * (1 - y) + 1e-7)) # メモリ使用量削減のため演算順序拘束
+    def _backward(self, y, t):
+        return (y - t) / (y * (1 - y) + 1e-7) # メモリ使用量削減のため演算順序拘束
 
 class CrossEntropyErrorMasked(LossFunctionBase):
-    def __init__(self, reduction='mean', ignore=None, onehot2label=True):
+    def __init__(self, reduction='sample', ignore=None, onehot2label=True):
         super().__init__(reduction=reduction, onehot2label=onehot2label)
         self.ignore_label = ignore
         self.valid_mask = None
@@ -151,17 +165,17 @@ class CrossEntropyErrorMasked(LossFunctionBase):
             l[valid_indices] = -np.log(y[valid_indices, t[valid_indices]] + 1e-7)
         return l
 
-    def _backward(self, gl, y, t):
-        gy = np.zeros_like(y)
+    def _backward(self, y, t):
+        gy = np.zeros_like(y, dtype=Config.dtype)
         valid_indices = np.where(self.valid_mask)[0]
         if len(valid_indices) > 0:
             gy[valid_indices, t[valid_indices]] = (
-                -gl[valid_indices] / (y[valid_indices, t[valid_indices]] + 1e-7)
+                -1 / (y[valid_indices, t[valid_indices]] + 1e-7)
             )
         return gy
     
 class CrossEntropyErrorForLogits(LossFunctionBase):
-    def __init__(self, reduction='mean', ignore=None, onehot2label=True):
+    def __init__(self, reduction='sample', ignore=None, onehot2label=True):
         super().__init__(reduction=reduction, onehot2label=onehot2label)
         self.ignore = ignore
         self.log_probs = None
@@ -196,13 +210,13 @@ class CrossEntropyErrorForLogits(LossFunctionBase):
             l[valid_indices] = -self.log_probs[valid_indices, self.safe_t[valid_indices]]
         return l
 
-    def _backward(self, gl, y, t):
+    def _backward(self, y, t):
         grad = np.exp(self.log_probs)
         valid_indices = np.where(self.mask)[0]
         if len(valid_indices) > 0:
             grad[valid_indices, self.safe_t[valid_indices]] -= 1.0
         grad[~self.mask] = 0
-        return grad * gl[:, np.newaxis]
+        return grad 
 
 class MeanStdDeviation(nucleus.Function):
     """ 平均と標準偏差をtargetに近づくようにする関数 """
