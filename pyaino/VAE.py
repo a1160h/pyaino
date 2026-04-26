@@ -1,5 +1,5 @@
 # VAE 各種
-# 20260312 A.Inoue　
+# 20260426 A.Inoue　
 from pyaino.Config import *
 import matplotlib.pyplot as plt
 from pyaino import Neuron as neuron
@@ -9,7 +9,7 @@ from pyaino import Activators
 
 
 class VAEBase():
-    def __init__(self, rate=1.0, kld=None, mil=None, **kwargs):
+    def __init__(self, rate=1.0, kld=None, mil=None, alpha=1.0, **kwargs):
         self.encoder = None
         self.decoder = None
         self.title = self.__class__.__name__
@@ -25,11 +25,11 @@ class VAEBase():
         self.opt_for_enc['ol_act'] = self.opt_for_enc.pop('ol_act', 'Identity')  # encoder出力層の活性化関数      
         # VAE全体に関わるoption
         loss_function_name  = kwargs.pop('loss', None)
-        loss_function_options = {'axis': -1} # 二乗和誤差の場合も含めて末尾の軸に沿って算出し合算
+        loss_function_options = {'reduction': 'sample'} # 再構成誤差ELBOの理論形
         #loss_function_options['sumup']   = kwargs.pop('sumup',  False) # 誤差の勾配算出の際にバッチ内で足しこむ
         #loss_function_options['enhance'] = kwargs.pop('enhance',   10) # 誤差の勾配算出の際にかける倍率
         self.loss_function = cf.eval_in_module(loss_function_name, LossFunctions, **loss_function_options)
-
+        self.alpha = alpha # 再構成誤差のスケーリング係数
         # Normalization
         normalize = kwargs.pop('normalize', False)
         self.normalize = neuron.Normalization(axis=-1) if normalize else Activators.Identity()
@@ -82,6 +82,7 @@ class VAEBase():
         #if not self.sampling.kld:
         #    return y
         l = self.loss_function.forward(y, x.reshape(*y.shape))
+        l *= self.alpha  
         rec_error = float(l)        # rec_errorはdecoder出力のxとの隔たり        　
         reg_error = float(kll)      # reg_errorはsamplingで得られたKullback_Leibler divergence
         loss = l + kll + mi         # lossは上記をr_kldに応じて合わせた値
@@ -93,6 +94,7 @@ class VAEBase():
             pass
         elif self.loss_function.t is not None:
             gy = self.loss_function.backward(gl, **kwargs)
+            gy *= self.alpha
         else:
             raise Exception("Can't get gradient by backward.")
         gz = self.decoder.backward(gy)
