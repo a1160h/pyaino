@@ -2319,11 +2319,12 @@ class MaskedExpansionLayer(BaseLayer):
 
 # -- 潜在変数をサンプリングする層 -- 20240701
 class LatentSampling(Function):
-    def __init__(self, rate=1.0, kld=None, mil=None, **kwargs):# kwargsは他の層に対する指定を無視するために必要
+    def __init__(self, rate=1.0, kld=None, mil=None, axis=-1, **kwargs):# kwargsは他の層に対する指定を無視するために必要
         super().__init__()
         print('Initialize', self.__class__.__name__)
         self.sampling = MuVarSampling()             # サンプリングの関数
         self.rate = rate                            # サンプリングの広がり
+        self.axis = axis    
         if kld and kld>0:
             self.r_kld = kld                        # 混ぜ具合 
             self.kld = KullbackLeiblerDivergenceNormal()  # カルバック・ライブラー情報量関数
@@ -2336,16 +2337,20 @@ class LatentSampling(Function):
             self.mil = None
         
     def __forward__(self, x, *, epsilon=None):
-        # -- xを半分ずつmuとlog_varに振り分ける --
-        x = x.reshape(len(x), -1) # バッチサイズ×ベクトル
-        nz = x.shape[-1]//2       # 半分
-        mu = x[:, :nz]
-        log_var = x[:, nz:2*nz]
-        # -- epsilonを決める --
-        #if epsilon is None:
-        #    epsilon = (self.rate * np.random.randn(*log_var.shape)).astype(Config.dtype)
+        # 指定軸を mu/log_var に2分割
+        size = x.shape[self.axis]
+        if size % 2 != 0:
+            raise ValueError(
+                f"LatentSampling: split axis size must be even, "
+                f"but got shape={x.shape}, axis={self.axis}"
+            )
+       
+        mu, log_var = np.split(x, 2, axis=self.axis)
+        
         # -- サンプリングとカルバック・ライプラー --    
-        z = self.sampling.forward(mu, log_var, epsilon=epsilon, rate=self.rate)
+        z = self.sampling.forward(
+            mu, log_var, epsilon=epsilon, rate=self.rate
+            )
 
         if not (self.kld or self.mil):
             return z
@@ -2377,7 +2382,8 @@ class LatentSampling(Function):
         gmu += gmu0
         glog_var += glog_var0
 
-        gx = np.hstack((gmu, glog_var))           # forwardで振り分けたことに対応
+        # forward の np.split(axis=self.axis) に対応
+        gx = np.concatenate((gmu, glog_var), axis=self.axis)
 
         return gx
     
