@@ -1,5 +1,5 @@
 # data_loader
-# 2026.04.23 A.Inoue
+# 2026.04.29 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -38,7 +38,8 @@ class ImageLoader:
         正規化設定
     """
     def __init__(self, batch_size=32, prefetch=4, shuffle=True,
-                 resize=None, source_order='HWC', target_order='asis', normalize=None):
+                 resize=None, source_order='HWC', target_order='asis',
+                 cache=False, normalize=None, drop_last=False):
         #self.data_size = data_size
         self.batch_size = batch_size
         self.prefetch = prefetch
@@ -54,6 +55,11 @@ class ImageLoader:
                             if target_order != 'asis' else 'asis'
         self.normalizer = cf.Normalize(normalize, np=numpy) \
                           if normalize is not None else None
+        self.drop_last = drop_last
+        self.cache = cache
+        self.cache_x, self.cache_y = None, None
+        if self.cache:
+            self.build_cache()
 
     def _load_item(self, idx):
         """
@@ -75,7 +81,7 @@ class ImageLoader:
             numpy.random.shuffle(indices)
         return indices
 
-    def _batch_generator(self):
+    def _batch_generator_bkup(self):
         indices = self._get_indices()
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i:i + self.batch_size]
@@ -87,6 +93,34 @@ class ImageLoader:
                 yield numpy.stack(xs), numpy.asarray(ys)
             else:
                 yield numpy.stack(batch)
+
+
+    def _batch_generator(self):
+        indices = self._get_indices()
+
+        for i in range(0, len(indices), self.batch_size):
+            batch_indices = indices[i:i + self.batch_size]
+            if self.drop_last and len(batch_indices) < self.batch_size:
+                continue
+
+            if self.cache_x is not None:
+                if self.cache_y is None:
+                    yield self.cache_x[batch_indices]
+                else:
+                    yield self.cache_x[batch_indices], self.cache_y[batch_indices]
+                continue
+
+            batch = [self._load_item(idx) for idx in batch_indices]
+
+            if isinstance(batch[0], tuple):
+                xs, ys = zip(*batch)
+                xs = numpy.stack(xs)
+                ys = numpy.asarray(ys)
+                yield xs, ys
+            else:
+                yield numpy.stack(batch)
+
+                
 
     def _batch_generator_bkup(self):
         indices = self._get_indices()
@@ -121,7 +155,7 @@ class ImageLoader:
         finally:
             self.queue.put(None)
 
-    def __next__(self):
+    def __next__bkup(self):
         batch = self.queue.get()
         if isinstance(batch, Exception):
             raise batch
@@ -139,6 +173,29 @@ class ImageLoader:
             batch = self._formatting(batch)
             batch = np.asarray(batch)
             return batch
+
+
+    def __next__(self):
+        batch = self.queue.get()
+        if isinstance(batch, Exception):
+            raise batch
+        if batch is None:
+            raise StopIteration
+
+        if self.cache_x is not None:
+            return batch
+
+        if isinstance(batch, tuple):
+            x, y = batch
+            x = self._formatting(x)
+            x = np.asarray(x)
+            y = np.asarray(y)
+            return x, y
+        else:
+            batch = self._formatting(batch)
+            batch = np.asarray(batch)
+            return batch
+
 
     def __next__bkup(self):
         batch = self.queue.get()
@@ -176,6 +233,28 @@ class ImageLoader:
         idxは環境依存のnpあるいは非依存のnumpyの両方に対応するが、内部の処理はnumpy
 
         """
+        # --- cacheの場合 ---
+        if self.cache_x is not None:
+            if isinstance(idx, (int, numpy.integer, np.integer)):
+                if self.cache_y is None:
+                    return self.cache_x[int(idx)]
+                else:
+                    return self.cache_x[int(idx)], self.cache_y[int(idx)]
+
+            elif isinstance(idx, slice):
+                indices = list(range(*idx.indices(self.data_size)))
+            elif isinstance(idx, (list, tuple)):
+                indices = list(idx)
+            elif isinstance(idx, (numpy.ndarray, np.ndarray)):
+                indices = idx.tolist()
+            else:
+                raise TypeError(f"Unsupported index type: {type(idx)}")
+
+            if self.cache_y is None:
+                return self.cache_x[indices]
+            else:
+                return self.cache_x[indices], self.cache_y[indices]
+       
         # --- 単一 index ---
         if isinstance(idx, (int, numpy.integer, np.integer)):
             item = self._load_item(int(idx))
@@ -225,8 +304,7 @@ class ImageLoader:
             xs = self._formatting(xs)
             xs = np.asarray(xs)
             return xs
-
-    
+   
     def __len__(self):
         return self.data_size
 
@@ -235,6 +313,32 @@ class ImageLoader:
         if self.future:
             self.future.cancel()
         self.executor.shutdown(wait=False)
+
+    def build_cache(self):
+        """
+        全データを一度だけ読み込み、整形済み・正規化済みの形で保持する。
+        以後の __iter__ / __getitem__ は _load_item() を呼ばず、
+        cache_x / cache_y から取り出す。
+        """
+        batch = [self._load_item(i) for i in range(self.data_size)]
+
+        if len(batch) == 0:
+            raise ValueError("Cannot build cache: data_size is 0")
+
+        if isinstance(batch[0], tuple):
+            xs, ys = zip(*batch)
+            xs = numpy.stack(xs)
+            ys = numpy.asarray(ys)
+
+            xs = self._formatting(xs)
+            self.cache_x = np.asarray(xs)
+            self.cache_y = np.asarray(ys)
+        else:
+            xs = numpy.stack(batch)
+            xs = self._formatting(xs)
+
+            self.cache_x = np.asarray(xs)
+            self.cache_y = None
 
 
 class CelebALoader(ImageLoader):
@@ -251,7 +355,8 @@ class CelebALoader(ImageLoader):
     data_source : str 画像ディレクトリのパス
     """
     def __init__(self, data_source, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, target_order='asis', normalize=None, data_size=None):
+                 resize=None, target_order='asis', normalize=None,
+                 data_size=None, drop_last=False):
 
         rawpath = os.path.normpath(data_source + os.sep + "*")
         self.file_list = glob.glob(rawpath)
@@ -268,6 +373,7 @@ class CelebALoader(ImageLoader):
             source_order='HWC',
             target_order=target_order,
             normalize=normalize,
+            drop_last=drop_last,
         )
 
     def _load_item(self, idx):
@@ -292,7 +398,7 @@ class STL10BinaryLoader(ImageLoader):
     """
     def __init__(self, data_source, label_source=None, batch_size=64, prefetch=8, shuffle=True,
                  resize=None, target_order='CHW', normalize=None,
-                 data_size=None):
+                 data_size=None, drop_last=False):
 
         self.data_source = data_source
         self.label_source = label_source
@@ -330,6 +436,7 @@ class STL10BinaryLoader(ImageLoader):
             source_order=source_order,
             target_order=target_order,
             normalize=normalize,
+            drop_last=drop_last,
         )
 
     def _load_item(self, idx):
@@ -390,7 +497,7 @@ class CIFAR10Loader(ImageLoader):
     def __init__(self, data_source, train=True,
                  batch_size=64, prefetch=8, shuffle=True,
                  resize=None, target_order='CHW', normalize=None,
-                 data_size=None):
+                 data_size=None, drop_last=False):
 
         import pickle
 
@@ -432,6 +539,7 @@ class CIFAR10Loader(ImageLoader):
             source_order='CHW',
             target_order=target_order,
             normalize=normalize,
+            drop_last=drop_last,
         )
 
     def _load_item(self, idx):
@@ -479,7 +587,7 @@ class MNISTLoader(ImageLoader):
     def __init__(self, data_source, train=True,
                  batch_size=64, prefetch=8, shuffle=True,
                  resize=None, target_order='CHW', normalize=None,
-                 data_size=None):
+                 data_size=None, drop_last=False):
 
         import struct
 
@@ -524,6 +632,7 @@ class MNISTLoader(ImageLoader):
             source_order='CHW',
             target_order=target_order,
             normalize=normalize,
+            drop_last=drop_last,
         )
 
     def _load_item(self, idx):

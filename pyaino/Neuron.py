@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.23 A.Inoue
+# 2026.04.29 A.Inoue
 
 import copy
 import warnings
@@ -3709,6 +3709,36 @@ class MultiHeadSelfAttention2(Function):
         #print(f'[Entropy] std={e_std:.4f}, range={e_rng:.4f}')
         return e_std, e_rng
         
+class SpatialSelfAttention(Function):
+    """ 画像データを処理するAttention機構 """
+    def __init__(self, n_head=1, scale=1.0, **kwargs):
+        super().__init__()
+        self.attention = SelfAttention(n_head=n_head, **kwargs)
+        self.scale = scale
+
+    def __forward__(self, x):
+        B, C, H, W = x.shape
+        y = snp.reshape(x, (B, C, H*W))
+        y = snp.transpose(y, (0, 2, 1))
+        y = self.attention(y)
+        y = snp.transpose(y, (0, 2, 1))
+        y = snp.reshape(y, (B, C, H, W))
+        return x + self.scale * y
+
+    def __backward__(self, gy):
+        B, C, H, W = gy.shape
+        gx = self.scale * gy           
+        gx = snp.reshape(gx, (B, C, H*W))
+        gx = snp.transpose(gx, (0, 2, 1))  
+        gx = self.attention.backward(gx)
+        gx = snp.transpose(gx, (0, 2, 1))
+        gx = snp.reshape(gx, (B, C, H, W))
+        gx += gy
+        return gx
+
+    def update(self, eta=0.001, **kwargs):
+        self.attention.update(eta=eta, **kwargs)
+
 class ParametersForContextualSelfAttention:
     """
     時系列入力xに対してコンテキストベクトルyを返す
@@ -4537,6 +4567,17 @@ class ScalarScale(Function):
         self.ggamma = np.sum(x * gy)
         gx = gy * self.gamma
         return gx 
+
+class FixedScale(Function):
+    def __init__(self, scale=1.0):
+        super().__init__()
+        self.scale = scale
+
+    def __forward__(self, x):
+        return x * self.scale
+
+    def __backward__(self, gy):
+        return gy * self.scale
 
 #### 正規化の汎用ベース #### 
 class GeneralNormalizationBase(Function):
