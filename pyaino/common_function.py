@@ -1,5 +1,5 @@
 # common_function
-# 2026.04.23 A.Inoue 
+# 2026.05.08 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2904,21 +2904,29 @@ def picture_image(func, x, C, Ih, Iw, pil=False, save=False):
 # -- 画像を生成して表示 --
 def generate_random_images(func, nz, C, Ih, Iw, n=81,
                            reverse=False, rate=None, offset=None):
+    if isinstance(nz, int):
+        z_shape = (nz,)
+    elif isinstance(nz, (tuple, list)):
+        z_shape = tuple(nz)
+    else:
+        raise TypeError(f"nz must be int or tuple/list, but got {type(nz)}")
+    z_full_shape = (1, *z_shape)
+
     if rate is None:
-        rate = np.ones((1,nz), dtype=Config.dtype)
+        rate = np.ones(z_full_shape, dtype=Config.dtype)
     elif isinstance(rate, np.ndarray):
-        rate = rate.reshape(1, -1)
+        rate = rate.reshape(z_full_shape)
     elif type(rate) in (float, int):
-        rate = np.full((1,nz), rate).astype(Config.dtype)
+        rate = np.full(z_full_shape, rate).astype(Config.dtype)
     else:
         raise Exception('rate is not applicable.')
 
     if offset is None:
-        offset = np.zeros((1,nz), dtype=Config.dtype)
+        offset = np.zeros(z_full_shape, dtype=Config.dtype)
     elif isinstance(offset, np.ndarray):
-        offset = offset.reshape(1, -1)
+        offset = offset.reshape(z_full_shape)
     elif type(offset) in (float, int):
-        offset = np.full((1,nz), offset).astype(Config.dtype)
+        offset = np.full(z_full_shape, offset).astype(Config.dtype)
     else:
         raise Exception('offset is not applicable.')
 
@@ -2926,8 +2934,8 @@ def generate_random_images(func, nz, C, Ih, Iw, n=81,
     n_rows = int(n ** 0.5)  # 行数
     n_cols = n // n_rows    # 列数
     # 入力となるノイズ  平均=offset 標準偏差=rate の正規分布の乱数
-    noise = np.random.randn(n_rows*n_cols, nz)
-    noise = noise * rate + offset 
+    noise = np.random.randn(n_rows*n_cols, *z_shape).astype(Config.dtype)
+    noise = noise * rate + offset
     # 画像を生成して 0-1 の範囲に調整
     if C <= 1:
         #y = func(noise); print(y.shape, n, Ih, Iw)

@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.04.29 A.Inoue
+# 2026.05.08 A.Inoue
 
 import copy
 import warnings
@@ -2318,8 +2318,113 @@ class MaskedExpansionLayer(BaseLayer):
         return grad_x
 
 # -- 潜在変数をサンプリングする層 -- 20240701
+# -- 潜在変数をサンプリングする層 -- 20240701
 class LatentSampling(Function):
-    def __init__(self, rate=1.0, kld=None, mil=None, axis=-1, **kwargs):# kwargsは他の層に対する指定を無視するために必要
+    def __init__(self, rate=1.0, kld=None, mil=None,
+                 axis=-1,          # mu, log_var の分割軸
+                 vectorize=True,   # Trueなら入力を(B, -1)に潰して扱う
+                 mode='sum', free_bits=None,
+                 **kwargs):
+        super().__init__()
+        print('Initialize', self.__class__.__name__)
+
+        self.sampling = MuVarSampling()
+        self.rate = rate
+        self.axis = axis
+        self.vectorize = vectorize
+
+        if kld and kld > 0:
+            self.r_kld = kld
+            self.kld = KullbackLeiblerDivergenceNormal(
+                mode=mode, free_bits=free_bits,
+            )
+        else:
+            self.kld = None
+
+        if mil and mil > 0:
+            self.r_mil = mil
+            self.mil = MutualInformationLoss()
+        else:
+            self.mil = None
+
+    def __forward__(self, x, *, epsilon=None):
+        # backwardで元形状に戻すため保存
+        self.original_shape = x.shape
+
+        # 従来LatentSampling互換:
+        # (B, C, H, W)などを (B, -1) に潰して vector latent として扱う
+        if self.vectorize:
+            x = x.reshape(len(x), -1)
+            axis = -1
+        else:
+            axis = self.axis
+
+        self.forward_shape = x.shape
+        self.forward_axis = axis
+
+        # 指定軸を mu/log_var に2分割
+        size = x.shape[axis]
+        if size % 2 != 0:
+            raise ValueError(
+                f"LatentSampling: split axis size must be even, "
+                f"but got shape={x.shape}, axis={axis}"
+            )
+
+        mu, log_var = np.split(x, 2, axis=axis)
+
+        z = self.sampling.forward(
+            mu, log_var, epsilon=epsilon, rate=self.rate
+        )
+
+        if not (self.kld or self.mil):
+            return z
+
+        if self.kld:
+            kll = self.r_kld * self.kld.forward(mu, log_var)
+        else:
+            kll = 0
+
+        if self.mil:
+            mi = self.r_mil * self.mil.forward(z, mu, log_var)
+        else:
+            mi = 0
+
+        return z, kll, mi
+
+    def __backward__(self, gz, gkll=1, gmi=1):
+        gmu, glog_var = 0, 0
+
+        if self.mil:
+            gz0, gmu0, glog_var0 = self.mil.backward(gmi * self.r_mil)
+            gz += gz0
+            gmu += gmu0
+            glog_var += glog_var0
+
+        if self.kld:
+            gmu0, glog_var0 = self.kld.backward(gkll * self.r_kld)
+            gmu += gmu0
+            glog_var += glog_var0
+
+        gmu0, glog_var0 = self.sampling.backward(gz)
+        gmu += gmu0
+        glog_var += glog_var0
+
+        # forward の split に対応
+        gx = np.concatenate((gmu, glog_var), axis=self.forward_axis)
+
+        # vectorize=True の場合は入力xの元形状へ戻す
+        if self.vectorize:
+            gx = gx.reshape(self.original_shape)
+
+        return gx
+
+
+
+class LatentSampling_bkup(Function):
+    def __init__(self, rate=1.0, kld=None, mil=None,
+                 axis=-1, # mu,log_varの分割軸
+                 mode='sum', free_bits=None, # KLDのモード
+                 **kwargs):# kwargsは他の層に対する指定を無視するために必要
         super().__init__()
         print('Initialize', self.__class__.__name__)
         self.sampling = MuVarSampling()             # サンプリングの関数
@@ -2327,7 +2432,9 @@ class LatentSampling(Function):
         self.axis = axis    
         if kld and kld>0:
             self.r_kld = kld                        # 混ぜ具合 
-            self.kld = KullbackLeiblerDivergenceNormal()  # カルバック・ライブラー情報量関数
+            self.kld = KullbackLeiblerDivergenceNormal(
+                mode=mode, free_bits=free_bits,
+                )  # カルバック・ライブラー情報量関数
         else:
             self.kld = None
         if mil and mil>0:
@@ -2443,6 +2550,112 @@ class MuVarSampling2(Function):
         return gmu, glog_var, gepsilon
 
 class KullbackLeiblerDivergenceNormal(Function):
+    """
+    標準正規分布 N(0, I) に対する N(mu, sigma^2) のKLD
+
+    mode:
+        'sum'          : 従来互換。B軸以外をすべてsumしてbatch平均
+        'spatial_mean' : 空間軸(H,W)をmeanし、channel方向をsumしてbatch平均
+                         Spatial latent向け
+        'mean'         : B軸以外をmeanしてbatch平均
+
+    free_bits:
+        None または 0 : なし
+        正値          : per-channel KLDなどに下限を設ける
+                        mode='spatial_mean' と相性が良い
+    """
+
+    def __init__(self, mode='sum', free_bits=None):
+        super().__init__()
+        self.mode = mode
+        self.free_bits = free_bits
+
+    def __forward__(self, mu, log_var):
+        # element-wise KLD
+        kld_elem = -0.5 * (1 + log_var - mu**2 - np.exp(log_var))
+
+        self.kld_elem = kld_elem
+
+        if self.mode == 'sum':
+            # 従来互換: 全潜在要素を足して batch 平均
+            kll = np.sum(kld_elem)
+            self.scale = 1.0 / len(mu)
+            self.mask = None
+            return kll * self.scale
+
+        elif self.mode == 'mean':
+            # 全潜在要素の平均
+            axes = tuple(range(1, kld_elem.ndim))
+            kld_sample = np.mean(kld_elem, axis=axes)
+            self.scale = 1.0 / len(mu)
+            self.mask = None
+            return np.sum(kld_sample) * self.scale
+
+        elif self.mode == 'spatial_mean':
+            if kld_elem.ndim < 4:
+                # vector latent の場合は sum と同じ扱いに近い
+                kld_ch = kld_elem
+            else:
+                # (B, C, H, W) -> (B, C)
+                kld_ch = np.mean(kld_elem, axis=(2, 3))
+
+            if self.free_bits is not None and self.free_bits > 0:
+                self.mask = (kld_ch >= self.free_bits).astype(Config.dtype)
+                kld_ch = np.maximum(kld_ch, self.free_bits)
+            else:
+                self.mask = None
+
+            self.kld_ch_shape = kld_ch.shape
+            self.scale = 1.0 / len(mu)
+
+            # channel方向をsumし、batch平均
+            return np.sum(kld_ch) * self.scale
+
+        else:
+            raise ValueError(f"Unknown KLD mode: {self.mode}")
+
+    def __backward__(self, gkll=1):
+        mu, log_var = self.inputs
+
+        # element-wise derivative
+        gmu = mu
+        glog_var = 0.5 * (np.exp(log_var) - 1)
+
+        if self.mode == 'sum':
+            coef = gkll * self.scale
+            return coef * gmu, coef * glog_var
+
+        elif self.mode == 'mean':
+            axes_size = 1
+            for s in mu.shape[1:]:
+                axes_size *= s
+            coef = gkll * self.scale / axes_size
+            return coef * gmu, coef * glog_var
+
+        elif self.mode == 'spatial_mean':
+            coef = gkll * self.scale
+
+            if mu.ndim >= 4:
+                # spatial mean の分だけ H*W で割る
+                H, W = mu.shape[2], mu.shape[3]
+                coef = coef / (H * W)
+
+                if self.mask is not None:
+                    # (B,C) -> (B,C,1,1)
+                    mask = self.mask[:, :, np.newaxis, np.newaxis]
+                    gmu = gmu * mask
+                    glog_var = glog_var * mask
+            else:
+                if self.mask is not None:
+                    gmu = gmu * self.mask
+                    glog_var = glog_var * self.mask
+
+            return coef * gmu, coef * glog_var
+
+        else:
+            raise ValueError(f"Unknown KLD mode: {self.mode}")
+
+class KullbackLeiblerDivergenceNormalBasic(Function):
     """ 標準正規分布に対する任意の正規分布のKLDの解析解 """
     def __forward__(self, mu, log_var):
         #self.inputs = mu, log_var
