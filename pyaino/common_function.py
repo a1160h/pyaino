@@ -616,7 +616,7 @@ def export_parameters_recursive(obj, params=None, name=None,
         params, name, seen = export_parameters_recursive(
                                     obj.__dict__, params=params,
                                     name=name, seen=seen)
-
+    seen.discard(obj_id)
     return params, name, seen
 
 def export_parameters(model, **kwargs): # targetを指定するなどのため
@@ -699,7 +699,7 @@ def import_parameters_recursive(obj, params=None, done=None, name=None,
         done, name, seen = import_parameters_recursive(
                                 obj.__dict__, params=params, done=done, 
                                 name=name, seen=seen)
-        
+    seen.discard(obj_id)
     return done, name, seen
 
 def import_parameters(model, params, **kwargs): # targetを指定するなどのため
