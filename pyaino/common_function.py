@@ -1,5 +1,5 @@
 # common_function
-# 2026.05.08 A.Inoue 
+# 2026.05.10 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -757,7 +757,7 @@ def n2c_dictionary(parameters):
             if isinstance(x, np.ndarray): # 現npに合致=cupy配列
                 pass
             elif x is not None:           # 現npとは違う=numpy配列
-                x = np.array(x.tolist(), dtype=Config.dtype)
+                x = np.array(x, dtype=Config.dtype)
         else:                   # numpy環境
             pass # numpy環境では何もしない
         return x        
