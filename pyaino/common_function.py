@@ -1426,12 +1426,15 @@ def get_accuracy_bkup(y, t, mchx=False, y_label=False):
     else:
         return accuracy
 
+def get_similarity(y, t):
+    mse = np.mean((y - t) ** 2)
+    return float(1 / (1 + mse))
 
 class Measurement:
-    def __init__(self, model, bind=False, get_acc=None, multilabel=False, batch_size=200):
+    def __init__(self, model, bind=False, get_acc=None, mode=None, batch_size=200):
         self.model = model
         self.bind = bind
-        self.multilabel = multilabel
+        self.mode = mode
         
         if self.bind or hasattr(self.model, 'loss_function'):
             pass
@@ -1441,8 +1444,12 @@ class Measurement:
 
         if get_acc is not None:
             self.get_acc = get_acc 
-        elif multilabel:
+        elif mode is None:
+            self.get_acc = get_accuracy
+        elif mode in ('multi', 'multilabel', 'labels'):    
             self.get_acc = get_multilabel_accuracy
+        elif mode in ('image', 'images', 'similarity', 'recon', 'reconstruction'):
+            self.get_acc = get_similarity
         else:
             self.get_acc = get_accuracy
             
@@ -1459,7 +1466,7 @@ class Measurement:
         total_count = 0
 
         if mchx:
-            if self.multilabel:
+            if self.get_acc is get_multilabel_accuracy:
                 predictions = np.empty(t_sample.shape, dtype=t_sample.dtype)
             else:
                 predictions = np.empty(sample_size, dtype=int)
@@ -1480,11 +1487,12 @@ class Measurement:
             total_count += batch_count
 
             if mchx:
-                if self.multilabel:
+                if self.get_acc is get_multilabel_accuracy:
                     predictions[start:end] = (y_batch >= 0.5).astype(t_batch.dtype)
-                else:
+                elif self.get_acc is get_accuracy:
                     predictions[start:end] = np.argmax(y_batch, axis=-1)
-
+                else:
+                    raise ValueError("一致不一致を示す値は求められません")
         mean_loss = float(total_loss / total_count)
         mean_acc = total_acc / total_count
 
@@ -2189,7 +2197,80 @@ def graph_for_error(*data, **kwargs):
         **kwargs
     )
 
-def graph_for_error2(data1, data2=None, labels=None):
+
+def _to_float_list(xs):
+    return [float(x) for x in xs]
+
+def _is_pair(x):
+    return isinstance(x, (tuple, list)) and len(x) == 2
+
+
+def graph_for_error2(*data, label=None, axes=None, **kwargs):
+    """
+    Flexible wrapper for graph_for_error().
+
+    Supported forms:
+        graph_for_error2(err)
+        graph_for_error2((err, acc))
+        graph_for_error2(err1, err2, ...)
+        graph_for_error2((err1, acc1), (err2, acc2), ...)
+
+    Default axes:
+        error-like series    -> left
+        accuracy-like series -> right
+    """
+
+    # graph_for_error2((err, acc)) や graph_for_error2((err1, err2, ...)) 対応
+    if len(data) == 1:
+        d = data[0]
+
+        # (err, acc)
+        if _is_pair(d):
+            err, acc = d
+            series = [
+                (err, "error", "left"),
+                (acc, "accuracy", "right"),
+            ]
+
+        # err 単独
+        else:
+            series = [
+                (d, "error", "left"),
+            ]
+
+    # graph_for_error2(err1, err2, ...)
+    # graph_for_error2((err1, acc1), (err2, acc2), ...)
+    else:
+        series = []
+
+        for i, d in enumerate(data):
+            n = i + 1
+
+            if _is_pair(d):
+                err, acc = d
+                series.append((err, f"error{n}", "left"))
+                series.append((acc, f"accuracy{n}", "right"))
+            else:
+                series.append((d, f"error{n}", "left"))
+
+    values = [_to_float_list(s[0]) for s in series]
+    labels = [s[1] for s in series]
+    axes_ = [s[2] for s in series]
+
+    if label is not None:
+        labels = label
+
+    if axes is not None:
+        axes_ = axes
+
+    return graph_history(
+        tuple(values),
+        labels=tuple(labels),
+        axes=tuple(axes_),
+        **kwargs
+    )
+
+def graph_for_error2_bkup(data1, data2=None, labels=None):
     """
     旧 graph_for_error2 互換用ラッパー。
 
