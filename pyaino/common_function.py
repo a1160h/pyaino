@@ -1,5 +1,5 @@
 # common_function
-# 2026.05.10 A.Inoue 
+# 2026.05.12 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -16,7 +16,12 @@ import matplotlib.pyplot as plt
 import pickle
 import inspect, types
 import copy
-import numpy 
+import numpy
+
+from PIL import Image
+import glob
+
+
 """
 npの特別扱いが必要な場合
 
@@ -990,8 +995,76 @@ def rgb_to_gray(img, keepdims=True):
         gray_data = gray_data.reshape(*img.shape)
     return gray_data    
 
-# -- サンプルの提示と順伝播の結果のテスト --
-def test_sample(show, func, x, t, label_list=None, label_list2=None):
+
+def indices_to_labels(x, label_list, threshold=None):
+    labels = []
+    for j, v in enumerate(x):
+        v = v.item() if hasattr(v, "item") else v
+        if threshold is None:
+            if v == 1:
+                labels.append(label_list[j])
+        else:
+            if v >= threshold:
+                labels.append(label_list[j])
+    return labels
+
+
+def test_sample_multilabel(show, func, x, t, label_list, threshold=0.5, top=5):
+    print('\n-- マルチラベル・テスト開始 --')
+    print('データ範囲内の数字を入力、その他は終了')
+
+    while True:
+        try:
+            i = int(input('\nテストしたいデータの番号'))
+            sample_data = x[i:i+1, :]
+            if t is not None:
+                sample_t = t[i]
+                true_labels = indices_to_labels(sample_t, label_list)
+            else:
+                true_labels = None  
+        except:
+            print('-- テスト終了 --')
+            break
+
+        # まず推論
+        try:
+            y = func(sample_data)
+        except:
+            y = func(sample_data.reshape(-1))
+
+        y = y[0] if isinstance(y, (tuple, list)) else y
+        y = y[0] if y.ndim > 1 else y
+
+        # 予測ラベル
+        pred = (y >= threshold).astype(np.int32)
+        pred_labels = indices_to_labels(pred, label_list)
+
+        # 確率上位
+        topk = np.argsort(y)[-top:][::-1]
+
+        top_labels = []
+        for j in topk:
+            j = int(j)
+            score = y[j].item() if hasattr(y[j], "item") else float(y[j])
+            top_labels.append((label_list[j], score))
+
+        # 画像表示用 caption
+        caption = [
+            f'{name}: {score:.2f}'
+            for name, score in top_labels
+        ]
+
+        print(' -- 選択されたサンプルを表示します --')
+
+        if input('サンプルの画像を表示しますか？(y/n)') in ('y', 'Y'):
+            show(sample_data, caption)
+
+        if true_labels is not None:
+            print('正解     :', true_labels)
+        print('予測     :', pred_labels)
+        print('確率上位 :', top_labels)
+        
+def test_sample_classification(show, func, x, t, label_list=None, label_list2=None):
     '''show:画像表示の関数, func:順伝播の関数,  X:入力, t:正解'''
     print('\n-- テスト開始 --')
     print('データ範囲内の数字を入力、その他は終了')
@@ -1045,6 +1118,160 @@ def test_sample(show, func, x, t, label_list=None, label_list2=None):
                 estimate_label = label_list2[estimation]
             
             print('機械の判定は　　 　　=>', estimate_label)
+
+
+
+# -- サンプルの提示と順伝播の結果のテスト --
+def test_sample(show, func, x, t=None, label_list=None, label_list2=None,
+                multilabel=False, threshold=0.5, top=5):
+    if multilabel:
+        return test_sample_multilabel(
+            show, func, x, t,
+            label_list=label_list,
+            threshold=threshold,
+            top=top
+        )
+    else:
+        return test_sample_classification(
+            show, func, x, t,
+            label_list=label_list,
+            label_list2=label_list2
+        )
+
+
+def resize_keep_aspect(img, size, fit='crop'):
+    """
+    縦横比を維持して resize
+
+    Parameters
+    ----------
+    img : PIL.Image
+    size : (H, W)
+    fit : 'crop' or 'pad'
+    """
+
+    H, W = size
+
+    src_w, src_h = img.size
+    src_ratio = src_w / src_h
+    dst_ratio = W / H
+
+    # --------------------------------------
+    # center crop モード
+    # --------------------------------------
+    if fit == 'crop':
+
+        if src_ratio > dst_ratio:
+            # 横長 → 左右crop
+            new_w = int(src_h * dst_ratio)
+            left = (src_w - new_w) // 2
+
+            img = img.crop((
+                left,
+                0,
+                left + new_w,
+                src_h
+            ))
+
+        else:
+            # 縦長 → 上下crop
+            new_h = int(src_w / dst_ratio)
+            top = (src_h - new_h) // 2
+
+            img = img.crop((
+                0,
+                top,
+                src_w,
+                top + new_h
+            ))
+
+        img = img.resize((W, H))
+
+    # --------------------------------------
+    # pad モード
+    # --------------------------------------
+    elif fit == 'pad':
+
+        scale = min(W / src_w, H / src_h)
+
+        new_w = int(src_w * scale)
+        new_h = int(src_h * scale)
+
+        resized = img.resize((new_w, new_h))
+
+        canvas = Image.new('RGB', (W, H), (0, 0, 0))
+
+        left = (W - new_w) // 2
+        top = (H - new_h) // 2
+
+        canvas.paste(resized, (left, top))
+
+        img = canvas
+
+    else:
+        raise ValueError("fit must be 'crop' or 'pad'")
+
+    return img
+
+
+def load_images_as_dataset(
+        path,
+        image_size=(64, 48),
+        fit='crop',
+        target_order='CHW',
+        dtype=np.float32,
+        normalize=True):
+
+    """
+    jpg/png画像を読み込み、
+    loader[:N] と同じ形式の x, t を返す
+    """
+
+    # ファイル一覧
+    if os.path.isdir(path):
+
+        files = []
+
+        for ext in ('*.jpg', '*.jpeg', '*.png'):
+            files.extend(glob.glob(os.path.join(path, ext)))
+
+        files = sorted(files)
+
+    else:
+        files = [path]
+
+    if len(files) == 0:
+        raise ValueError('画像ファイルが見つかりません')
+
+    xs = []
+
+    for file in files:
+
+        img = Image.open(file).convert('RGB')
+
+        # 縦横比維持 resize
+        img = resize_keep_aspect(
+            img,
+            image_size,
+            fit=fit
+        )
+
+        x = np.array(img, dtype=dtype)
+
+        # 正規化
+        if normalize:
+            x = x / 255.0
+
+        # 軸順
+        if target_order == 'CHW':
+            x = np.transpose(x, (2, 0, 1))
+
+        xs.append(x)
+
+    x = np.stack(xs)
+
+    return x
+
 
 def confident_map(func, x, t, item_list=None, batch_size=1000,
                   homogenize=True, log=True, cmap='Blues',
@@ -1155,6 +1382,23 @@ def get_accuracy(y, t, mchx=False):#, y_label=False):
     else:
         return accuracy
 
+def get_multilabel_accuracy(y, t, threshold=0.5, mchx=False):
+    """
+    y: Sigmoid後の予測値, shape=(B, 40)
+    t: 0/1ラベル, shape=(B, 40)
+    """
+    result = (y >= threshold).astype(t.dtype)
+    correct = t
+
+    errata = result == correct
+    accuracy = float(np.sum(errata) / errata.size)
+
+    if mchx:
+        return accuracy, errata
+    else:
+        return accuracy
+
+
 def get_accuracy_bkup(y, t, mchx=False, y_label=False):
     '''
     y:順伝播の結果と、対応する t:正解とを与え、分類の正解率を返す
@@ -1184,20 +1428,127 @@ def get_accuracy_bkup(y, t, mchx=False, y_label=False):
 
 
 class Measurement:
-    def __init__(self, model, get_acc=None, batch_size=200, bind=False):
+    def __init__(self, model, bind=False, get_acc=None, multilabel=False, batch_size=200):
         self.model = model
-        self.get_acc = get_acc if get_acc is not None else get_accuracy
-        self.batch_size = batch_size
         self.bind = bind
-
-        self.error = []
-        self.accuracy = []
-
+        self.multilabel = multilabel
+        
         if self.bind or hasattr(self.model, 'loss_function'):
             pass
         else:
             raise ValueError(
                 'The loss cannot be calculated. bind=True may needed.')
+
+        if get_acc is not None:
+            self.get_acc = get_acc 
+        elif multilabel:
+            self.get_acc = get_multilabel_accuracy
+        else:
+            self.get_acc = get_accuracy
+            
+        self.batch_size = batch_size
+        self.error = []
+        self.accuracy = []
+
+    def __call__(self, x, t, n=None, shuffle=False, mchx=False):
+        x_sample, t_sample = self.sample_data(x, t, n=n, shuffle=shuffle)
+        sample_size = len(x_sample)
+
+        total_loss = 0.0
+        total_acc = 0.0
+        total_count = 0
+
+        if mchx:
+            if self.multilabel:
+                predictions = np.empty(t_sample.shape, dtype=t_sample.dtype)
+            else:
+                predictions = np.empty(sample_size, dtype=int)
+        else:
+            predictions = None
+
+        for start in range(0, sample_size, self.batch_size):
+            end = start + self.batch_size
+            x_batch = x_sample[start:end]
+            t_batch = t_sample[start:end]
+
+            y_batch, loss_batch = self.forward_and_loss(x_batch, t_batch)
+            acc_batch = self.get_acc(y_batch, t_batch)
+
+            batch_count  = len(x_batch)
+            total_loss  += loss_batch * batch_count
+            total_acc   += acc_batch  * batch_count
+            total_count += batch_count
+
+            if mchx:
+                if self.multilabel:
+                    predictions[start:end] = (y_batch >= 0.5).astype(t_batch.dtype)
+                else:
+                    predictions[start:end] = np.argmax(y_batch, axis=-1)
+
+        mean_loss = float(total_loss / total_count)
+        mean_acc = total_acc / total_count
+
+        self.error.append(mean_loss)
+        self.accuracy.append(mean_acc)
+
+        if mchx:
+            errata = (predictions == t_sample)
+            return mean_loss, mean_acc, errata, predictions
+
+        return mean_loss, mean_acc
+
+    def sample_data(self, x, t, n=None, shuffle=False):
+        data_size = len(x)
+
+        if n is None or n >= data_size:
+            return x, t
+
+        indices = np.arange(data_size)
+        if shuffle:
+            np.random.shuffle(indices)
+
+        indices = indices[:n]
+        return x[indices], t[indices]
+
+    def forward_and_loss(self, x, t):
+        if self.bind:
+            y, loss = self.model.forward(x, t)
+        else:
+            y = self.model.forward(x)
+            loss = self.model.loss_function.forward(y, t)
+
+        return y, loss
+
+    def progress(self):
+        return self.error, self.accuracy
+
+    def graph(self):
+        graph_for_error(self.error, self.accuracy)
+
+
+
+
+class Measurement_bkup:
+    def __init__(self, model, bind=False, get_acc=None, multilabel=False, batch_size=200):
+        self.model = model
+        self.bind = bind
+        
+        if self.bind or hasattr(self.model, 'loss_function'):
+            pass
+        else:
+            raise ValueError(
+                'The loss cannot be calculated. bind=True may needed.')
+
+        if get_acc is not None:
+            self.get_acc = get_acc 
+        elif multilabel:
+            self.get_acc = get_multilabel_accuracy
+        else:
+            self.get_acc = get_accuracy
+            
+        self.batch_size = batch_size
+        self.error = []
+        self.accuracy = []
 
     def __call__(self, x, t, n=None, shuffle=False, mchx=False):
         x_sample, t_sample = self.sample_data(x, t, n=n, shuffle=shuffle)
@@ -1624,10 +1975,358 @@ def gradient_check(grad1, grad2):
                             + '△{:.2e} '.format(diff)
     return result
 
+def _to_list(y):
+    if isinstance(y, np.ndarray):
+        y = y.tolist()
+    elif isinstance(y, tuple):
+        y = list(y)
 
+    if isinstance(y, list) and len(y) > 0:
+        if isinstance(y[0], np.ndarray):
+            y = [v.item() if v.size == 1 else v.tolist() for v in y]
+
+    return y
+
+
+def _axis_is_right(axis):
+    return axis in ("right", "r", 1)
+
+
+def _axis_is_left(axis):
+    return axis in ("left", "l", 0)
+
+
+def graph_history(
+    data,
+    x=None,
+    *,
+    labels=None,
+    axes=None,
+    xlabel="Epochs",
+    ylabel=None,
+    ylabel_right=None,
+    title=None,
+    xlim=None,
+    ylim=None,
+    ylim_right=None,
+    styles=None,
+    legend=True,
+    grid=True,
+    figsize=None,
+    show=True,
+    as_series=False,
+):
+    """
+    学習履歴などの系列データを汎用的に描画する。
+
+    data:
+        - 1系列: [0.5, 0.4, 0.3]
+        - 複数系列: [error, accuracy]
+        - dict: {"error": error, "accuracy": accuracy}
+
+    axes:
+        各系列を左軸/右軸のどちらに描くか。
+        例: ["left", "right"]
+
+    styles:
+        各系列ごとの plt.plot 用オプション。
+        例: [{"linestyle": "-"}, {"linestyle": "--"}]
+    """
+
+    # --- dataを標準形に整える ---
+    if isinstance(data, dict):
+        keys = list(data.keys())
+        ys = [_to_list(v) for v in data.values()]
+
+        if labels is None:
+            labels = keys
+
+    else:
+        if isinstance(data, np.ndarray):
+            data = data.tolist()
+        elif isinstance(data, tuple):
+            data = list(data)
+
+        if as_series:
+            ys = [_to_list(v) for v in data]
+        else:
+            # dataが単一系列か、系列の集合かを簡易判定
+            if len(data) > 0 and not isinstance(data[0], (list, tuple, np.ndarray)):
+                ys = [_to_list(data)]
+            else:
+                ys = [_to_list(v) for v in data]
+
+        if labels is None:
+            labels = [None] * len(ys)
+
+    n = len(ys)
+
+    if len(labels) != n:
+        raise ValueError("length of data and labels mismatch.")
+
+    # --- axes ---
+    if axes is None:
+        axes = ["left"] * n
+    elif isinstance(axes, str):
+        axes = [axes] * n
+    else:
+        axes = list(axes)
+
+    if len(axes) != n:
+        raise ValueError("length of data and axes mismatch.")
+
+    # --- styles ---
+    if styles is None:
+        styles = [{} for _ in range(n)]
+    else:
+        styles = list(styles)
+
+    if len(styles) != n:
+        raise ValueError("length of data and styles mismatch.")
+
+    # --- figure / axes ---
+    fig, ax_left = plt.subplots(figsize=figsize)
+    ax_right = None
+
+    # 左右軸で色サイクルがリセットされないよう、系列ごとに色を固定する
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    # --- plot ---
+    for i, (y, label, axis, style) in enumerate(zip(ys, labels, axes, styles)):
+        xx = range(len(y)) if x is None else x
+
+        if _axis_is_right(axis):
+            if ax_right is None:
+                ax_right = ax_left.twinx()
+            ax = ax_right
+        else:
+            ax = ax_left
+
+        style = dict(style)
+        style.setdefault("color", colors[i % len(colors)])
+
+        ax.plot(xx, y, label=label, **style)
+
+    # --- axis labels ---
+    ax_left.set_xlabel(xlabel)
+
+    left_labels = [
+        l for l, a in zip(labels, axes)
+        if l is not None and _axis_is_left(a)
+    ]
+    right_labels = [
+        l for l, a in zip(labels, axes)
+        if l is not None and _axis_is_right(a)
+    ]
+
+    if ylabel is None:
+        ylabel = " / ".join(left_labels) if left_labels else "Value"
+
+    if ax_right is not None and ylabel_right is None:
+        ylabel_right = " / ".join(right_labels) if right_labels else "Value"
+
+    ax_left.set_ylabel(ylabel)
+
+    if ax_right is not None:
+        ax_right.set_ylabel(ylabel_right)
+
+    # --- limits / title ---
+    if title is not None:
+        ax_left.set_title(title)
+
+    if xlim is not None:
+        ax_left.set_xlim(xlim)
+
+    if ylim is not None:
+        ax_left.set_ylim(ylim)
+
+    if ax_right is not None and ylim_right is not None:
+        ax_right.set_ylim(ylim_right)
+
+    if grid:
+        ax_left.grid(True)
+
+    # --- legend ---
+    if legend:
+        handles, texts = ax_left.get_legend_handles_labels()
+
+        if ax_right is not None:
+            h2, t2 = ax_right.get_legend_handles_labels()
+            handles += h2
+            texts += t2
+
+        if any(texts):
+            ax_left.legend(
+                handles,
+                texts,
+                bbox_to_anchor=(0.5, 1.15),
+                loc="upper center",
+            )
+
+    fig.tight_layout()
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+def graph_for_error(*data, **kwargs):
+    """
+    旧 graph_for_error 互換用ラッパー。
+
+    例:
+        graph_for_error(error, accuracy,
+                        label=("error", "accuracy"),
+                        axes=("left", "right"))
+    """
+    labels = kwargs.pop("label", None)
+
+    return graph_history(
+        list(data),
+        labels=labels,
+        as_series=True,
+        **kwargs
+    )
+
+def graph_for_error2(data1, data2=None, labels=None):
+    """
+    旧 graph_for_error2 互換用ラッパー。
+
+    data2 is None:
+        data1 を y_data として描画する。
+
+    data2 is not None:
+        data1 を x_data、data2 を y_data として描画する。
+
+    系列数 4:
+        error/error は左軸、accuracy/accuracy は右軸
+
+    系列数 3:
+        全て左軸
+
+    系列数 2:
+        全て左軸
+
+    系列数 1:
+        全て左軸
+    """
+
+    if isinstance(data1, tuple):
+        data1 = [np.array(d).tolist() for d in data1]
+
+    if isinstance(data2, tuple):
+        data2 = [np.array(d).tolist() for d in data2]
+
+    if data2 is not None:
+        x_data = data1
+        y_data = data2
+    else:
+        x_data = None
+        y_data = data1
+
+    default_labels = [
+        "Train error",
+        "Train accuracy",
+        "Test error",
+        "Test accuracy",
+    ]
+
+    if labels is not None:
+        for i, l in enumerate(labels):
+            default_labels[i] = l
+
+    # y_data が単一系列の場合
+    if len(y_data) > 0 and not isinstance(y_data[0], (list, tuple, np.ndarray)):
+        return graph_history(
+            y_data,
+            x=x_data,
+            labels=[default_labels[0]],
+            xlabel="Epochs",
+            ylabel="Error",
+        )
+
+    n = len(y_data)
+
+    if n == 4:
+        return graph_history(
+            y_data,
+            x=x_data,
+            labels=[
+                default_labels[0],
+                default_labels[1],
+                default_labels[2],
+                default_labels[3],
+            ],
+            axes=["left", "right", "left", "right"],
+            xlabel="Epochs",
+            ylabel="Error",
+            ylabel_right="Accuracy",
+            styles=[
+                {"linestyle": "-"},
+                {"linestyle": "--"},
+                {"linestyle": "-"},
+                {"linestyle": "--"},
+            ],
+            as_series=True,
+        )
+
+    elif n == 3:
+        return graph_history(
+            y_data,
+            x=x_data,
+            labels=[
+                default_labels[0],
+                default_labels[2],
+                default_labels[1],
+            ],
+            axes=["left", "left", "left"],
+            xlabel="Epochs",
+            ylabel="Error",
+            styles=[
+                {"linestyle": "-"},
+                {"linestyle": "-"},
+                {"linestyle": "--"},
+            ],
+            as_series=True,
+        )
+
+
+    elif n == 2:
+
+        # 2系列の場合:
+        # error + accuracy を想定し、
+        # 左右軸に自動振り分け
+
+        return graph_history(
+            y_data,
+            x=x_data,
+            labels=[
+                default_labels[0],   # Train error
+                default_labels[1],   # Train accuracy
+            ],
+            axes=["left", "right"],
+            xlabel="Epochs",
+            ylabel="Error",
+            ylabel_right="Accuracy",
+            styles=[
+                {"linestyle": "-"},
+                {"linestyle": "--"},
+            ],
+            as_series=True,
+        )
+
+    else:
+        return graph_history(
+            y_data,
+            x=x_data,
+            labels=[default_labels[0]],
+            xlabel="Epochs",
+            ylabel="Error",
+        )
 
 # -- 誤差の記録をグラフ表示 --
-def graph_for_error(*data, **kwargs):
+def graph_for_error_bkup(*data, **kwargs):
     labels = kwargs.pop('label',  None)
     xlabel = kwargs.pop('xlabel', None)
     ylabel = kwargs.pop('ylabel', None)
@@ -1664,7 +2363,7 @@ def graph_for_error(*data, **kwargs):
     return fig
 
 # -- 誤差の記録をグラフ表示 --
-def graph_for_error2(data1, data2=None, labels=None):
+def graph_for_error2_bkup(data1, data2=None, labels=None):
     if type(data1)==tuple:
         data = []
         for d in data1:
@@ -2655,6 +3354,10 @@ def display_images(image):
         ax.get_xaxis().set_visible(False)  # 軸は非表示
         ax.get_yaxis().set_visible(False)
     plt.show()
+
+
+
+
 
 # -- テスト用のサンプルの表示 --
 def show_sample(data, label=None, shape=None):
