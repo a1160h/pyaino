@@ -3562,8 +3562,17 @@ def show_sample(data, label=None, shape=None):
 # -- 複数サンプルを表示(端数にも対応) --
 def show_multi_samples(data, target=None, label_list=None, 
                        n=(10,5), figsize=(18, 10), maxis=(1,2,3),
-                       save=False, file=None,
+                       save=False, file=None, title=None,
                        ):
+    # リストはarrayに
+    if isinstance(data, (tuple, list)):
+        dd = None
+        for d in data:
+            if dd is None:
+                dd = d.copy()
+            else:
+                dd = np.concatenate([dd, d])
+        data = dd        
     # 画素データを0～1に補正
     if maxis is not None: # 補正軸
         max_picel = np.max(data, axis=maxis, keepdims=True)
@@ -3586,6 +3595,8 @@ def show_multi_samples(data, target=None, label_list=None,
             if target is not None and label_list is not None:
                 plt.title(label_list[int(t[i])])
             plt.axis('off')
+        if title is not None:
+            plt.title(title)
         if save:
             plt.savefig(file)
             plt.close()
@@ -3763,9 +3774,94 @@ def picture_image(func, x, C, Ih, Iw, pil=False, save=False):
         if save:
             image.save("image.png")
 
+def show_image_matrix(images, C, Ih, Iw, n_rows, n_cols,
+                      reverse=False, normalize=False,
+                      space=2, figsize=(9, 9)):
+    """
+    images: 
+        C<=1: (N, Ih, Iw)
+        C> 1: (N, Ih, Iw, C)
+    """
 
-# -- 画像を生成して表示 --
+    if normalize:
+        images = (images - np.min(images)) / (np.max(images) - np.min(images) + 1e-7)
+
+    images = 1 - images if reverse else images
+
+    Ih_spaced = Ih + space
+    Iw_spaced = Iw + space
+
+    if C <= 1:
+        matrix_image = np.empty((Ih_spaced * n_rows, Iw_spaced * n_cols))
+    else:
+        matrix_image = np.empty((Ih_spaced * n_rows, Iw_spaced * n_cols, C))
+
+    matrix_image[...] = 1.0 if reverse else 0.0
+
+    for i in range(n_rows):
+        for j in range(n_cols):
+            idx = i * n_cols + j
+            top  = i * Ih_spaced
+            left = j * Iw_spaced
+            matrix_image[top:top+Ih, left:left+Iw] = images[idx]
+
+    plt.figure(figsize=figsize)
+    if C <= 1:
+        plt.imshow(matrix_image.tolist(), cmap='Greys_r')
+    else:
+        plt.imshow(matrix_image.tolist())
+
+    plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)
+    plt.show()
+
+    return matrix_image
+
 def generate_random_images(func, nz, C, Ih, Iw, n=81,
+                           reverse=False, rate=None, offset=None):
+    if isinstance(nz, int):
+        z_shape = (nz,)
+    elif isinstance(nz, (tuple, list)):
+        z_shape = tuple(nz)
+    else:
+        raise TypeError(f"nz must be int or tuple/list, but got {type(nz)}")
+
+    z_full_shape = (1, *z_shape)
+
+    if rate is None:
+        rate = np.ones(z_full_shape, dtype=Config.dtype)
+    elif isinstance(rate, np.ndarray):
+        rate = rate.reshape(z_full_shape)
+    elif type(rate) in (float, int):
+        rate = np.full(z_full_shape, rate).astype(Config.dtype)
+    else:
+        raise Exception('rate is not applicable.')
+
+    if offset is None:
+        offset = np.zeros(z_full_shape, dtype=Config.dtype)
+    elif isinstance(offset, np.ndarray):
+        offset = offset.reshape(z_full_shape)
+    elif type(offset) in (float, int):
+        offset = np.full(z_full_shape, offset).astype(Config.dtype)
+    else:
+        raise Exception('offset is not applicable.')
+
+    n_rows = int(n ** 0.5)
+    n_cols = n // n_rows
+    n = n_rows * n_cols
+
+    noise = np.random.randn(n, *z_shape).astype(Config.dtype)
+    noise = noise * rate + offset
+
+    if C <= 1:
+        g_imgs = func(noise).reshape(n, Ih, Iw)
+    else:
+        g_imgs = func(noise).reshape(n, C, Ih, Iw).transpose(0, 2, 3, 1)
+
+    show_image_matrix(g_imgs, C, Ih, Iw, n_rows, n_cols,
+                      reverse=reverse, normalize=True)
+    
+# -- 画像を生成して表示 --
+def generate_random_images_bkup(func, nz, C, Ih, Iw, n=81,
                            reverse=False, rate=None, offset=None):
     if isinstance(nz, int):
         z_shape = (nz,)
@@ -3876,8 +3972,73 @@ def generate_random_images_bkup(func, z, C, Ih, Iw, n=81, reverse=False, rate=1.
     plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)  # 軸目盛りのラベルと線を消す
     plt.show()
 
-# -- 画像を生成して表示 --　
 def picture_varying_latent_variables(func, nz, C, Ih, Iw, axis=(0,1), n=81,
+                                      rang=2.8, reverse=False, rate=None, offset=None,
+                                      geometric=True, alpha=1.5):
+    n_rowsh = int(n ** 0.5 // 2) + 1
+    n_colsh = n // ((n_rowsh * 2 - 1) * 2) + 1
+    n_rows = n_rowsh * 2 - 1
+    n_cols = n_colsh * 2 - 1
+
+    if rate is None:
+        rate = np.ones(nz, dtype=Config.dtype)
+    elif isinstance(rate, np.ndarray):
+        rate = rate.reshape(-1)
+    elif type(rate) in (float, int):
+        rate = np.full(nz, rate).astype(Config.dtype)
+    else:
+        raise Exception('rate is not applicable.')
+
+    if offset is None:
+        offset = np.zeros(nz, dtype=Config.dtype)
+    elif isinstance(offset, np.ndarray):
+        offset = offset.reshape(-1)
+    elif type(offset) in (float, int):
+        offset = np.full(nz, offset).astype(Config.dtype)
+    else:
+        raise Exception('offset is not applicable.')
+
+    if geometric:
+        tr = np.linspace(0, 1, num=n_rowsh)
+        tc = np.linspace(0, 1, num=n_colsh)
+        posr = rang**(tr**alpha) - 1
+        posc = rang**(tc**alpha) - 1
+        z_1 = np.concatenate([-posr[::-1], posr[1:]])
+        z_2 = np.concatenate([-posc[::-1], posc[1:]])
+    else:
+        z_1 = np.linspace( 1, -1, n_rows)
+        z_2 = np.linspace(-1,  1, n_cols)
+
+    z_1 = z_1 * rate[axis[0]] + offset[axis[0]]
+    z_2 = z_2 * rate[axis[1]] + offset[axis[1]]
+
+    images = []
+
+    for zi in z_1:
+        for zj in z_2:
+            x = offset.copy()
+            x[axis[0]] = float(zi)
+            x[axis[1]] = float(zj)
+
+            image = func(x.reshape(1, -1))
+
+            if C <= 1:
+                image = image.reshape(Ih, Iw)
+            else:
+                image = image.reshape(C, Ih, Iw).transpose(1, 2, 0)
+
+            image = (image - np.min(image)) / (np.max(image) - np.min(image) + 1e-7)
+            images.append(image)
+
+    images = np.array(images)
+
+    show_image_matrix(images, C, Ih, Iw, n_rows, n_cols,
+                      reverse=reverse, normalize=False)
+
+    return z_1, z_2
+
+# -- 画像を生成して表示 --　
+def picture_varying_latent_variables_bkup(func, nz, C, Ih, Iw, axis=(0,1), n=81,
                                       rang=2.8, reverse=False, rate=None, offset=None,
                                       geometric=True, alpha=1.5):
     # 潜在変数の設定
@@ -4006,6 +4167,81 @@ def picture_varying_latent_variables_bkup(func, z, C, Ih, Iw, axis=(0,1), n=81,
         plt.imshow(matrix_image.tolist())#, cmap='Greys_r')
     plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)  # 軸目盛りのラベルと線を消す
     plt.show()
+
+def picture_varying_attributes(func, attr_vectors, attr1, attr2,
+                               C, Ih, Iw, base_z=None, n=81,
+                               rang=2.8, reverse=False,
+                               geometric=True, alpha=1.5,
+                               scale1=1.0, scale2=1.0):
+    """
+    属性2軸に沿って z を変化させ、生成画像を格子状に表示する。
+
+    attr_vectors:
+        {'Male': v_male, 'Bald': v_bald, ...}
+        のような属性方向ベクトル辞書
+
+    attr1, attr2:
+        変化させる属性名
+
+    base_z:
+        基準となる z。
+        None の場合は 0 ベクトル。
+    """
+
+    v1 = attr_vectors[attr1].reshape(-1).astype(Config.dtype)
+    v2 = attr_vectors[attr2].reshape(-1).astype(Config.dtype)
+
+    nz = v1.shape[0]
+
+    if base_z is None:
+        base_z = np.zeros(nz, dtype=Config.dtype)
+    else:
+        base_z = base_z.reshape(-1).astype(Config.dtype)
+
+    n_rowsh = int(n ** 0.5 // 2) + 1
+    n_colsh = n // ((n_rowsh * 2 - 1) * 2) + 1
+
+    n_rows = n_rowsh * 2 - 1
+    n_cols = n_colsh * 2 - 1
+
+    if geometric:
+        tr = np.linspace(0, 1, num=n_rowsh)
+        tc = np.linspace(0, 1, num=n_colsh)
+
+        posr = rang**(tr**alpha) - 1
+        posc = rang**(tc**alpha) - 1
+
+        z_1 = np.concatenate([-posr[::-1], posr[1:]])
+        z_2 = np.concatenate([-posc[::-1], posc[1:]])
+    else:
+        z_1 = np.linspace(-1, 1, n_rows)
+        z_2 = np.linspace(-1, 1, n_cols)
+
+    z_1 = z_1 * scale1
+    z_2 = z_2 * scale2
+
+    images = []
+
+    for a in z_1:
+        for b in z_2:
+            z = base_z + a * v1 + b * v2
+
+            image = func(z.reshape(1, -1))
+
+            if C <= 1:
+                image = image.reshape(Ih, Iw)
+            else:
+                image = image.reshape(C, Ih, Iw).transpose(1, 2, 0)
+
+            image = (image - np.min(image)) / (np.max(image) - np.min(image) + 1e-7)
+            images.append(image)
+
+    images = np.stack(images, axis=0)
+
+    show_image_matrix(images, C, Ih, Iw, n_rows, n_cols,
+                      reverse=reverse, normalize=False)
+
+    return z_1, z_2
 
 def is_np(x):
     """ xがnpと定義された形式かどうかを判定 """
