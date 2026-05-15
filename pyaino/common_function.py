@@ -1,5 +1,5 @@
 # common_function
-# 2026.05.12 A.Inoue 
+# 2026.05.15 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1426,9 +1426,87 @@ def get_accuracy_bkup(y, t, mchx=False, y_label=False):
     else:
         return accuracy
 
-def get_similarity(y, t):
+def get_similarity_simple(y, t):
     mse = np.mean((y - t) ** 2)
     return float(1 / (1 + mse))
+
+def get_psnr(y, t, eps=1e-8):
+    mse = np.mean((y - t) ** 2)
+    psnr = -10 * np.log10(mse + eps)
+    return float(psnr)
+
+def get_similarity_mae(y, t):
+    mae = np.mean(np.abs(y - t))
+    return float(1 - mae)
+
+def get_similarity(
+        y,
+        t,
+        value_range=None,
+        clip_range=None,
+        eps=1e-8):
+    """
+    Simple image similarity score based on MAE.
+
+    Parameters
+    ----------
+    y, t : ndarray
+        Images to compare.
+
+    value_range : tuple or None
+        Input value range for normalization.
+
+        Examples:
+            (0, 255)
+            (-1, 1)
+            (0, 1)
+            (-3, 3)
+
+        If None, automatically estimated from y and t.
+
+    clip_range : tuple or None
+        Optional clipping range before normalization.
+
+        Examples:
+            (-3, 3)
+
+        Useful for standardized data such as N(0,1).
+
+    Returns
+    -------
+    similarity : float
+        1.0 means identical.
+    """
+
+    y = y.astype(np.float32)
+    t = t.astype(np.float32)
+
+    # Optional clipping
+    if clip_range is not None:
+        cmin, cmax = clip_range
+        y = np.clip(y, cmin, cmax)
+        t = np.clip(t, cmin, cmax)
+
+    # Value range for normalization
+    if value_range is None:
+        vmin = min(float(y.min()), float(t.min()))
+        vmax = max(float(y.max()), float(t.max()))
+    else:
+        vmin, vmax = value_range
+
+    scale = max(vmax - vmin, eps)
+
+    # Normalize to [0,1]
+    y = (y - vmin) / scale
+    t = (t - vmin) / scale
+
+    # MAE similarity
+    mae = np.mean(np.abs(y - t))
+
+    similarity = 1.0 - mae
+
+    return float(similarity)
+
 
 class Measurement:
     def __init__(self, model, bind=False, get_acc=None, mode=None, batch_size=200):
@@ -3444,6 +3522,7 @@ def display_images(image):
 def show_sample(data, label=None, shape=None):
     #print('### debug', data.shape)
     rdata = data[0] if (data.ndim==4 or data.ndim==2) else data
+    #print('### debug', rdata.shape)
     if rdata.ndim==1:
         if shape is not None:
             if len(shape)!=3:
@@ -3465,17 +3544,17 @@ def show_sample(data, label=None, shape=None):
                 raise ValueError('Cannot shape give data as an image. ')
             rdata = rdata.reshape(C,Ih,Iw).transpose(1,2,0) 
     elif rdata.ndim==3:
-        if rdata.shape[0]==3 or rdata.shape[0]==1:
+        if rdata.shape[0] in (1, 3):
             C,Ih,Iw = rdata.shape
-            rdata = rdata.reshape(C,Ih,Iw).transpose(1,2,0)
-
+            rdata = rdata.transpose(1,2,0)
         else:    
             Ih,Iw,C = rdata.shape
             rdata = rdata.reshape(Ih,Iw,C)
+    cmap = 'gray' if rdata.shape[-1] == 1 else None # 転置後のチャネル軸を見る    
     
     max_picel = np.max(rdata); min_picel = np.min(rdata) # 画素データを0～1に補正
     rdata = (rdata - min_picel)/(max_picel - min_picel)
-    plt.imshow(rdata.tolist())
+    plt.imshow(rdata.tolist(), cmap=cmap)
     if label:
         plt.title(label)
     plt.show()
