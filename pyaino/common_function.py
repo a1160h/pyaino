@@ -1,5 +1,5 @@
 # common_function
-# 2026.05.15 A.Inoue 
+# 2026.05.17 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -3774,19 +3774,37 @@ def picture_image(func, x, C, Ih, Iw, pil=False, save=False):
         if save:
             image.save("image.png")
 
-def show_image_matrix(images, C, Ih, Iw, n_rows, n_cols,
-                      reverse=False, normalize=False,
-                      space=2, figsize=(9, 9)):
-    """
-    images: 
-        C<=1: (N, Ih, Iw)
-        C> 1: (N, Ih, Iw, C)
-    """
+def show_image_matrix(images, shape=None, n=None, reverse=False, normalize=False,
+                      title=None, xlabel=None, ylabel=None, space=2, figsize=(9, 9)):
+    """ 複数画像をマトリックス状に表示 """
 
+    # -- 形状や並びの大きさを確定 --
+    if shape is not None:
+        C, Ih, Iw = shape
+        N = len(images)
+    elif images.ndim==4:
+        if images.shape[1] in (1, 3):
+            N, C, Ih, Iw = images.shape
+        else:
+            N, Ih, Iw, C = images.shape
+    elif images.ndim==3:
+        N, Ih, Iw = images.shape; C = 1
+    else:
+        raise ValueError(f'Invalid images shape {images.shape}')
+    if n is None:
+        n = N
+    
+    if isinstance(n, (tuple, list)):
+        n_rows = n[0]; n_cols = n[1]
+    else:
+        n_rows = int(n ** 0.5)
+        n_cols = n // n_rows
+        n = n_rows * n_cols
+        
     if normalize:
         images = (images - np.min(images)) / (np.max(images) - np.min(images) + 1e-7)
 
-    images = 1 - images if reverse else images
+    images = np.max(images) - images if reverse else images
 
     Ih_spaced = Ih + space
     Iw_spaced = Iw + space
@@ -3812,6 +3830,9 @@ def show_image_matrix(images, C, Ih, Iw, n_rows, n_cols,
         plt.imshow(matrix_image.tolist())
 
     plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.show()
 
     return matrix_image
@@ -3845,10 +3866,6 @@ def generate_random_images(func, nz, C, Ih, Iw, n=81,
     else:
         raise Exception('offset is not applicable.')
 
-    n_rows = int(n ** 0.5)
-    n_cols = n // n_rows
-    n = n_rows * n_cols
-
     noise = np.random.randn(n, *z_shape).astype(Config.dtype)
     noise = noise * rate + offset
 
@@ -3857,121 +3874,8 @@ def generate_random_images(func, nz, C, Ih, Iw, n=81,
     else:
         g_imgs = func(noise).reshape(n, C, Ih, Iw).transpose(0, 2, 3, 1)
 
-    show_image_matrix(g_imgs, C, Ih, Iw, n_rows, n_cols,
-                      reverse=reverse, normalize=True)
+    show_image_matrix(g_imgs, reverse=reverse, normalize=True)
     
-# -- 画像を生成して表示 --
-def generate_random_images_bkup(func, nz, C, Ih, Iw, n=81,
-                           reverse=False, rate=None, offset=None):
-    if isinstance(nz, int):
-        z_shape = (nz,)
-    elif isinstance(nz, (tuple, list)):
-        z_shape = tuple(nz)
-    else:
-        raise TypeError(f"nz must be int or tuple/list, but got {type(nz)}")
-    z_full_shape = (1, *z_shape)
-
-    if rate is None:
-        rate = np.ones(z_full_shape, dtype=Config.dtype)
-    elif isinstance(rate, np.ndarray):
-        rate = rate.reshape(z_full_shape)
-    elif type(rate) in (float, int):
-        rate = np.full(z_full_shape, rate).astype(Config.dtype)
-    else:
-        raise Exception('rate is not applicable.')
-
-    if offset is None:
-        offset = np.zeros(z_full_shape, dtype=Config.dtype)
-    elif isinstance(offset, np.ndarray):
-        offset = offset.reshape(z_full_shape)
-    elif type(offset) in (float, int):
-        offset = np.full(z_full_shape, offset).astype(Config.dtype)
-    else:
-        raise Exception('offset is not applicable.')
-
-    # 画像の生成
-    n_rows = int(n ** 0.5)  # 行数
-    n_cols = n // n_rows    # 列数
-    # 入力となるノイズ  平均=offset 標準偏差=rate の正規分布の乱数
-    noise = np.random.randn(n_rows*n_cols, *z_shape).astype(Config.dtype)
-    noise = noise * rate + offset
-    # 画像を生成して 0-1 の範囲に調整
-    if C <= 1:
-        #y = func(noise); print(y.shape, n, Ih, Iw)
-        g_imgs = func(noise).reshape(n, Ih, Iw)
-    else:
-        g_imgs = func(noise).reshape(n, C, Ih, Iw).transpose(0, 2, 3, 1)
-    g_imgs = (g_imgs - np.min(g_imgs)) / (np.max(g_imgs) - np.min(g_imgs))  
-    g_imgs = 1 - g_imgs if reverse==True else g_imgs
-    Ih_spaced = Ih + 2; Iw_spaced = Iw + 2
-    if C <= 1:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols))  # 全体の画像
-    else:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols, C)) # 全体の画像
-    matrix_image[...] = 1.0 if reverse==True else 0.0 
-    #print(matrix_image.shape, g_imgs.shape)
-    #  生成された画像を並べて一枚の画像にする
-    for i in range(n_rows):
-        for j in range(n_cols):
-            g_img = g_imgs[i*n_cols + j]
-            top  = i*Ih_spaced
-            left = j*Iw_spaced
-            matrix_image[top : top+Ih, left : left+Iw] = g_img
-
-    plt.figure(figsize=(9, 9))
-    if C <=1:
-        plt.imshow(matrix_image.tolist(), cmap='Greys_r')
-    else:
-        plt.imshow(matrix_image.tolist())#, cmap='Greys_r')
-    plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)  # 軸目盛りのラベルと線を消す
-    plt.show()
-
-def generate_random_images_bkup(func, z, C, Ih, Iw, n=81, reverse=False, rate=1.0):
-    """ 引数zと同様(平均と標準偏差が同様)の乱数を潜在変数としてfuncにより画像を生成 """
-    mu = np.mean(z, axis=0, keepdims=True)
-    sigma = np.std(z, axis=0, keepdims=True)
-    nz = z.shape[-1]
-
-    # 画像の生成
-    n_rows = int(n ** 0.5)  # 行数
-    n_cols = n // n_rows    # 列数
-    # 入力となるノイズ
-    #noise = np.random.normal(0, 1.0, (n_rows*n_cols, nz))  # 平均 0 標準偏差 1 の乱数
-    noise = np.random.randn(n_rows*n_cols, nz) * sigma * rate + mu
-    #print('mu_z =', mu, 'sigma_z =', sigma)
-    #print('mu_n', np.mean(noise, axis=0), 'sigma_n =', np.std(noise, axis=0))
-    
-    # 画像を生成して 0-1 の範囲に調整
-    if C <= 1:
-        #y = func(noise); print(y.shape, n, Ih, Iw)
-        g_imgs = func(noise).reshape(n, Ih, Iw)
-    else:
-        g_imgs = func(noise).reshape(n, C, Ih, Iw).transpose(0, 2, 3, 1)
-    g_imgs = (g_imgs - np.min(g_imgs)) / (np.max(g_imgs) - np.min(g_imgs))  
-    g_imgs = 1 - g_imgs if reverse==True else g_imgs
-    Ih_spaced = Ih + 2; Iw_spaced = Iw + 2
-    if C <= 1:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols))  # 全体の画像
-    else:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols, C)) # 全体の画像
-    matrix_image[...] = 1.0 if reverse==True else 0.0 
-    #print(matrix_image.shape, g_imgs.shape)
-    #  生成された画像を並べて一枚の画像にする
-    for i in range(n_rows):
-        for j in range(n_cols):
-            g_img = g_imgs[i*n_cols + j]
-            top  = i*Ih_spaced
-            left = j*Iw_spaced
-            matrix_image[top : top+Ih, left : left+Iw] = g_img
-
-    plt.figure(figsize=(9, 9))
-    if C <=1:
-        plt.imshow(matrix_image.tolist(), cmap='Greys_r')
-    else:
-        plt.imshow(matrix_image.tolist())#, cmap='Greys_r')
-    plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)  # 軸目盛りのラベルと線を消す
-    plt.show()
-
 def picture_varying_latent_variables(func, nz, C, Ih, Iw, axis=(0,1), n=81,
                                       rang=2.8, reverse=False, rate=None, offset=None,
                                       geometric=True, alpha=1.5):
@@ -4032,141 +3936,9 @@ def picture_varying_latent_variables(func, nz, C, Ih, Iw, axis=(0,1), n=81,
 
     images = np.array(images)
 
-    show_image_matrix(images, C, Ih, Iw, n_rows, n_cols,
-                      reverse=reverse, normalize=False)
+    show_image_matrix(images, reverse=reverse, normalize=False)
 
     return z_1, z_2
-
-# -- 画像を生成して表示 --　
-def picture_varying_latent_variables_bkup(func, nz, C, Ih, Iw, axis=(0,1), n=81,
-                                      rang=2.8, reverse=False, rate=None, offset=None,
-                                      geometric=True, alpha=1.5):
-    # 潜在変数の設定
-    n_rowsh = int(n ** 0.5 // 2) + 1           # 行数の半分
-    n_colsh = n // ((n_rowsh * 2 - 1) * 2) + 1 # 列数の半分
-    n_rows = n_rowsh * 2 - 1                   # 行数
-    n_cols = n_colsh * 2 - 1                   # 列数
-
-    #print(n_rowsh, n_colsh, n_rows, n_cols)
-
-    if rate is None:
-        rate = np.ones(nz, dtype=Config.dtype)
-    elif isinstance(rate, np.ndarray):
-        rate = rate.reshape(-1)
-    elif type(rate) in (float, int):
-        rate = np.full(nz, rate).astype(Config.dtype)
-    else:
-        raise Exception('rate is not applicable.')
-
-    if offset is None:
-        offset = np.zeros(nz, dtype=Config.dtype)
-    elif isinstance(offset, np.ndarray):
-        offset = offset.reshape(-1)
-    elif type(offset) in (float, int):
-        offset = np.full(nz, offset).astype(Config.dtype)
-    else:
-        raise Exception('offset is not applicable.')
-
-    #print('rate/offset =', rate.shape, offset.shape) 
-
-    if geometric:  # 等比的
-        tr = np.linspace(0, 1, num=n_rowsh)
-        tc = np.linspace(0, 1, num=n_colsh)
-        posr = (1 + 1)**(tr**alpha) - 1
-        posc = (1 + 1)**(tc**alpha) - 1
-        z_1 = np.concatenate([-posr[::-1], posr[1:]])
-        z_2 = np.concatenate([-posc[::-1], posc[1:]])
-
-    else:          # 等差的
-        z_1 = np.linspace( 1, -1, n_rowsh*2-1)
-        z_2 = np.linspace(-1,  1, n_colsh*2-1)
-   
-    z_1 = z_1 * rate[axis[0]] + offset[axis[0]] # 行
-    z_2 = z_2 * rate[axis[1]] + offset[axis[1]] # 列
-    #print('行', z_1, '\n列', z_2)
-
-    # 画像の設定
-    Ih_spaced = Ih + 2; Iw_spaced = Iw + 2
-    if C <= 1:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols))  # 全体の画像
-    else:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols, C)) # 全体の画像
-    matrix_image[...] = 1.0 if reverse==True else 0.0 
-
-    #  潜在変数を変化させて画像を生成
-    for i, zi in enumerate(z_1):
-        for j, zj in enumerate(z_2):
-            x = offset.copy()
-            x[axis[0]] = float(zi)
-            x[axis[1]] = float(zj)
-
-            image = func(x.reshape(1, -1)) # 仮処置20260423AI
-            if C <= 1:
-                image = image.reshape(Ih, Iw)
-            else:
-                image = image.reshape(C, Ih, Iw).transpose(1, 2, 0)
-            image = 1 - image if reverse==True else image
-            image = (image - np.min(image)) / (np.max(image) - np.min(image)) # 画像をはっきり
-            top  = i*Ih_spaced
-            left = j*Iw_spaced
-            matrix_image[top : top+Ih, left : left+Iw] = image
-
-    plt.figure(figsize=(9, 9))
-    if C <=1:
-        plt.imshow(matrix_image.tolist(), cmap='Greys_r')
-    else:
-        plt.imshow(matrix_image.tolist())#, cmap='Greys_r')
-    plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)  # 軸目盛りのラベルと線を消す
-    plt.show()
-    return z_1, z_2 
-
-def picture_varying_latent_variables_bkup(func, z, C, Ih, Iw, axis=(0,1), n=81,
-                                     rang=2.8, reverse=False):
-    # 潜在変数の設定
-    print('axis =', axis)
-    n_rows = int(n ** 0.5)  # 行数
-    n_cols = n // n_rows    # 列数
-    if np.all(z==0):
-        nz = z.shape[1]
-        x  = np.zeros(nz) 
-        z_1 = np.linspace( rang, -rang, n_rows)  # 行
-        z_2 = np.linspace(-rang,  rang, n_cols)  # 列
-    else:
-        x = np.mean(np.array(z), axis=0) # hdarrayとcupyの相性問題対処でわざわざnp.array()
-        z_1 = np.linspace(np.max(z[:, axis[0]]), np.min(z[:, axis[0]]), n_rows)  # 行
-        z_2 = np.linspace(np.min(z[:, axis[1]]), np.max(z[:, axis[1]]), n_cols)  # 列
-    print('行', z_1, '\n列', z_2)
-
-    # 画像の設定
-    Ih_spaced = Ih + 2; Iw_spaced = Iw + 2
-    if C <= 1:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols))  # 全体の画像
-    else:
-        matrix_image = np.empty((Ih_spaced*n_rows, Iw_spaced*n_cols, C)) # 全体の画像
-    matrix_image[...] = 1.0 if reverse==True else 0.0 
-
-    #  潜在変数を変化させて画像を生成
-    for i, zi in enumerate(z_1):
-        for j, zj in enumerate(z_2):
-            x[axis[0]] = float(zi)
-            x[axis[1]] = float(zj)
-            if C <= 1:
-                image = func(x).reshape(Ih, Iw)
-            else:
-                image = func(x).reshape(C, Ih, Iw).transpose(1, 2, 0)
-            image = 1 - image if reverse==True else image
-            image = (image - np.min(image)) / (np.max(image) - np.min(image)) # 画像をはっきり
-            top  = i*Ih_spaced
-            left = j*Iw_spaced
-            matrix_image[top : top+Ih, left : left+Iw] = image
-
-    plt.figure(figsize=(9, 9))
-    if C <=1:
-        plt.imshow(matrix_image.tolist(), cmap='Greys_r')
-    else:
-        plt.imshow(matrix_image.tolist())#, cmap='Greys_r')
-    plt.tick_params(labelbottom=False, labelleft=False, bottom=False, left=False)  # 軸目盛りのラベルと線を消す
-    plt.show()
 
 def picture_varying_attributes(func, attr_vectors, attr1, attr2,
                                C, Ih, Iw, base_z=None, n=81,
