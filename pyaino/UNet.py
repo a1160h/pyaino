@@ -72,7 +72,7 @@ class ConvBlock:
         for conv in self.convs:
             conv.update(eta=eta, **kwargs)
         if self.residual:
-            self.shortcut,update(eta=eta, **kwargs)
+            self.shortcut.update(eta=eta, **kwargs)
             
         
 class ConvBlockBottleneck(ConvBlock):
