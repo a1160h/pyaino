@@ -1,5 +1,5 @@
 # UNet
-# 20260416 A.Inoue
+# 20260521 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -71,6 +71,8 @@ class ConvBlock:
             self.proj.update(eta=eta, **kwargs)
         for conv in self.convs:
             conv.update(eta=eta, **kwargs)
+        if self.residual:
+            self.shortcut,update(eta=eta, **kwargs)
             
         
 class ConvBlockBottleneck(ConvBlock):
@@ -705,7 +707,7 @@ class CNN_MultiStageStack:
                  stem_kernel=1,
                  residual=False, activate='ReLU', pre_activation=False,
                  batchnorm=None, layernorm=None, normaffine=False, 
-                 optimize='AdamT', w_decay=0.01, bias_last=False,
+                 optimize='AdamT', w_decay=0.01, bias_last=False, ol_act=None,
                  ):
                  
         warnings.warn(self.__class__.__name__
@@ -774,6 +776,7 @@ class CNN_MultiStageStack:
         
         # 出力Head
         options_for_ol = {**common_options,
+                          'activate': ol_act,
                           'bias' : bias_last,}
         # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
         if outtype is None:
@@ -919,7 +922,7 @@ if __name__=='__main__':
         gx = model.down[0].convs[0].inputs[0].grad
         print(f'##### y.shape = {y.shape} gx.shape = {gx.shape} #####')
 
-    #"""#
+    """#
     for i in range(10):
         h, w = np.random.randint(1, 100, 2)
         c = np.random.randint(1, 5)
