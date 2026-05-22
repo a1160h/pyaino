@@ -1,5 +1,5 @@
 # common_function
-# 2026.05.17 A.Inoue 
+# 2026.05.22 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1376,7 +1376,7 @@ def get_accuracy(y, t, mchx=False):#, y_label=False):
         raise ValueError('Wrong dimension of y or t')
 
     errata = result == correct
-    accuracy = float(np.sum(errata) / size)
+    accuracy = float(errata.sum() / size)
     if mchx:
         return accuracy, errata
     else:
@@ -3838,7 +3838,7 @@ def show_image_matrix(images, shape=None, n=None, reverse=False, normalize=False
     return matrix_image
 
 def generate_random_images(func, nz, C, Ih, Iw, n=81,
-                           reverse=False, rate=None, offset=None):
+                           reverse=False, rate=None, offset=None, matrix=True):
     if isinstance(nz, int):
         z_shape = (nz,)
     elif isinstance(nz, (tuple, list)):
@@ -3874,7 +3874,10 @@ def generate_random_images(func, nz, C, Ih, Iw, n=81,
     else:
         g_imgs = func(noise).reshape(n, C, Ih, Iw).transpose(0, 2, 3, 1)
 
-    show_image_matrix(g_imgs, reverse=reverse, normalize=True)
+    if matrix:
+        show_image_matrix(g_imgs, reverse=reverse, normalize=True)
+    else:
+        show_multi_samples(g_imgs)
     
 def picture_varying_latent_variables(func, nz, C, Ih, Iw, axis=(0,1), n=81,
                                       rang=2.8, reverse=False, rate=None, offset=None,
