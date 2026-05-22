@@ -1,5 +1,5 @@
 # data_loader
-# 2026.04.29 A.Inoue
+# 2026.05.11 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -348,21 +348,38 @@ class CelebALoader(ImageLoader):
     data_source で指定されたディレクトリ内の画像ファイルを列挙し、
     index によってアクセスする。
 
+    attr_source に anno/list_attr_celeba.txt を指定すると、
+    画像と同時に属性ベクトルを返す。
+
     各画像はPIL.Imageで RGB (HWC) として読み込まれる。
 
     Parameters
     ----------
-    data_source : str 画像ディレクトリのパス
+    data_source : str
+        画像ディレクトリのパス
+    attr_source : str or None
+        CelebA の anno/list_attr_celeba.txt のパス
     """
-    def __init__(self, data_source, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, target_order='asis', normalize=None,
+    def __init__(self, data_source, attr_source=None, batch_size=64, prefetch=8, shuffle=True,
+                 resize=None, target_order='asis', cache=False, normalize=None,
                  data_size=None, drop_last=False):
 
         rawpath = os.path.normpath(data_source + os.sep + "*")
-        self.file_list = glob.glob(rawpath)
+        self.file_list = sorted(glob.glob(rawpath))
+
+        self.attr_names = None
+        self.attrs = None
+        if attr_source is not None:
+            self.attr_names, attr_dict = self._load_attr_file(attr_source)
+            self.attrs = numpy.asarray(
+                [attr_dict[os.path.basename(path)] for path in self.file_list],
+                dtype=numpy.int8
+            )
         
         if data_size is not None:
             self.file_list = self.file_list[:data_size]
+            if self.attrs is not None:
+                self.attrs = self.attrs[:data_size]
         self.data_size = len(self.file_list)    
 
         super().__init__(
@@ -372,16 +389,41 @@ class CelebALoader(ImageLoader):
             resize=resize,
             source_order='HWC',
             target_order=target_order,
+            cache=cache,
             normalize=normalize,
             drop_last=drop_last,
         )
+
+    def _load_attr_file(self, file_path):
+        with open(file_path, 'r') as f:
+            lines = f.read().splitlines()
+
+        attr_names = lines[1].split()
+        attr_dict = {}
+        for line in lines[2:]:
+            values = line.split()
+            fname = values[0]
+            attrs = numpy.asarray(values[1:], dtype=numpy.int8)
+            attrs = (attrs > 0).astype(numpy.uint8)
+            attr_dict[fname] = attrs
+
+        return attr_names, attr_dict
 
     def _load_item(self, idx):
         file_path = self.file_list[idx]
         img = Image.open(file_path).convert('RGB')
         if self.resize is not None:
             img = ImageOps.fit(img, self.resize, Image.LANCZOS)
-        return numpy.asarray(img, dtype=numpy.uint8)
+        x = numpy.asarray(img, dtype=numpy.uint8)
+
+        if self.attrs is not None:
+            y = self.attrs[idx]
+            return x, y
+        else:
+            return x
+
+    def label_names(self):
+        return self.attr_names
 
 
 class STL10BinaryLoader(ImageLoader):
@@ -397,7 +439,7 @@ class STL10BinaryLoader(ImageLoader):
     target_order : str 出力時の軸順（例: 'CHW'）
     """
     def __init__(self, data_source, label_source=None, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, target_order='CHW', normalize=None,
+                 resize=None, target_order='CHW', cache=False, normalize=None,
                  data_size=None, drop_last=False):
 
         self.data_source = data_source
@@ -435,6 +477,7 @@ class STL10BinaryLoader(ImageLoader):
             resize=resize,
             source_order=source_order,
             target_order=target_order,
+            cache=cache,
             normalize=normalize,
             drop_last=drop_last,
         )
