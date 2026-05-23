@@ -1,5 +1,5 @@
 # common_function
-# 2026.05.22 A.Inoue 
+# 2026.05.23 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1375,8 +1375,8 @@ def get_accuracy(y, t, mchx=False):#, y_label=False):
     else:
         raise ValueError('Wrong dimension of y or t')
 
-    errata = result == correct
-    accuracy = float(errata.sum() / size)
+    errata = np.array(result == correct) # np.ndarrayに固定が必要20260523AI
+    accuracy = float(np.sum(errata) / size)
     if mchx:
         return accuracy, errata
     else:
@@ -1390,7 +1390,7 @@ def get_multilabel_accuracy(y, t, threshold=0.5, mchx=False):
     result = (y >= threshold).astype(t.dtype)
     correct = t
 
-    errata = result == correct
+    errata = np.array(result == correct) # np.ndarrayに固定が必要20260523AI
     accuracy = float(np.sum(errata) / errata.size)
 
     if mchx:
@@ -1418,7 +1418,7 @@ def get_accuracy_bkup(y, t, mchx=False, y_label=False):
     else:
         raise Exception('Wrong dimension of y or t')
 
-    errata = result == correct
+    errata = np.array(result == correct) # np.ndarrayに固定が必要20260523AI
     size = y.size / y.shape[-1] # 時系列データ対応
     accuracy = float(np.sum(errata) / size)
     if mchx:
