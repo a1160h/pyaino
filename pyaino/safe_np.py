@@ -1,52 +1,103 @@
 # safe_np.py
-# 20260421 A.Inoue
+# 20260523 A.Inoue
 
-# safe_np 使用ガイドライン
+# ================================================================
+# safe_np 使用ガイドライン（最新版・NumPy 問題対応版）
+# ================================================================
 #
-# 本モジュールは、NumPy / CuPy 間の差異や版数依存、未実装関数などを吸収し、
+# 本モジュールは、NumPy / CuPy 間の差異や版数依存、
+# さらに NumPy が HDArray を壊す問題を吸収し、
 # 実装の安定性を高めるための「互換レイヤ」である。
-# 自動微分のための必須要素ではない点に注意すること。
 #
+# safe_np は自動微分のための必須要素ではなく、
+# あくまで「NumPy 側の危険箇所を安全化するための補助レイヤ」である。
+#
+# ------------------------------------------------
 # 【基本方針】
-# - safe_np は「必要な箇所に限定して使用する」
+# ------------------------------------------------
+# - safe_np は「NumPy 側で問題が起きる箇所に限定して使用する」
+# - CuPy 側は既存の safe_cp をそのまま使用する（今回問題なし）
+# - HDArray → ndarray 変換は np.asarray() によるゼロコピーを基本とする
 # - すべての np 呼び出しを置き換えることは目的としない
 #
-# 【使用すべき箇所（推奨・必須）】
-# - NumPy / CuPy 間で挙動差・未実装・版数差がある関数
-#   例：add.at, 特殊関数（erf 等）, cupyx 依存機能 など
-# - 将来的に互換性問題が再発する可能性が高い箇所
+# ------------------------------------------------
+# 【使用すべき箇所（必須）】
+# ------------------------------------------------
+# NumPy 側で HDArray が壊れる可能性が高い関数は必ず safe_np を使う。
 #
+# ● 軸を扱う高レベル関数（NumPy が HDArray を壊す代表例）
+#   sum, mean, max, min, std, var, prod,
+#   argmax, argmin, cumsum, cumprod,
+#   any, all, einsum
+#
+# ● 比較演算後の集約（最も壊れやすい）
+#     y = x == a
+#     np.sum(y)   ← safe_np.sum に置換必須
+#
+# ● ブールマスク関連
+#     np.sum(x > 0)
+#     np.any(x < 0)
+#
+# ● 結合・分割・形状操作で HDArray が混ざる場合
+#   concatenate, stack, hstack, vstack, dstack
+#   split, tile, repeat, take, put
+#   reshape, broadcast_to, moveaxis, transpose
+#   expand_dims, squeeze
+#
+# ------------------------------------------------
 # 【使用が望ましい箇所（任意）】
+# ------------------------------------------------
 # - reshape, transpose, broadcast_to, expand_dims などの基本操作
 # - concatenate / split / where / reduction 系など頻出処理
-# → 統一的に扱いたい場合のみ使用
+# → 統一的に扱いたい場合のみ safe_np を使用する
 #
+# ------------------------------------------------
 # 【使用しなくてよい箇所】
+# ------------------------------------------------
 # - 明確に NumPy / CuPy 固有処理を行う場合
 # - 外部ライブラリ制約により直接呼び出しが必要な場合
 # - 挙動が完全に安定しており、ラップの必要がない場合
 #
+# ● CuPy 側の関数（今回問題なし）
+#   einsum, sort, argsort, where, clip,
+#   expand_dims, squeeze, triu_indices, tril_indices
+#
+# ------------------------------------------------
 # 【設計原則】
-# - safe_np は「すべてを包む層」ではなく、「差異を吸収する層」とする
-# - 問題が起きた際に、原因（backend / safe_np / 上位層）を切り分けやすく保つ
+# ------------------------------------------------
+# - safe_np は「すべてを包む層」ではなく、
+#     NumPy が HDArray を壊す箇所だけを吸収する層とする
 #
-# 必要最小限にとどめることで、保守性と可読性のバランスを維持すること。
+# - HDArray → ndarray 変換は np.asarray() によるゼロコピーを徹底する
+#     → 計算グラフ情報（creator, generation 等）を持ち込まない
+#     → NumPy の __array_function__ 問題を完全に回避
 #
-# transpose の扱い
+# - 問題が起きた際に、
+#     backend（NumPy/CuPy） / safe_np / 上位層
+#   のどこが原因か切り分けやすく保つ
 #
+# - 必要最小限にとどめることで、
+#     保守性と可読性のバランスを維持する
+#
+# ------------------------------------------------
+# 【transpose の扱い】
+# ------------------------------------------------
 # - x.T はそのまま使用してよい（NumPy / CuPy 間で安定）
-# - np.transpose(x) は x.T に置き換える（axes指定なしの場合）
+# - np.transpose(x) は x.T に置き換える（axes 指定なしの場合）
 # - 軸指定あり transpose は safe_np 経由を推奨
 #     snp.transpose(x, axes=...)
 #
-# - 可読性・保守性の観点から、
-#   可能であれば「軸の意味」に基づくラッパ関数の導入も検討する
+# ------------------------------------------------
+# 【reduction 系（sum, mean など）】
+# ------------------------------------------------
+# - NumPy 側で HDArray を壊すため、safe_np で統一することが必須
+# - CuPy 側は既存の safe_cp をそのまま使用する（問題なし）
 #
-# reduction 系（sum, mean など）は CuPy / NumPy 間で API 差異があり、
-# backward 内での安定動作のため safe_np で統一する
+# ================================================================
 
 from pyaino import Config
 np = Config.np
+from pyaino.nucleus import HDArray
 
 if np.__name__ == "cupy":
     import cupy as _cupy
@@ -286,7 +337,14 @@ def _fallback_erf(x):
     else:
         return _numpy_erf(x)
 
-
+# ------------------------------------------------------------
+# NumPy の場合の純粋ndarrayへの戻し
+# ------------------------------------------------------------
+def _to_numpy(x):
+    """ HDArray をゼロコピーで ndarray に変換する """
+    if isinstance(x, HDArray):
+        return _numpy.asarray(x) # numpyならこれでndarrayに戻る
+    return x
 
 # ------------------------------------------------------------
 # NumPy / CuPy の切り替え
@@ -374,53 +432,140 @@ if np.__name__ == "cupy":
     else:
         erf = _fallback_erf
 
-else:
-    # NumPy の場合は全部そのまま
-    reshape      = _numpy.reshape
-    broadcast_to = _numpy.broadcast_to
-    moveaxis     = _numpy.moveaxis
-    ascontiguousarray = _numpy.ascontiguousarray
-    transpose    = _numpy.transpose
+else: # numpy環境
+    # ---------- 形状操作 ----------
+    def reshape(x, *args, **kwargs):
+        return _numpy.reshape(_to_numpy(x), *args, **kwargs)
 
-    concatenate  = _numpy.concatenate
-    stack        = _numpy.stack
-    hstack       = _numpy.hstack
-    vstack       = _numpy.vstack
-    dstack       = _numpy.dstack
-    split        = _numpy.split
-    tile         = _numpy.tile
-    repeat       = _numpy.repeat
-    take         = _numpy.take
-    put          = _numpy.put
+    def broadcast_to(x, *args, **kwargs):
+        return _numpy.broadcast_to(_to_numpy(x), *args, **kwargs)
 
-    sum          = _numpy.sum
-    mean         = _numpy.mean
-    std          = _numpy.std
-    var          = _numpy.var
-    prod         = _numpy.prod
-    max          = _numpy.max
-    min          = _numpy.min
-    argmax       = _numpy.argmax
-    argmin       = _numpy.argmin
-    cumsum       = _numpy.cumsum
-    cumprod      = _numpy.cumprod
-    einsum       = _numpy.einsum
+    def moveaxis(x, *args, **kwargs):
+        return _numpy.moveaxis(_to_numpy(x), *args, **kwargs)
 
-    sort         = _numpy.sort
-    argsort      = _numpy.argsort
+    def ascontiguousarray(x, *args, **kwargs):
+        return _numpy.ascontiguousarray(_to_numpy(x), *args, **kwargs)
 
-    where        = _numpy.where
-    clip         = _numpy.clip
-    expand_dims  = _numpy.expand_dims
-    squeeze      = _numpy.squeeze
+    def transpose(x, *args, **kwargs):
+        return _numpy.transpose(_to_numpy(x), *args, **kwargs)
 
-    triu_indices = _numpy.triu_indices
-    tril_indices = _numpy.tril_indices
 
-    add_at       = _numpy.add.at
+    # ---------- 結合・分割 ----------
+    def concatenate(xs, *args, **kwargs):
+        xs = [_to_numpy(x) for x in xs]
+        return _numpy.concatenate(xs, *args, **kwargs)
 
+    def stack(xs, *args, **kwargs):
+        xs = [_to_numpy(x) for x in xs]
+        return _numpy.stack(xs, *args, **kwargs)
+
+    def hstack(xs, *args, **kwargs):
+        xs = [_to_numpy(x) for x in xs]
+        return _numpy.hstack(xs, *args, **kwargs)
+
+    def vstack(xs, *args, **kwargs):
+        xs = [_to_numpy(x) for x in xs]
+        return _numpy.vstack(xs, *args, **kwargs)
+
+    def dstack(xs, *args, **kwargs):
+        xs = [_to_numpy(x) for x in xs]
+        return _numpy.dstack(xs, *args, **kwargs)
+
+    def split(x, *args, **kwargs):
+        return _numpy.split(_to_numpy(x), *args, **kwargs)
+
+    def tile(x, *args, **kwargs):
+        return _numpy.tile(_to_numpy(x), *args, **kwargs)
+
+    def repeat(x, *args, **kwargs):
+        return _numpy.repeat(_to_numpy(x), *args, **kwargs)
+
+    def take(x, *args, **kwargs):
+        return _numpy.take(_to_numpy(x), *args, **kwargs)
+
+    def put(x, *args, **kwargs):
+        return _numpy.put(_to_numpy(x), *args, **kwargs)
+
+
+    # ---------- 集約 ----------
+    def sum(x, *args, **kwargs):
+        return _numpy.sum(_to_numpy(x), *args, **kwargs)
+
+    def mean(x, *args, **kwargs):
+        return _numpy.mean(_to_numpy(x), *args, **kwargs)
+
+    def std(x, *args, **kwargs):
+        return _numpy.std(_to_numpy(x), *args, **kwargs)
+
+    def var(x, *args, **kwargs):
+        return _numpy.var(_to_numpy(x), *args, **kwargs)
+
+    def prod(x, *args, **kwargs):
+        return _numpy.prod(_to_numpy(x), *args, **kwargs)
+
+    def max(x, *args, **kwargs):
+        return _numpy.max(_to_numpy(x), *args, **kwargs)
+
+    def min(x, *args, **kwargs):
+        return _numpy.min(_to_numpy(x), *args, **kwargs)
+
+    def argmax(x, *args, **kwargs):
+        return _numpy.argmax(_to_numpy(x), *args, **kwargs)
+
+    def argmin(x, *args, **kwargs):
+        return _numpy.argmin(_to_numpy(x), *args, **kwargs)
+
+    def cumsum(x, *args, **kwargs):
+        return _numpy.cumsum(_to_numpy(x), *args, **kwargs)
+
+    def cumprod(x, *args, **kwargs):
+        return _numpy.cumprod(_to_numpy(x), *args, **kwargs)
+
+    def einsum(*args, **kwargs):
+        # einsum は複数引数を取るので、すべて変換する
+        new_args = [_to_numpy(a) for a in args]
+        return _numpy.einsum(*new_args, **kwargs)
+
+
+    # ---------- ソート ----------
+    def sort(x, *args, **kwargs):
+        return _numpy.sort(_to_numpy(x), *args, **kwargs)
+
+    def argsort(x, *args, **kwargs):
+        return _numpy.argsort(_to_numpy(x), *args, **kwargs)
+
+
+    # ---------- 条件 ----------
+    def where(*args, **kwargs):
+        new_args = [_to_numpy(a) for a in args]
+        return _numpy.where(*new_args, **kwargs)
+
+    def clip(x, *args, **kwargs):
+        return _numpy.clip(_to_numpy(x), *args, **kwargs)
+
+    def expand_dims(x, *args, **kwargs):
+        return _numpy.expand_dims(_to_numpy(x), *args, **kwargs)
+
+    def squeeze(x, *args, **kwargs):
+        return _numpy.squeeze(_to_numpy(x), *args, **kwargs)
+
+
+    # ---------- インデックス ----------
+    def triu_indices(*args, **kwargs):
+        return _numpy.triu_indices(*args, **kwargs)
+
+    def tril_indices(*args, **kwargs):
+        return _numpy.tril_indices(*args, **kwargs)
+
+
+    # ---------- add.at ----------
+    def add_at(x, *args, **kwargs):
+        return _numpy.add.at(_to_numpy(x), *args, **kwargs)
+
+    # ---------- erf ----------
     if hasattr(_numpy, "erf"):
         erf = _numpy.erf
     else:
         erf = _numpy_erf
+
 

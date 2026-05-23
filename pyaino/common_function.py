@@ -5,6 +5,7 @@ from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import nucleus
 from pyaino import LossFunctions as lf
+from pyaino import safe_np as snp
 import struct
 import os
 import sys
@@ -1375,8 +1376,8 @@ def get_accuracy(y, t, mchx=False):#, y_label=False):
     else:
         raise ValueError('Wrong dimension of y or t')
 
-    errata = np.array(result == correct) # np.ndarrayに固定が必要20260523AI
-    accuracy = float(np.sum(errata) / size)
+    errata = result == correct
+    accuracy = float(snp.sum(errata) / size)
     if mchx:
         return accuracy, errata
     else:
