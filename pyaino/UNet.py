@@ -1,5 +1,5 @@
 # UNet
-# 20260521 A.Inoue
+# 20260523 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -12,12 +12,18 @@ import warnings
 import copy
 
 class ConvBlock:
+    """
+    加算注入されるベクトル入力を備え残差接続可能な基本構成のConvBlock
+    - in_ch  -> out_ch (3x3)
+    - out_ch -> out_ch (3x3)
+    """
     def __init__(self, out_ch, stride=1, proj=False, 
-                 residual=False, activate=(None, None), pre_activation=False, 
+                 residual=False, attention=False,
+                 activate=(None, None), pre_activation=False, 
                  **kwargs):
         print('__init__', self.__class__.__name__, out_ch, stride, kwargs)
         self.out_ch = out_ch
-        # Conv 本体（bottleneck 構造）
+        # Conv 本体（非bottleneck 構造）
         self.convs = [
             nn.Conv2dLayer(out_ch, 3, stride, 1,
                            activate=activate[0], pre_activation=pre_activation,
@@ -38,17 +44,21 @@ class ConvBlock:
         self.residual = residual      # 残差接続の有無 
         #self.shortcut = None          # 残差接続の機構
         if residual:    
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
-        #self.shortcut_option = kwargs # 遅延初期化Lazy Initializationに渡す
+            self.res_conv = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+            self.shortcut = None # 遅延初期化
+        if attention:
+            self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
+        else:
+            self.attn = None
     
     def forward(self, x, v=None, train=True):
         in_ch = x.shape[1]
 
-        #if self.shortcut is None:
-        #    if in_ch == self.out_ch:
-        #        self.shortcut = F.Assign()   # identity
-        #    else:
-        #        self.shortcut = nn.Conv2dLayer(self.out_ch, 1, 0, **self.shortcut_option)
+        if self.shortcut is None:
+            if in_ch == self.out_ch:
+                self.shortcut = F.Assign()   # identity
+            else:
+                self.shortcut = self.res_conv
         
         self.proj_used = False
         y = self.convs[0](x, train=train)
@@ -56,6 +66,8 @@ class ConvBlock:
             z = self.proj(v, train=train)               # projで形状を合わせて
             y = y + z[:,:,None,None]                    # 加算注入
             self.proj_used = True
+        if self.attn is not None:
+            y = self.attn(y)                            # attentionを挿入
         if self.residual:
             r = self.shortcut(x)
             y = self.convs[1](y, r, train=train)
@@ -71,7 +83,7 @@ class ConvBlock:
             self.proj.update(eta=eta, **kwargs)
         for conv in self.convs:
             conv.update(eta=eta, **kwargs)
-        if self.residual:
+        if self.residual and hasattr(self.shortcut, 'update'):
             self.shortcut.update(eta=eta, **kwargs)
             
         
@@ -80,10 +92,12 @@ class ConvBlockBottleneck(ConvBlock):
     1x1 Conv を使ったボトルネック型 ConvBlock
     - in_ch  -> mid_ch (1x1)
     - mid_ch -> mid_ch (3x3)
+    - SpatialSelfAttention
     - mid_ch -> out_ch (1x1)
     """
     def __init__(self, out_ch, stride=1, proj=False, bottleneck_ratio=0.5, min_mid_ch=16,
-                 residual=False, activate=(None, None, None), pre_activation=False,
+                 residual=False, attention=False,
+                 activate=(None, None, None), pre_activation=False,
                  **kwargs):
         print('__init__', self.__class__.__name__, out_ch,
               proj, bottleneck_ratio, min_mid_ch, kwargs)
@@ -105,6 +119,8 @@ class ConvBlockBottleneck(ConvBlock):
                            residual=residual, # 残差接続の注入点
                            **kwargs),
             ]
+        n_head = mid_ch//32
+        self.n_head = n_head
         opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
                         'w_decay' : kwargs.pop('w_decay',    0.0),}
         # embedding からのベクトル加算用
@@ -116,18 +132,22 @@ class ConvBlockBottleneck(ConvBlock):
         self.residual = residual
         #self.shortcut = None          # 残差接続の機構
         if residual:
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
-        #self.shortcut_option = kwargs # 遅延初期化Lazy Initializationに渡す
+            self.res_conv = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+            self.shortcut = None # 遅延初期化
+        if attention:
+            self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
+        else:
+            self.attn = None
 
     def forward(self, x, v=None, train=True):
         in_ch = x.shape[1]
 
-        #if self.shortcut is None:
-        #    if in_ch == self.out_ch:
-        #        self.shortcut = F.Assign()   # identity
-        #    else:
-        #        self.shortcut = nn.Conv2dLayer(self.out_ch, 1, 0, **self.shortcut_option)
-
+        if self.shortcut is None:
+            if in_ch == self.out_ch:
+                self.shortcut = F.Assign()   # identity
+            else:
+                self.shortcut = self.res_conv
+                
         self.proj_used = False
         y = self.convs[0](x, train=train)
         y = self.convs[1](y, train=train)
@@ -135,6 +155,8 @@ class ConvBlockBottleneck(ConvBlock):
             z = self.proj(v, train=train)               # projで形状を合わせて
             y = y + z[:,:,None,None]                    # 加算注入
             self.proj_used = True  
+        if self.attn is not None:
+            y = self.attn(y)                            # attentionを挿入
         if self.residual:
             r = self.shortcut(x)
             y = self.convs[2](y, r, train=train)
@@ -142,11 +164,27 @@ class ConvBlockBottleneck(ConvBlock):
             y = self.convs[2](y, train=train)
         return y
 
+def palindrom(n):
+    """ 2のべき乗が真ん中を最高にして対称に上り下りして並ぶ """
+    # 中央の値（n 以下の最大の 2 の冪）
+    center = 1
+    while center * 2 <= n:
+        center *= 2
+    # 左側（1,2,4,...,center）
+    left = []
+    x = 1
+    while x < center:
+        left.append(x)
+        x *= 2
+    # 右側（left の逆順）
+    right = left[::-1]
+    return left + [center] + right
+
 
 class UNet:
     """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
     def __init__(self, depth=3, in_ch=None, base_ch=32,
-        bottleneck=True, bottleneck_ratio=0.5,
+        bottleneck=True, bottleneck_ratio=0.5, n_bottom=1, attention=False,
         **kwargs):
         # ---- U-Net core skeleton ----
         self.depth = depth
@@ -154,6 +192,8 @@ class UNet:
         self.base_ch = base_ch
         self.bottleneck = bottleneck
         self.bottleneck_ratio = bottleneck_ratio
+        self.n_bottom = n_bottom
+        self.attention = attention
 
         # ---- embedding / conditioning ----
         self.time_embed  = kwargs.pop('time_embed', False)
@@ -215,9 +255,9 @@ class UNet:
 
         # 本体＝畳込みブロックとチャネル構成の決定
         Conv = ConvBlockBottleneck if bottleneck else ConvBlock
-        c_down = [base_ch * (2 ** i) for i in range(depth)]
-        c_bot  =  base_ch * (2 ** depth)
-        c_up   = [base_ch * (2 ** i) for i in reversed(range(depth))]
+        c_down = [base_ch * (2 ** i) for i in range(self.depth)]
+        c_bot  = base_ch * (2 ** (self.depth - 1)) 
+        c_up   = [base_ch * (2 ** i) for i in reversed(range(self.depth))]
 
         # 畳込みブロック
         options_for_blocks = {**common_options, 
@@ -233,19 +273,26 @@ class UNet:
             options_for_blocks['activate'] = self.activate, self.activate, None
         else:
             options_for_blocks['activate'] = self.activate, self.activate
+
+        options_for_attnblk = options_for_blocks.copy()
+        options_for_attnblk['attention'] = self.attention 
             
         # Down path
         self.down , self.pool = [], []
-        for i in range(depth):
+        for i in range(self.depth):
             self.down.append(Conv(c_down[i], **options_for_blocks))
             self.pool.append(nn.Pooling2dLayer(2))
                 
         # Bottleneck
-        self.bot = Conv(c_bot, **options_for_blocks)
+        self.bot = []
+        attn_pos = (n_bottom - 1) // 2 # この位置だけattentionを入れる
+        for i in range(self.n_bottom):
+            options = options_for_attnblk if i==attn_pos else options_for_blocks
+            self.bot.append(Conv(c_bot, **options))
 
         # Up path（Upsample + concat + Conv）
         self.upsample, self.concat, self.up = [], [], []
-        for i in range(depth):
+        for i in range(self.depth):
             self.upsample.append(nn.Interpolate2d(scale_factor=2,
                                           mode='bilinear', align='center'))
             self.concat.append(F.Concatenate())
@@ -327,7 +374,8 @@ class UNet:
             zs.append(z)           # 中間結果を記録 
 
         # Bottleneck
-        x  = self.bot(x, v, train=train)              # H/8, W/8
+        for i in range(self.n_bottom):
+            x  = self.bot[i](x, v, train=train)          # H/8, W/8
 
         # Up
         for i in range(self.depth):
@@ -366,7 +414,8 @@ class UNet:
         self.stem.update(eta=eta, **kwargs)
         for i in range(self.depth):
             self.down[i].update(eta=eta, **kwargs)
-        self.bot.update(eta=eta, **kwargs)
+        for i in range(self.n_bottom):    
+            self.bot[i].update(eta=eta, **kwargs)
         if self.skip_ratio is not None and self.skip_ratio > 0:
             for i in range(self.depth):
                 self.skip_proj[i].update(eta=eta, **kwargs)
