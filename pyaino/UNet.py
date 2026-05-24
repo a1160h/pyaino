@@ -33,6 +33,8 @@ class ConvBlock:
                            residual=residual, # 残差接続の注入点
                            **kwargs)
             ]
+        n_head = out_ch//32 
+        self.n_head = n_head
         opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
                         'w_decay' : kwargs.pop('w_decay',    0.0),}
         # embedding からのベクトル加算用
@@ -287,7 +289,7 @@ class UNet:
         self.bot = []
         attn_pos = (n_bottom - 1) // 2 # この位置だけattentionを入れる
         for i in range(self.n_bottom):
-            options = options_for_attnblk if i==attn_pos else options_for_blocks
+            options = options_for_attnblk #if i==attn_pos else options_for_blocks
             self.bot.append(Conv(c_bot, **options))
 
         # Up path（Upsample + concat + Conv）
