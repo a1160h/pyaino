@@ -1,5 +1,5 @@
 # UNet
-# 20260523 A.Inoue
+# 20260525 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -44,10 +44,9 @@ class ConvBlock:
             self.proj = None
         self.proj_used = False
         self.residual = residual      # 残差接続の有無 
-        #self.shortcut = None          # 残差接続の機構
         if residual:    
-            self.res_conv = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
-            self.shortcut = None # 遅延初期化
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+        self.shortcut_used = False    
         if attention:
             self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
         else:
@@ -55,14 +54,8 @@ class ConvBlock:
     
     def forward(self, x, v=None, train=True):
         in_ch = x.shape[1]
-
-        if self.shortcut is None:
-            if in_ch == self.out_ch:
-                self.shortcut = F.Assign()   # identity
-            else:
-                self.shortcut = self.res_conv
-        
         self.proj_used = False
+        self.shortcut_used=False 
         y = self.convs[0](x, train=train)
         if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
             z = self.proj(v, train=train)               # projで形状を合わせて
@@ -71,8 +64,12 @@ class ConvBlock:
         if self.attn is not None:
             y = self.attn(y)                            # attentionを挿入
         if self.residual:
-            r = self.shortcut(x)
-            y = self.convs[1](y, r, train=train)
+            if in_ch == self.out_ch:
+                y = self.convs[1](y, x, train=train)    # resはx直結
+            else:
+                r = self.shortcut(x)
+                y = self.convs[1](y, r, train=train)    # resはshortcut経由
+                self.shortcut_used = True               # update有無のフラグ
         else:
             y = self.convs[1](y, train=train)
         return y
@@ -85,7 +82,7 @@ class ConvBlock:
             self.proj.update(eta=eta, **kwargs)
         for conv in self.convs:
             conv.update(eta=eta, **kwargs)
-        if self.residual and hasattr(self.shortcut, 'update'):
+        if self.residual and self.shortcut_used:
             self.shortcut.update(eta=eta, **kwargs)
             
         
@@ -132,10 +129,9 @@ class ConvBlockBottleneck(ConvBlock):
             self.proj = None
         self.proj_used = False      
         self.residual = residual
-        #self.shortcut = None          # 残差接続の機構
         if residual:
-            self.res_conv = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
-            self.shortcut = None # 遅延初期化
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+        self.shortcut_used = False    
         if attention:
             self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
         else:
@@ -143,14 +139,8 @@ class ConvBlockBottleneck(ConvBlock):
 
     def forward(self, x, v=None, train=True):
         in_ch = x.shape[1]
-
-        if self.shortcut is None:
-            if in_ch == self.out_ch:
-                self.shortcut = F.Assign()   # identity
-            else:
-                self.shortcut = self.res_conv
-                
         self.proj_used = False
+        self.shortcut_used=False 
         y = self.convs[0](x, train=train)
         y = self.convs[1](y, train=train)
         if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
@@ -160,8 +150,12 @@ class ConvBlockBottleneck(ConvBlock):
         if self.attn is not None:
             y = self.attn(y)                            # attentionを挿入
         if self.residual:
-            r = self.shortcut(x)
-            y = self.convs[2](y, r, train=train)
+            if in_ch == self.out_ch:
+                y = self.convs[2](y, x, train=train)    # resはx直結
+            else:
+                r = self.shortcut(x)
+                y = self.convs[2](y, r, train=train)    # resはshortcut経由
+                self.shortcut_used = True               # update有無のフラグ
         else:
             y = self.convs[2](y, train=train)
         return y
