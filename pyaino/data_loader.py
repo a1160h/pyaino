@@ -1,5 +1,5 @@
 # data_loader
-# 2026.05.11 A.Inoue
+# 2026.05.26 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -363,6 +363,11 @@ class CelebALoader(ImageLoader):
     def __init__(self, data_source, attr_source=None, batch_size=64, prefetch=8, shuffle=True,
                  resize=None, target_order='asis', cache=False, normalize=None,
                  data_size=None, drop_last=False):
+
+        if os.path.isdir(data_source):
+            print(f"Get data from {data_source}")
+        else:
+            raise FileNotFoundError(f"フォルダが存在しません: {data_source}")
 
         rawpath = os.path.normpath(data_source + os.sep + "*")
         self.file_list = sorted(glob.glob(rawpath))
