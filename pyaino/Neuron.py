@@ -3497,7 +3497,7 @@ class PatchEmbedding(Conv2dLayer):
     線形変換によって埋め込みベクトルに変換する．
 
     """
-    def __init__(self, dimensionality, patch_size=2, pad=0, **kwargs):
+    def __init__(self, dimensionality=128, patch_size=2, pad=0, **kwargs):
         #                M,              kernel_size, stride,     pad
         super().__init__(dimensionality, patch_size,  patch_size, pad, **kwargs)
 
@@ -3513,6 +3513,47 @@ class PatchEmbedding(Conv2dLayer):
         grad_x = super()._backward(grad_y, flush=flush)
         return grad_x
 
+class PatchEmbeddingSimple(Function):
+    def __init__(self, dimensionality=128, patch_size=2, **kwargs):
+        super().__init__()
+        self.patch_size = patch_size
+        self.linear = LinearLayer(dimensionality, matmul=True, **kwargs)
+       
+    def __forward__(self, x):
+        B, C, Ih, Iw = x.shape
+        p = self.patch_size
+
+        # パッチ分割 (B,C,Ih,Iw) -> (B,-1,C*P*P)
+        x = x.reshape(B, C, Ih//p, p, Iw//p, p)
+        x = x.transpose(0, 1, 2, 4, 3, 5)
+        x = x.reshape(B, C, -1, p, p)
+        x = x.transpose(0, 2, 1, 3, 4)
+        x = x.reshape(B, -1, C * p * p)
+
+        # 埋め込み
+        y = self.linear(x)
+        return y
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        B, C, Ih, Iw = x.shape
+        p = self.patch_size
+        
+        gx = self.linear.backward(gy)
+
+        gx = gx.reshape(B, -1, C, p, p)
+        gx = gx.transpose(0, 2, 1, 3, 4)
+        gx = gx.reshape(B, C, Ih//p, Iw//p, p, p)
+        gx = gx.transpose(0, 1, 2, 4, 3, 5)
+        gx = gx.reshape(B, C, Ih, Iw)
+
+        return gx
+
+    def update(self, eta=0.001, **kwargs):
+        self.linear.update(eta=eta, **kwargs)
 
 
 #### Attention機構 #################################################
