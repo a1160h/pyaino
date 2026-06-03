@@ -3792,7 +3792,7 @@ class SelfAttention(Function):
                                     #spctrnorm=1,
                                     **kwargs)
 
-        causality = kwargs.pop('causality', 'tri')
+        causality = kwargs.pop('causality', False)
 
         self.attention = AttentionUnit(head=n_head, causality=causality, **kwargs)
                          #scale=scale, temperature=temperature, entropy_decay=entropy_decay)

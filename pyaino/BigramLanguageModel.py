@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20250817 A.Inoue
+# 20260603 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -40,7 +40,7 @@ class Block:
     def __init__(self, emb_dim=64, n_head=4, block_size=500, **kwargs):
         # emb_dim: embedding dimension, n_head: the number of heads we'd like
         self.sa = Neuron.MultiHeadSelfAttention(emb_dim, emb_dim//n_head, n_head,
-                                                **kwargs) # entropy制御はkwargsで指定
+                                                causality='tri', **kwargs) # entropy制御はkwargsで指定
         self.ffwd = FeedForward(emb_dim, n_head, **kwargs)
         #self.ln1 = Neuron.Normalization(axis=-1, mask_enable=True) # layer normalization
         #self.ln2 = Neuron.Normalization(axis=-1, mask_enable=True) # layer normalization
@@ -143,7 +143,7 @@ class ModelBase:
 
 
 class BigramLanguageModel(ModelBase):
-
+    """ GPT：基本の構成（Embedding → Blocks → lm_head） """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  optimize='AdamT',
                  #decayrate=0.999,
@@ -199,7 +199,7 @@ class BigramLanguageModel(ModelBase):
 
 
 class BigramLanguageModel2(ModelBase):
-
+    """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  optimize='AdamT',
                  #decayrate=0.999,
@@ -266,7 +266,7 @@ class BigramLanguageModel2(ModelBase):
 
     
 class BigramLanguageModel3(ModelBase):
-
+    """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  optimize='AdamT',
                  #decayrate=0.999,
@@ -333,7 +333,7 @@ class BigramLanguageModel3(ModelBase):
 
     
 class BigramLanguageModel4(ModelBase):
-
+    """ GPT4：Embedding と最初の Block の間に 簡易LN + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
                  optimize='AdamT',
                  #decayrate=0.999,
@@ -398,16 +398,86 @@ class BigramLanguageModel4(ModelBase):
         self.ln_f.update(**kwargs)
         self.lm_head.update(**kwargs)
 
-def graph_plus(error_record, entropy_record=None, kld_record=None,
+class BigramLanguageModel5(ModelBase):
+    """ GPT5：Embedding と最初の Block の間に単層LinearLayer を挿入 """
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
+                 optimize='AdamT',
+                 #decayrate=0.999,
+                 w_decay=0.01,
+                 ignore=-1, **kwargs):
+        kwargs['optimize']  = optimize
+        #kwargs['decayrate'] = decayrate
+        kwargs['w_decay']   = w_decay
+        #emb_width =np.sqrt(1/(emb_dim)) # 20250530AI
+        emb_width =np.sqrt(1/(emb_dim/np.sqrt(n_head))) # 20250530AI
+        #emb_width =np.sqrt(1/(emb_dim/n_head)) # 20250530AI
+        self.embed = Neuron.PositionalEmbedding(vocab_size, block_size, emb_dim,
+        #                                        width=emb_width,
+                                                **kwargs)
+        #self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
+        #self.ln_pf = Neuron.Normalization(axis=-1)
+        self.blocks = Neuron.Sequential(*[Block(emb_dim, n_head, block_size,
+                                                **kwargs)
+                                        for _ in range(n_layer)])
+        self.ln_f = Neuron.LayerNormalization(optimize=optimize) #mask_enable=True) 
+        #self.ln_f = Neuron.Normalization(axis=-1) 
+        self.lm_head = Neuron.LinearLayer(emb_dim, vocab_size, matmul=True,
+                                          **kwargs)
+        self.block_size = block_size
+        self.softmax = Activators.Softmax()
+        self.loss_function = lf.CrossEntropyErrorForLogits(ignore=ignore)
+        self.vocab_size = vocab_size
+        self.memory = []
+
+    def forward(self, idx, targets=None, dropout=0.0):
+        x = self.embed.forward(idx)
+        #z = self.ln_pf.forward(x)
+        z = self.pffwd.forward(x)#z)
+        x = z + x
+        x = self.blocks.forward(x, dropout=dropout)
+        x = self.ln_f(x)
+        logits = self.lm_head(x) # logits.shape=(B,T,vocab_size)
+        if targets is None:
+            return logits
+        #y = self.softmax(logits)
+        loss = self.loss_function(logits, targets)
+        return logits, loss
+
+    def backward(self, gy=None):
+        if gy is None:
+            gy = self.loss_function.backward()
+            #gy = self.softmax.backward(gy)    
+        gz = self.lm_head.backward(gy)
+        gz = self.ln_f.backward(gz)
+        gz = self.blocks.backward(gz)
+        gx = self.pffwd.backward(gz)
+        #gx = self.ln_pf.backward(gx)
+        gx += gz
+        self.embed.backward(gx)
+
+    def update(self, **kwargs):
+        self.embed.update(**kwargs)
+        #self.ln_pf.update(**kwargs)
+        self.pffwd.update(**kwargs)
+        self.blocks.update(**kwargs)
+        self.ln_f.update(**kwargs)
+        self.lm_head.update(**kwargs)
+
+def graph_plus(error_record=None, entropy_record=None, kld_record=None,
                entropy_offset=0, kld_offset=0, ncols=4, ylim=None):
-    plt.plot(np.array(error_record).tolist(), label='error')
-    xmin = 0; xmax = len(error_record)
+    xmin = 0; xmax = None
+    if error_record is not None:
+        plt.plot(np.array(error_record).tolist(), label='error')
+        xmax = len(error_record)
 
     if entropy_record is not None:
         entropy_recordn = np.array(entropy_record) + entropy_offset
         entropy_std = np.std(entropy_recordn, axis=-1) + entropy_offset
         entropy_range = np.max(entropy_recordn, axis=-1) - np.min(entropy_recordn, axis=-1) \
                             + entropy_offset
+        if xmax is None:
+            xmax = len(entropy_record)
         if entropy_offset!=0:
             plt.hlines(entropy_offset, xmin, xmax, color='gray', label='entropy_offset')
 
@@ -417,6 +487,8 @@ def graph_plus(error_record, entropy_record=None, kld_record=None,
     
     if kld_record is not None:
         kld_recordn = np.array(kld_record) + kld_offset
+        if xmax is None:
+            xmax = len(kld_record)
         if kld_offset!=0:
             plt.hlines(kld_offset, xmin, xmax, color='gray', label='kld_offset')
         plt.plot(kld_recordn.tolist(), label='KLD', linestyle='--')
@@ -434,7 +506,7 @@ if __name__=='__main__':
     emb_dim = 8
     n_head  = 4         
     n_layer = 1        
-    epoch = 101
+    epoch = 301
 
     # -- 訓練用データ --
     data = list(range(101))
