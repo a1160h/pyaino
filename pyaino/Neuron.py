@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.05.08 A.Inoue
+# 2026.06.03 A.Inoue
 
 import copy
 import warnings
@@ -249,6 +249,33 @@ class Sequential2:
             print(l.config)
         else:
             print('\n')
+
+#### ニューロンの基本機能 ##############################################
+class Parameter(Function):
+    """ 学習可能な簡易パラメタ """
+    def __init__(self, *size, **kwargs):
+        super().__init__()
+        self.size = size
+        optimize        = kwargs.pop('optimize', 'SGD') 
+        self.w, self.grad_w = None, None
+        self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)
+
+    def __forward__(self):
+        if self.w is None:
+            self.init_parameter()
+        return self.w
+
+    def __call__(self):
+        return self.forward()
+
+    def __backward__(self, gy):
+        self.grad_w = gy
+
+    def init_parameter(self):
+        self.w = np.random.randn(*self.size)
+
+    def update(self, eta=0.001, **kwargs):
+        self.optimizer_w.update(self.w, self.grad_w, eta=eta, **kwargs)
 
 #### ニューロンの基本機能 ##############################################
 class WeightsAndBiases:
