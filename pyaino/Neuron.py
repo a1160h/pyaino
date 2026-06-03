@@ -3507,7 +3507,7 @@ class PatchEmbedding(Conv2dLayer):
         y = y.transpose(0,2,3,1).reshape(-1,Oh*Ow,M)
         return y
 
-    def _backward(grad_y, flush=True):
+    def _backward(self, grad_y, flush=True):
         C,Ih,Iw,M,Fh,Fw,Sh,Sw,pad,Oh,Ow = self.config
         grad_y = grad_y.reshape(-1,Oh,Ow,M).transpose(0,3,1,2)
         grad_x = super()._backward(grad_y, flush=flush)
