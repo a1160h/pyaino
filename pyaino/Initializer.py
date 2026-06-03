@@ -1,5 +1,5 @@
 # Initailizer
-# 2026.02.07 A.Inoue
+# 2026.06.03 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy');set_seed(1); np = Config.np
@@ -79,7 +79,7 @@ class FixedWidth(BaseInitializer):
 class DebugMode:
     def __call__(self, shape):
         print('debug_mode:force 0.1')
-        return np.full(shape, 0.1)
+        return np.full(shape, 0.1, dtype=Config.dtype)
 
 
 class Legacy:
