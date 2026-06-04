@@ -1,5 +1,5 @@
 # Activators
-# 2026.04.21 A.Inoue
+# 2026.06.04 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -235,7 +235,7 @@ class Mish(ActivatorBase):
 def mish(x):
     return Mish()(x)
 
-class GELU(Function):
+class GELU(ActivatorBase):
     """ GELU "erf"(exact). """
     # erf は「誤差関数（Error Function）」を計算する NumPy の関数で、
     # 主に正規分布の確率計算・統計・物理シミュレーションで使われる特別関数
@@ -281,7 +281,7 @@ class GELU(Function):
 def gelu(x):
     return GELU()(x)
 
-class GELUap(Function):
+class GELUap(ActivatorBase):
     """ GELUap  "tanh" (Hendrycks & Gimpel approx) """
     def __init__(self, eps=1e-7):
         super().__init__()
