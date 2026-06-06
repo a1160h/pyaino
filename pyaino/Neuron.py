@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.06.04 A.Inoue
+# 2026.06.06 A.Inoue
 
 import copy
 import warnings
@@ -4072,7 +4072,7 @@ class ContextualSelfAttention(Function):
     そこでqueryは入力xによらないパラメタとして用意する．
          
     """
-    def __init__(self, *configuration,
+    def __init__(self, *configuration, n_head=1,
                  linear_v=False, linear_k=False, q_shape=(1,1,-1), **kwargs):
         super().__init__()
         if len(configuration) == 2:
@@ -4092,7 +4092,7 @@ class ContextualSelfAttention(Function):
         optimize = kwargs.pop('optimize', 'SGD')
         self.optimizer_q = cf.eval_in_module(optimize, Optimizers, **kwargs)
         # Attentionとdebug_mode
-        self.attention = AttentionUnit(scale=True)
+        self.attention = AttentionUnit(head=n_head)
         self.debug_mode = kwargs.pop('debug_mode',  False)
        
     def fix_configuration(self, shape):
@@ -4475,12 +4475,15 @@ class ContextualSelfAttentionZ4(ContextualSelfAttention):
 
 #### ドロップアウト ###############################################　
 class Dropout(Function): # inverted_dropout 
-    def __init__(self, inplace=False):
+    def __init__(self, preset=None, inplace=False):
         super().__init__()
+        self.preset = preset
         self.dropout_mx = None          # はじめて伝播する際に必要
         self.inplace = inplace          # inplace演算とするかどうか
         
     def __forward__(self, x, *, dropout=0.0): # x→y,ドロップアウト率(非学習時は0)
+        if self.preset is not None and dropout==0.0:
+            dropout = self.preset
         y = x if self.inplace else x.copy() # inplaceではyはxと同一
         scale = 1 / (1 - dropout + 1e-7)
         if dropout > 0.0: # ドロップアウトする場合に残る割合で拡大
@@ -4500,13 +4503,16 @@ class Dropout(Function): # inverted_dropout
    
 #### ドロップアウト ###############################################　
 class Dropout2(Function): # direct_dropout
-    def __init__(self, inplace=False):
+    def __init__(self, preset=None, inplace=False):
         super().__init__()
+        self.preset = preset
         self.dropout_mx = None          # はじめて伝播する際に必要
         self.dropout_ratio = None
         self.inplace = inplace          # inplace演算とするかどうか
         
     def __forward__(self, x, *, dropout=0.0): # x→y,ドロップアウト率(非学習時は0)
+        if self.preset is not None and dropout==0.0:
+            dropout = self.preset
         y = x if self.inplace else x.copy() # inplaceではyはxと同一
         if dropout > 0.0: 
             self.dropout_ratio = dropout   # ドロップアウト時に覚える
