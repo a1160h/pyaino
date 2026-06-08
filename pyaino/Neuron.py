@@ -4122,7 +4122,7 @@ class ContextualSelfAttention(Function):
         m, n = self.config
         return m, n
 
-    def __forward__(self, x):
+    def __forward__(self, x, dropout=0.0):
         if None in self.config or self.q is None:
             #print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -4133,7 +4133,7 @@ class ContextualSelfAttention(Function):
         k = self.linear_k.forward(x) if self.linear_k is not None else x
         q = np.broadcast_to(self.q, (B, 1, n))
        
-        y = self.attention.forward(q, k, v)
+        y = self.attention.forward(q, k, v, dropout=dropout)
         y = y.reshape(B, n)
         return y
 

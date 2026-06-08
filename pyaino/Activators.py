@@ -1,5 +1,5 @@
 # Activators
-# 2026.06.04 A.Inoue
+# 2026.06.06 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -239,7 +239,7 @@ class GELU(ActivatorBase):
     """ GELU "erf"(exact). """
     # erf は「誤差関数（Error Function）」を計算する NumPy の関数で、
     # 主に正規分布の確率計算・統計・物理シミュレーションで使われる特別関数
-    def __init__(self, eps=1e-7):
+    def __init__(self, eps=1e-7, **kwargs):
         super().__init__()
         # 定数を用意
         self.c = np.array(np.sqrt(2.0 / np.pi), dtype=Config.dtype)   # √(2/π)
@@ -283,7 +283,7 @@ def gelu(x):
 
 class GELUap(ActivatorBase):
     """ GELUap  "tanh" (Hendrycks & Gimpel approx) """
-    def __init__(self, eps=1e-7):
+    def __init__(self, eps=1e-7, **kwargs):
         super().__init__()
 
         # 定数を dtype 付きで確定
