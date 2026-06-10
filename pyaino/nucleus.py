@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260414 A.Inoue
+# 20260603 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -200,10 +200,10 @@ class Function:
         # inputsをHDArrayにするが、元々そうでない場合には別物になる(高階微分やグラフ可視化では問題)
         # backwardで勾配セットの準備  Noneの対処20260414AI
         self.inputs = [x if x is None or (isinstance(x, HDArray) and hasattr(x, 'generation'))
-                       else HDArray(x) for x in inputs]
-        self.generation = max(x.generation for x in self.inputs if x is not None)
-
-        #self.generation = max([x.generation for x in self.inputs])
+                         else HDArray(x) for x in inputs]
+        if self.inputs: # inputsが無い場合には'0'のまま20260603AI              
+            self.generation = max(x.generation for x in self.inputs if x is not None)
+            
         # 出力はどのみち新しく作られるものだから、別物になるのは構わない
         outputs = [HDArray(y) for y in outputs] # ysがHDAを継承したとしても必要
         outputs = [self.set_creator_and_generation(y) for y in outputs]

@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20260120 A.Inoue
+# 20260603 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -40,7 +40,7 @@ class Block:
     def __init__(self, emb_dim=64, n_head=4, block_size=500, rms=False, **kwargs):
         # emb_dim: embedding dimension, n_head: the number of heads we'd like
         self.sa = Neuron.MultiHeadSelfAttention(emb_dim, emb_dim//n_head, n_head,
-                                                **kwargs) # entropy制御はkwargsで指定
+                                                causality='tri', **kwargs) # entropy制御はkwargsで指定
         self.ffwd = FeedForward(emb_dim, n_head, **kwargs)
         #self.ln1 = Neuron.Normalization(axis=-1, mask_enable=True) # layer normalization
         #self.ln2 = Neuron.Normalization(axis=-1, mask_enable=True) # layer normalization

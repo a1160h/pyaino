@@ -1,5 +1,5 @@
 # data_loader
-# 2026.05.26 A.Inoue
+# 2026.06.08 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 from queue import Queue
 from PIL import Image, ImageOps
-import glob, os, math
+import glob, os, math, warnings
 import numpy
 from pyaino import common_function as cf
 
@@ -39,7 +39,8 @@ class ImageLoader:
     """
     def __init__(self, batch_size=32, prefetch=4, shuffle=True,
                  resize=None, source_order='HWC', target_order='asis',
-                 cache=False, normalize=None, drop_last=False):
+                 cache=False, normalize=None, drop_last=False,
+                 transform=None):
         #self.data_size = data_size
         self.batch_size = batch_size
         self.prefetch = prefetch
@@ -56,10 +57,14 @@ class ImageLoader:
         self.normalizer = cf.Normalize(normalize, np=numpy) \
                           if normalize is not None else None
         self.drop_last = drop_last
+        self.transform = transform
         self.cache = cache
         self.cache_x, self.cache_y = None, None
         if self.cache:
             self.build_cache()
+
+        if self.transform is not None and self.cache:
+            warnings.warn("Cache=True and augmentation don't work well together.")
 
     def _load_item(self, idx):
         """
@@ -544,8 +549,9 @@ class CIFAR10Loader(ImageLoader):
 
     def __init__(self, data_source, train=True,
                  batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, target_order='CHW', normalize=None,
-                 data_size=None, drop_last=False):
+                 resize=None, target_order='CHW', cache=False, normalize=None,
+                 data_size=None, drop_last=False,
+                 transform=None):
 
         import pickle
 
@@ -586,24 +592,31 @@ class CIFAR10Loader(ImageLoader):
             resize=resize,
             source_order='CHW',
             target_order=target_order,
+            cache=cache,
             normalize=normalize,
             drop_last=drop_last,
+            transform=transform, 
         )
 
     def _load_item(self, idx):
         x = self.data[idx]
         y = self.labels[idx]
 
-        if self.resize is None:
+        if self.resize is None and self.transform is None:
             return x, y
 
-        # resize のため一度 HWC に
+        # 軸を入れ替えてPILimageに(CHW → HWC → PIL)
         x = cf.change_axis_order(x, 'CHW', 'HWC')
         img = Image.fromarray(x)
-        img = ImageOps.fit(img, self.resize, Image.LANCZOS)
-        x = numpy.asarray(img, dtype=numpy.uint8)
 
-        # 元の軸へ戻す
+        if self.resize is not None:
+            img = ImageOps.fit(img, self.resize, Image.LANCZOS)
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        # numpyに戻し軸も元に戻す
+        x = numpy.asarray(img, dtype=numpy.uint8)
         x = cf.change_axis_order(x, 'HWC', 'CHW')
 
         return x, y

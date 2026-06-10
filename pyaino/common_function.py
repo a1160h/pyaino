@@ -1,5 +1,5 @@
 # common_function
-# 2026.05.23 A.Inoue 
+# 20260607 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1352,30 +1352,29 @@ def split_train_test(*data, **kwargs):
 
     return train + test # リストの結合
 
-def get_accuracy(y, t, mchx=False):#, y_label=False):
+def get_accuracy(y, t, mchx=False, scores=True):
     '''
     y:順伝播の結果と、対応する t:正解とを与え、分類の正解率を返す
     mchx=Trueでは正誤表も返す
     '''
-    if y.ndim == 1 and t.ndim == 1:  # 出力も正解もラベルの場合
-        result  = y
-        correct = t
-        size = len(t)
-    elif t.ndim == y.ndim - 1: # yは各クラスの確率またはlogitsと見なす
+    if scores: # yはscore
         result = np.argmax(y, axis=-1)
-        correct = t
-        size = t.size 
-    elif t.ndim == y.ndim + 1:
-        result = y
-        correct = np.argmax(t, axis=-1)
-        size = y.size
-    elif t.ndim == y.ndim: # 出力も正解もそのまま扱う(本当はなんだか不明)
-        result  = y
-        correct = t
-        size = y.size #/ y.shape[-1] # 時系列データ対応
-    else:
-        raise ValueError('Wrong dimension of y or t')
+        size = result.size
+        if t.ndim == y.ndim:       # tはone_hotと見做す
+            correct = np.argmax(t, axis=-1)
+        elif t.ndim == y.ndim - 1: # tはラベル
+            correct = t
+        else:
+            raise Exception('Wrong dimension of y or t')
 
+    else:      # yはラベルを想定
+        result = y
+        size = result.size
+        if t.ndim == y.ndim + 1: # tはone_hot
+            correct = np.argmax(t, axis=-1)
+        else: # 出力も正解もそのまま扱う(本当はなんだか不明)
+            correct = t
+            
     errata = result == correct
     accuracy = float(snp.sum(errata) / size)
     if mchx:

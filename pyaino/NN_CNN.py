@@ -1,5 +1,5 @@
 # NN_CNN
-# 2026.04.19 A.Inoue　
+# 20260607 A.Inoue　
 from pyaino.Config import *
 from pyaino import Neuron as neuron
 from pyaino import LossFunctions #as lf
@@ -64,6 +64,10 @@ class NN_CNN_Base:
                 if getattr(layer.postphase, 'DO', None) is not None:
                     print(f' {layer.postphase.DO.__class__.__name__}=applicable')
                     post_nl = False
+
+            if getattr(layer, 'DO', None) is not None:
+                print(f' {layer.DO.__class__.__name__}=applicable')
+                post_nl = False
 
             if hasattr(layer, 'parameters'):
                 if hasattr(layer.parameters, 'optimizer_w'):
