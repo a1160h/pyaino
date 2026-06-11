@@ -1,5 +1,5 @@
 # data_loader
-# 2026.06.08 A.Inoue
+# 2026.06.11 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np = Config.np
@@ -66,7 +66,7 @@ class ImageLoader:
         if self.transform is not None and self.cache:
             warnings.warn("Cache=True and augmentation don't work well together.")
 
-    def _load_item(self, idx):
+    def _load_item(self, idx, augment=False):
         """
         index に対応する1件のデータを返す
 
@@ -115,7 +115,8 @@ class ImageLoader:
                     yield self.cache_x[batch_indices], self.cache_y[batch_indices]
                 continue
 
-            batch = [self._load_item(idx) for idx in batch_indices]
+            # 訓練データのみaugment有効
+            batch = [self._load_item(idx, augment=True) for idx in batch_indices]
 
             if isinstance(batch[0], tuple):
                 xs, ys = zip(*batch)
@@ -365,9 +366,9 @@ class CelebALoader(ImageLoader):
     attr_source : str or None
         CelebA の anno/list_attr_celeba.txt のパス
     """
-    def __init__(self, data_source, attr_source=None, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, target_order='asis', cache=False, normalize=None,
-                 data_size=None, drop_last=False):
+    def __init__(self, data_source, attr_source=None, batch_size=64, prefetch=8,
+                 shuffle=True, resize=None, target_order='asis', cache=False,
+                 normalize=None, data_size=None, drop_last=False):
 
         if os.path.isdir(data_source):
             print(f"Get data from {data_source}")
@@ -419,7 +420,7 @@ class CelebALoader(ImageLoader):
 
         return attr_names, attr_dict
 
-    def _load_item(self, idx):
+    def _load_item(self, idx, augment=False):
         file_path = self.file_list[idx]
         img = Image.open(file_path).convert('RGB')
         if self.resize is not None:
@@ -448,9 +449,9 @@ class STL10BinaryLoader(ImageLoader):
     data_source : str STL10 の .bin ファイルパス
     target_order : str 出力時の軸順（例: 'CHW'）
     """
-    def __init__(self, data_source, label_source=None, batch_size=64, prefetch=8, shuffle=True,
-                 resize=None, target_order='CHW', cache=False, normalize=None,
-                 data_size=None, drop_last=False):
+    def __init__(self, data_source, label_source=None, batch_size=64, prefetch=8,
+                 shuffle=True, resize=None, target_order='CHW', cache=False,
+                 normalize=None, data_size=None, drop_last=False):
 
         self.data_source = data_source
         self.label_source = label_source
@@ -492,7 +493,7 @@ class STL10BinaryLoader(ImageLoader):
             drop_last=drop_last,
         )
 
-    def _load_item(self, idx):
+    def _load_item(self, idx, augment=False):
         """
         idxが指すmemmapの画像1枚分を取出して、
         source_order の指定に従って多次元配列にして返す
@@ -598,7 +599,7 @@ class CIFAR10Loader(ImageLoader):
             transform=transform, 
         )
 
-    def _load_item(self, idx):
+    def _load_item(self, idx, augment=False):
         x = self.data[idx]
         y = self.labels[idx]
 
@@ -612,7 +613,7 @@ class CIFAR10Loader(ImageLoader):
         if self.resize is not None:
             img = ImageOps.fit(img, self.resize, Image.LANCZOS)
 
-        if self.transform is not None:
+        if self.transform is not None and augment:
             img = self.transform(img)
 
         # numpyに戻し軸も元に戻す
@@ -696,7 +697,7 @@ class MNISTLoader(ImageLoader):
             drop_last=drop_last,
         )
 
-    def _load_item(self, idx):
+    def _load_item(self, idx, augment=False):
         x = self.data[idx]
         y = self.labels[idx]
 
