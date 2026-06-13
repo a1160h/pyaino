@@ -38,7 +38,7 @@ class TransformerBlock:
     """ Transformer block: communication followed by computation """
 
     def __init__(self, emb_dim=64, n_head=4, block_size=500, rms=False,
-                  causality='tri', activate='Mish', **kwargs):
+                  causality=None, activate='Mish', **kwargs):
         # emb_dim: embedding dimension, n_head: the number of heads we'd like
         self.sa = Neuron.MultiHeadSelfAttention(
             emb_dim, emb_dim//n_head, n_head, causality=causality, **kwargs) # entropy制御はkwargsで指定
@@ -148,7 +148,7 @@ class ModelBase:
         self.embed = Neuron.PositionalEmbedding(
             vocab_size, block_size, emb_dim, **kwargs)
         self.blocks = Neuron.Sequential(
-            *[TransformerBlock(emb_dim, n_head, block_size, rms, **kwargs)
+            *[TransformerBlock(emb_dim, n_head, block_size, rms, 'tri', **kwargs)
               for _ in range(n_layer)]
             )
         matmul = True                   
