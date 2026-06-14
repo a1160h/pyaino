@@ -1,5 +1,5 @@
 # Diffuser
-# 20260524 A.Inoue
+# 20260614 A.Inoue
 
 from pyaino.Config import *
 from pyaino import Functions as F
@@ -142,10 +142,9 @@ class Diffuser:
         x_t = np.sqrt(alpha_bar) * x_0 + np.sqrt(1 - alpha_bar) * noise
         return x_t, noise
 
-    def denoise(self, model, x, t, t_prev, **kwargs):
+    def denoise(self, model, x, t, t_prev, labels=None, **kwargs):
         """ 基本のDDPM """
         eta           = kwargs.pop('eta', 1.0) # eta=1が基本　
-        labels        = kwargs.pop('labels', None)  
         gamma         = kwargs.pop('gamma', None)
         debug         = kwargs.pop('debug', False)
         
@@ -256,7 +255,7 @@ class Diffuser:
             x = x - kC * chroma
         return x, luma, chroma
 
-    def denoise_ddpm(self, model, x, t, t_prev, debug=False, **kwargs):
+    def denoise_ddpm(self, model, x, t, t_prev, labels=None, debug=False, **kwargs):
         """ DDPM posterior mean/var """
         self.kwargs    = kwargs.copy() # 何を指定したかを覚えておく
 
@@ -269,7 +268,6 @@ class Diffuser:
         sample_state   = kwargs['sample_state'] # 常に受け取るが使わない(DDIM用)
 
         # 誘導オプション guidance options
-        labels         = kwargs.pop('labels', None)
         gamma          = kwargs.pop('gamma', None)
         x0_target      = kwargs.pop('x0_target', None)
         guide          = kwargs.pop('guide', 0.0)
@@ -404,7 +402,7 @@ class Diffuser:
         return x_prev
 
 
-    def denoise_ddim(self, model, x, t, t_prev, debug=False, **kwargs):
+    def denoise_ddim(self, model, x, t, t_prev, labels=None, debug=False, **kwargs):
         """ DDIM (Denoising Diffusion Implicit Models) """
         self.kwargs    = kwargs.copy()
 
@@ -417,7 +415,6 @@ class Diffuser:
         sample_state   = kwargs['sample_state'] # 常に受け取る
 
         # 誘導オプション
-        labels         = kwargs.pop('labels', None)
         gamma          = kwargs.pop('gamma', None)
         x0_target      = kwargs.pop('x0_target', None)
         guide          = kwargs.pop('guide', 0.0)
@@ -585,8 +582,8 @@ class Diffuser:
  
         return x_prev
 
-    def sample(self, model, x_shape=(20, 1, 28, 28), x=None, sampler=None,
-               steps=None, start=None, halt=None, debug=False,
+    def sample(self, model, x_shape=(20, 1, 28, 28), x=None, labels=None,
+               sampler=None, steps=None, start=None, halt=None, debug=False,
                jacobian_debug=False, batch_size=10, **kwargs):
 
         if x is None:
@@ -605,8 +602,14 @@ class Diffuser:
 
         kwargs.setdefault("sample_state", {"x0_hat_energy": None})
 
+        if labels is not None:
+            labels = np.array(labels)
+            if len(x)!=len(labels):
+                raise ValueError(f'Wrong size of labels: len(x)={len(x)}, len(labels)={len(labels)}')
         for b in range(0, len(x), batch_size):
             xb = x[b:b+batch_size]
+            lb = None if labels is None else labels[b:b+batch_size]
+          
             for i, (t, t_prev) in enumerate(zip(ts, t_prevs)):
                 if start is not None and t > start:
                     continue
@@ -614,7 +617,7 @@ class Diffuser:
                 if jacobian_debug and self.jacobian_analizer is not None:
                     self.jacobian_analizer.measure_step(model, denoise_fn, xb, t, t_prev)
 
-                xb = denoise_fn(model, xb, t, t_prev, debug=debug, **kwargs)
+                xb = denoise_fn(model, xb, t, t_prev, labels=lb, debug=debug, **kwargs)
 
                 if halt is not None and t<=(self.num_timesteps-halt):
                     print(f'halt={halt} t={t}')
