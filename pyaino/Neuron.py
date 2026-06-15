@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.06.06 A.Inoue
+# 2026.06.15 A.Inoue
 
 import copy
 import warnings
@@ -106,9 +106,10 @@ class SequentialWithLoss:
     def backward(self, *args, **kwargs): # 外部の勾配には未対応20260414AI
         self.error_layer = self.layers[-1]
         if self.type==0:  # 通常の損失関数
-            if gy is None:
+            if len(args) == 0:
                 gx = self.layers[-1].backward()
             else:
+                gy, = args # 仮対処20260615AI 
                 gx = gy + self.layers[-1].backward()
         if self.type==1:  # LLCE
             gx = self.layers[-1].backward()
@@ -3507,11 +3508,11 @@ class PatchEmbeddingSimple(Function):
         p = self.patch_size
 
         # パッチ分割 (B,C,Ih,Iw) -> (B,-1,C*P*P)
-        x = x.reshape(B, C, Ih//p, p, Iw//p, p)
-        x = x.transpose(0, 1, 2, 4, 3, 5)
-        x = x.reshape(B, C, -1, p, p)
-        x = x.transpose(0, 2, 1, 3, 4)
-        x = x.reshape(B, -1, C * p * p)
+        x = snp.reshape(x, (B, C, Ih//p, p, Iw//p, p))
+        x = snp.transpose(x, (0, 1, 2, 4, 3, 5))
+        x = snp.reshape(x, (B, C, -1, p, p))
+        x = snp.transpose(x, (0, 2, 1, 3, 4))
+        x = snp.reshape(x, (B, -1, C * p * p))
 
         # 埋め込み
         y = self.linear(x)
@@ -3527,17 +3528,64 @@ class PatchEmbeddingSimple(Function):
         
         gx = self.linear.backward(gy)
 
-        gx = gx.reshape(B, -1, C, p, p)
-        gx = gx.transpose(0, 2, 1, 3, 4)
-        gx = gx.reshape(B, C, Ih//p, Iw//p, p, p)
-        gx = gx.transpose(0, 1, 2, 4, 3, 5)
-        gx = gx.reshape(B, C, Ih, Iw)
+        gx = snp.reshape(gx, (B, -1, C, p, p))
+        gx = snp.transpose(gx, (0, 2, 1, 3, 4))
+        gx = snp.reshape(gx, (B, C, Ih//p, Iw//p, p, p))
+        gx = snp.transpose(gx, (0, 1, 2, 4, 3, 5))
+        gx = snp.reshape(gx, (B, C, Ih, Iw))
 
         return gx
 
     def update(self, eta=0.001, **kwargs):
         self.linear.update(eta=eta, **kwargs)
 
+class Unpatchfy(Function):
+    def __init__(self, img_size, patch_size, **kwargs):
+        super().__init__()
+        self.img_size = img_size            # 出力画像の大きさ(C,Ih,Iw)
+        self.patch_size = patch_size        # パッチサイズ
+        out_dim = img_size[0] * patch_size * patch_size        
+        self.linear = LinearLayer(out_dim, matmul=True, **kwargs)
+
+    def __forward__(self, x, **kwargs):
+        B, T, H = x.shape
+        P = self.patch_size
+        C, Ih, Iw = self.img_size
+        m, n = Ih//P, Iw//P
+        if (Ih/P)*(Iw/P)!=T:
+            raise ValueError(f'Either input shape {x.shape} or output shape {self.img_size} is bad.')
+
+        y = self.linear(x, **kwargs)        # (B,T,H) → (B,T,D) 
+
+        _, _, D = y.shape
+        if C*P*P!=D: 
+            raise ValueError(f'Either config {self.linear.config} or output shape {self.img_size} is bad.')
+
+        y = snp.reshape(y, (B, T, C, P, P))        # (B,T,D) → (B,T,C,P,P)
+        y = snp.reshape(y, (B, m, n, C, P, P))     # (B,T,C,P,P) → (B,m,n,C,P,P)
+        y = snp.transpose(y, (0, 3, 1, 4, 2, 5))   # (B,m,n,C,P,P) → (B,C,m,P,n,P)
+        y = snp.reshape(y, (B, C, Ih, Iw))         # (B,C,m,P,n,P) → (B,C,Ih,Iw)
+
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        B, T, H = x.shape
+        P = self.patch_size
+        C, Ih, Iw = self.img_size
+        m, n = Ih//P, Iw//P
+
+        gx = snp.reshape(gy, (B, C, m, P, n, P))   # (B,C,Ih,Iw) → (B,C,m,P,n,P)
+        gx = snp.transpose(gx, (0, 2, 4, 1, 3, 5)) # (B,C,m,P,n,P) → (B,m,n,C,P,P)
+        gx = snp.reshape(gx, (B, T, C, P, P))      # (B,m,n,C,P,P) → (B,T,C,P,P) ここで T=m*n
+        gx = snp.reshape(gx, (B, T, C*P*P))        # (B,T,C,P,P) → (B,T,D)  ここで D=C*P*P
+
+        gx = self.linear.backward(gx)       # (B,T,D) → (B,T,H)
+
+        return gx
+
+    def update(self, eta=0.001, **kwargs):
+        self.linear.update(eta=eta, **kwargs)
 
 #### Attention機構 #################################################
 # v:入力 value、k:入力 key、q:入力 query、y:出力、a:attention_weight
@@ -3716,6 +3764,7 @@ class AttentionUnit(Function):
         else:
             raise ValueError(f"Mask shape {mask.shape} must be ({B}, {Tk})" \
                            + self.__class__.__name__)
+       
         a = self.softmax(a)
         
         if self.regularizer is not None: # aのエントロピーやKLDの算出
