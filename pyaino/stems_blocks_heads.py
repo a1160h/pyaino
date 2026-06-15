@@ -1,12 +1,82 @@
 # stems_blocks_heads
-# 20260513 A.Inoue
+# 20260615 A.Inoue
 
 from pyaino.Config import *
+from pyaino import nucleus
 from pyaino import Neuron as nn
 from pyaino import Functions as F
 from pyaino import Activators as A
 from pyaino import LossFunctions as lf
 from pyaino import common_function as cf
+
+class TransformerBlock(nucleus.Function):
+    """ Transformer block: communication followed by computation """
+
+    def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False, 
+                 rms=False, activate='Mish', **kwargs):
+        super().__init__()
+        self.sa = nn.MultiHeadSelfAttention(
+            emb_dim, emb_dim//n_head, n_head, causality=causality, **kwargs) # entropy制御はkwargsで指定
+        self.ffwd = nn.Sequential(
+            nn.NeuronLayer(emb_dim, emb_dim*n_head, matmul=True, activate=activate, **kwargs),
+            nn.NeuronLayer(emb_dim*n_head, emb_dim, matmul=True, dropout=True, **kwargs),
+            )
+        Norm = nn.RMSNormalization if rms else nn.LayerNormalization
+        self.ln1 = Norm(**kwargs)
+        self.ln2 = Norm(**kwargs)
+
+        # ベクトル加算用
+        if proj:
+            self.proj = nn.LinearLayer(emb_dim, **kwargs) # 出力幅未定
+        else:
+            self.proj = None
+        self.proj_used = False
+            
+    def __forward__(self, x, v=None, mask=None, dropout=0.0):
+        self.proj_used = False
+
+        z = self.ln1.forward(x)
+        z = self.sa.forward(z, mask=mask, dropout=dropout)
+
+        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
+            u = self.proj(v)                            # projで形状を合わせて
+            z = x + z + u[:,None,:]                     # 加算注入
+            self.proj_used = True
+        else:
+            z = x + z
+         
+        y = self.ln2.forward(z)
+        y = self.ffwd.forward(y, dropout=dropout)
+        y = z + y
+        self.y = y
+        return y
+
+    def __backward__(self, gy):
+        gz = self.ffwd.backward(gy)     
+        gz = self.ln2.backward(gz)      
+        gz += gy                        
+
+        if self.proj_used:
+            gu = np.sum(gz, axis=1)     # u[:,None,:]として足し込んでいるのでsumで戻す
+            gv = self.proj.backward(gu)
+        else:
+            gv = None
+
+        gx = self.sa.backward(gz)
+        gx = self.ln1.backward(gx)
+        gx += gz
+
+        return gx, gv
+
+    def update(self, **kwargs):
+        self.sa.update(**kwargs)
+
+        if self.proj is not None and self.proj_used:
+            self.proj.update(**kwargs)
+
+        self.ffwd.update(**kwargs)
+        self.ln1.update(**kwargs)
+        self.ln2.update(**kwargs)
 
 
 # VAEの構成
@@ -31,6 +101,9 @@ class MyVAE:
         
         l = self.loss_function(y, x)
         return y, l*self.alpha, kll, mi
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
 
     def update(self, eta=0.0, **kwargs):
         self.encoder.update(eta=eta, **kwargs)
