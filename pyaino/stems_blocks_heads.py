@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260615 A.Inoue
+# 20260616 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -38,13 +38,32 @@ class TransformerBlock(nucleus.Function):
         z = self.ln1.forward(x)
         z = self.sa.forward(z, mask=mask, dropout=dropout)
 
+        z += x # res接続
+        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
+            u = self.proj(v)                            # projで形状を合わせて
+            z += u[:,None,:]                            # 加算注入
+            self.proj_used = True 
+
+        y = self.ln2.forward(z)
+        y = self.ffwd.forward(y, dropout=dropout)
+        y += z # res接続
+        self.y = y
+        return y
+
+    def __forward__bkup(self, x, v=None, mask=None, dropout=0.0):
+        """ インプレース更新をしない """
+        self.proj_used = False
+
+        z = self.ln1.forward(x)
+        z = self.sa.forward(z, mask=mask, dropout=dropout)
+
         if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
             u = self.proj(v)                            # projで形状を合わせて
             z = x + z + u[:,None,:]                     # 加算注入
             self.proj_used = True
         else:
             z = x + z
-         
+
         y = self.ln2.forward(z)
         y = self.ffwd.forward(y, dropout=dropout)
         y = z + y
@@ -66,6 +85,8 @@ class TransformerBlock(nucleus.Function):
         gx = self.ln1.backward(gx)
         gx += gz
 
+        if not self.proj_used:
+            return gx
         return gx, gv
 
     def update(self, **kwargs):

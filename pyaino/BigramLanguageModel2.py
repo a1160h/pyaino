@@ -1,9 +1,10 @@
 # BigramLanguageModel
-# 20260613 A.Inoue
+# 20260616 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
 from pyaino import Neuron
+from pyaino import stems_blocks_heads as sbh
 from pyaino import Activators
 from pyaino import LossFunctions as lf
 from pyaino import common_function as cf
@@ -34,7 +35,7 @@ class FeedForward: # 使わなくなった20260613AI
     def update(self, **kwargs):
         self.net.update(**kwargs)
 
-class TransformerBlock:
+class TransformerBlock: # 使わなくなった20260616AI
     """ Transformer block: communication followed by computation """
 
     def __init__(self, emb_dim=64, n_head=4, block_size=500, rms=False,
@@ -88,18 +89,18 @@ class TransformerBlock:
 class LmHead:
     """ 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築 """
     def __init__(self, emb_dim, vocab_size, matmul=True, unify=True, rms=False, 
-                       tile_size=200, optimize='AdamT', ignore=-1):
-
+                       tile_size=200, ignore=-1, **kwargs):
+        optimize = kwargs.get('optimize', 'AdamT')
         if rms:
             self.ln_f = Neuron.RMSNormalization(optimize=optimize)
         else:    
             self.ln_f = Neuron.LayerNormalization(optimize=optimize) #mask_enable=True) 
         if unify: # 損失関数までの一体処理
             self.linear_layer = Neuron.LinearLayerCrossEntropy(
-                emb_dim, vocab_size, matmul=matmul, tile_size=tile_size, optimize=optimize)#, **kwargs)
+                emb_dim, vocab_size, matmul=matmul, tile_size=tile_size, **kwargs)
         else:     # 機能別処理
             self.linear_layer = Neuron.LinearLayer(
-                emb_dim, vocab_size, matmul=matmul, optimize=optimize)
+                emb_dim, vocab_size, matmul=matmul, **kwargs)
             self.loss_function = lf.CrossEntropyErrorForLogits(ignore=ignore)
         self.unify = unify
 
@@ -137,23 +138,20 @@ class ModelBase:
                  unify=True, rms=False,
                  optimize='AdamT',
                  #decayrate=0.999,
-                 w_decay=0.01,
+                 w_decay=0.001,
                  ignore=-1, **kwargs):
         kwargs['optimize']  = optimize
         #kwargs['decayrate'] = decayrate
         kwargs['w_decay']   = w_decay
-        #emb_width =np.sqrt(1/(emb_dim)) # 20250530AI
-        emb_width =np.sqrt(1/(emb_dim/np.sqrt(n_head))) # 20250530AI
-        #emb_width =np.sqrt(1/(emb_dim/n_head)) # 20250530AI
         self.embed = Neuron.PositionalEmbedding(
             vocab_size, block_size, emb_dim, **kwargs)
         self.blocks = Neuron.Sequential(
-            *[TransformerBlock(emb_dim, n_head, block_size, rms, 'tri', **kwargs)
+            *[sbh.TransformerBlock(emb_dim, n_head, block_size, rms, 'tri', **kwargs)
               for _ in range(n_layer)]
             )
         matmul = True                   
         tile_size = 1000 if vocab_size > 1000 else None 
-        self.lm_head = LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, optimize)
+        self.lm_head = LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)#optimize)
 
         if not unify: # 以下2項は明示的に見せる必要がある
             self.softmax = Activators.Softmax()
