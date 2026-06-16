@@ -1,5 +1,5 @@
 # Optimizers
-# 2026.04.20 A.Inoue
+# 2026.06.16 A.Inoue
 
 from pyaino.Config import *
 import copy
@@ -326,8 +326,9 @@ class Adam(OptimizerBase):
 
 class AdamT(OptimizerBase):
     def __init__(self, **kwargs): 
-        self.momentum  = kwargs.pop('momentum',  0.9)   # beta1
-        self.decayrate = kwargs.pop('decayrate', 0.999) # beta2
+        self.momentum  = kwargs.pop('momentum',  0.9)    # beta1
+        self.decayrate = kwargs.pop('decayrate', 0.999)  # beta2
+        kwargs['w_decay'] = kwargs.pop('w_decay', 0.001) # default値=0.001
         super().__init__(**kwargs)
         self.vlcty = None
         self.hstry = None
