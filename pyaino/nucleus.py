@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260603 A.Inoue
+# 20260616 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -554,6 +554,8 @@ def backtrace_graph(y, seen_var=None, seen_func=None):
                                 '世代', f.generation, 'while in', len(flist)+1)
         f.backward(seen_var=seen_var) # 関数の逆伝播を呼出す
         for x in f.inputs:
+            if x is None:
+                continue  # 20260616AI
             funcs.update(x.creator)
             seen_func.update((id(f) for f in x.creator))
 

@@ -100,6 +100,226 @@ class TransformerBlock(nucleus.Function):
         self.ln2.update(**kwargs)
 
 
+class ConvBlock(nucleus.Function):
+    """
+    加算注入されるベクトル入力を備え残差接続可能な基本構成のConvBlock
+    - in_ch  -> out_ch (3x3)
+    - out_ch -> out_ch (3x3)
+    """
+    def __init__(self, out_ch, stride=1, proj=False, 
+                 residual=False, attention=False,
+                 activate=(None, None), pre_activation=False, 
+                 **kwargs):
+        super().__init__()
+        print('__init__', self.__class__.__name__, out_ch, stride, kwargs)
+        self.out_ch = out_ch
+        # Conv 本体（非bottleneck 構造）
+        self.convs = [
+            nn.Conv2dLayer(out_ch, 3, stride, 1,
+                           activate=activate[0], pre_activation=pre_activation,
+                           **kwargs),
+            nn.Conv2dLayer(out_ch, 3, 1, 1,
+                           activate=activate[1], pre_activation=pre_activation,
+                           residual=residual, # 残差接続の注入点
+                           **kwargs)
+            ]
+        n_head = out_ch//32 
+        self.n_head = n_head
+        opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
+                        'w_decay' : kwargs.pop('w_decay',    0.0),}
+        # embedding からのベクトル加算用
+        if proj:
+            self.proj = nn.LinearLayer(out_ch, **opt_for_opt) # 出力幅未定
+        else:
+            self.proj = None
+        self.proj_used = False
+        self.residual = residual      # 残差接続の有無 
+        if residual:    
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+        self.shortcut_used = False    
+        if attention:
+            self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
+        else:
+            self.attn = None
+    
+    def __forward__(self, x, v=None, train=True):
+        in_ch = x.shape[1]
+        self.proj_used = False
+        self.shortcut_used=False 
+        y = self.convs[0](x, train=train)
+        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
+            z = self.proj(v, train=train)               # projで形状を合わせて
+            y = y + z[:,:,None,None]                    # 加算注入
+            self.proj_used = True
+        if self.attn is not None:
+            y = self.attn(y)                            # attentionを挿入
+        if self.residual:
+            if in_ch == self.out_ch:
+                y = self.convs[1](y, x, train=train)    # resはx直結
+            else:
+                r = self.shortcut(x)
+                y = self.convs[1](y, r, train=train)    # resはshortcut経由
+                self.shortcut_used = True               # update有無のフラグ
+        else:
+            y = self.convs[1](y, train=train)
+        return y
+        
+    def __backward__(self, gy):
+        # convs[1] 側
+        if self.residual:
+            gy, gr = self.convs[1].backward(gy)
+
+            if self.shortcut_used:
+                gx = self.shortcut.backward(gr)
+            else:
+                gx = gr
+        else:
+            gy = self.convs[1].backward(gy)
+            gx = 0
+
+        # attention
+        if self.attn is not None:
+            gy = self.attn.backward(gy)
+
+        # time / label projection injection
+        if self.proj_used:
+            gz = gy.sum(axis=(2, 3))
+            gv = self.proj.backward(gz)
+        else:
+            gv = None
+
+        # convs[0]
+        gx = self.convs[0].backward(gy) + gx
+
+        if self.proj_used:
+            return gx, gv
+        else:
+            return gx
+    
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def update(self, eta=0.001, **kwargs):
+        if self.proj is not None and self.proj_used:
+            self.proj.update(eta=eta, **kwargs)
+        for conv in self.convs:
+            conv.update(eta=eta, **kwargs)
+        if self.residual and self.shortcut_used:
+            self.shortcut.update(eta=eta, **kwargs)
+            
+        
+class ConvBlockBottleneck(ConvBlock):
+    """
+    1x1 Conv を使ったボトルネック型 ConvBlock
+    - in_ch  -> mid_ch (1x1)
+    - mid_ch -> mid_ch (3x3)
+    - SpatialSelfAttention
+    - mid_ch -> out_ch (1x1)
+    """
+    def __init__(self, out_ch, stride=1, proj=False, bottleneck_ratio=0.5, min_mid_ch=16,
+                 residual=False, attention=False,
+                 activate=(None, None, None), pre_activation=False,
+                 **kwargs):
+        nucleus.Function.__init__(self)
+        print('__init__', self.__class__.__name__, out_ch,
+              proj, bottleneck_ratio, min_mid_ch, kwargs)
+        self.out_ch = out_ch
+       
+        # mid_ch を下限を設けて決定(in_chとout_chの両方を見る)
+        mid_ch = max(int(out_ch * bottleneck_ratio), min_mid_ch)
+
+        # Conv 本体（bottleneck 構造）
+        self.convs = [
+            nn.Conv2dLayer(mid_ch, 1, 1, 0,# 1x1: in_ch  -> mid_ch
+                           activate=activate[0], pre_activation=pre_activation,
+                           **kwargs), 
+            nn.Conv2dLayer(mid_ch, 3, stride, 1,# 3x3: mid_ch -> mid_ch（padding=1 前提）
+                           activate=activate[1], pre_activation=pre_activation,
+                           **kwargs), 
+            nn.Conv2dLayer(out_ch, 1, 1, 0,# 1x1: mid_ch -> out_ch
+                           activate=activate[2], pre_activation=pre_activation,
+                           residual=residual, # 残差接続の注入点
+                           **kwargs),
+            ]
+        n_head = mid_ch//32
+        self.n_head = n_head
+        opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
+                        'w_decay' : kwargs.pop('w_decay',    0.0),}
+        # embedding からのベクトル加算用
+        if proj:
+            self.proj = nn.LinearLayer(mid_ch, **opt_for_opt)
+        else:
+            self.proj = None
+        self.proj_used = False      
+        self.residual = residual
+        if residual:
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+        self.shortcut_used = False    
+        if attention:
+            self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
+        else:
+            self.attn = None
+
+    def __forward__(self, x, v=None, train=True):
+        in_ch = x.shape[1]
+        self.proj_used = False
+        self.shortcut_used=False 
+        y = self.convs[0](x, train=train)
+        y = self.convs[1](y, train=train)
+        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
+            z = self.proj(v, train=train)               # projで形状を合わせて
+            y = y + z[:,:,None,None]                    # 加算注入
+            self.proj_used = True  
+        if self.attn is not None:
+            y = self.attn(y)                            # attentionを挿入
+        if self.residual:
+            if in_ch == self.out_ch:
+                y = self.convs[2](y, x, train=train)    # resはx直結
+            else:
+                r = self.shortcut(x)
+                y = self.convs[2](y, r, train=train)    # resはshortcut経由
+                self.shortcut_used = True               # update有無のフラグ
+        else:
+            y = self.convs[2](y, train=train)
+        return y
+
+
+    def __backward__(self, gy):
+        # convs[2] 側
+        if self.residual:
+            gy, gr = self.convs[2].backward(gy)
+
+            if self.shortcut_used:
+                gx = self.shortcut.backward(gr)
+            else:
+                gx = gr
+        else:
+            gy = self.convs[2].backward(gy)
+            gx = 0
+
+        # attention
+        if self.attn is not None:
+            gy = self.attn.backward(gy)
+
+        # time / label projection injection
+        if self.proj_used:
+            gz = gy.sum(axis=(2, 3))
+            gv = self.proj.backward(gz)
+        else:
+            gv = None
+
+        # convs[1] -> convs[0]
+        gy = self.convs[1].backward(gy)
+        gx = self.convs[0].backward(gy) + gx
+
+        if self.proj_used:
+            return gx, gv
+        else:
+            return gx
+    
+
+
 # VAEの構成
 class MyVAE:
     def __init__(self, encoder, sampling, decoder, loss_function,

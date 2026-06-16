@@ -1,8 +1,9 @@
 # UNet
-# 20260614 A.Inoue
+# 20260616 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
+from pyaino import stems_blocks_heads as sbh
 from pyaino import Neuron as nn
 from pyaino import Activators
 from pyaino import LossFunctions as lf
@@ -11,154 +12,6 @@ from pyaino import common_function as cf
 import warnings
 import copy
 
-class ConvBlock:
-    """
-    加算注入されるベクトル入力を備え残差接続可能な基本構成のConvBlock
-    - in_ch  -> out_ch (3x3)
-    - out_ch -> out_ch (3x3)
-    """
-    def __init__(self, out_ch, stride=1, proj=False, 
-                 residual=False, attention=False,
-                 activate=(None, None), pre_activation=False, 
-                 **kwargs):
-        print('__init__', self.__class__.__name__, out_ch, stride, kwargs)
-        self.out_ch = out_ch
-        # Conv 本体（非bottleneck 構造）
-        self.convs = [
-            nn.Conv2dLayer(out_ch, 3, stride, 1,
-                           activate=activate[0], pre_activation=pre_activation,
-                           **kwargs),
-            nn.Conv2dLayer(out_ch, 3, 1, 1,
-                           activate=activate[1], pre_activation=pre_activation,
-                           residual=residual, # 残差接続の注入点
-                           **kwargs)
-            ]
-        n_head = out_ch//32 
-        self.n_head = n_head
-        opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
-                        'w_decay' : kwargs.pop('w_decay',    0.0),}
-        # embedding からのベクトル加算用
-        if proj:
-            self.proj = nn.LinearLayer(out_ch, **opt_for_opt) # 出力幅未定
-        else:
-            self.proj = None
-        self.proj_used = False
-        self.residual = residual      # 残差接続の有無 
-        if residual:    
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
-        self.shortcut_used = False    
-        if attention:
-            self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
-        else:
-            self.attn = None
-    
-    def forward(self, x, v=None, train=True):
-        in_ch = x.shape[1]
-        self.proj_used = False
-        self.shortcut_used=False 
-        y = self.convs[0](x, train=train)
-        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
-            z = self.proj(v, train=train)               # projで形状を合わせて
-            y = y + z[:,:,None,None]                    # 加算注入
-            self.proj_used = True
-        if self.attn is not None:
-            y = self.attn(y)                            # attentionを挿入
-        if self.residual:
-            if in_ch == self.out_ch:
-                y = self.convs[1](y, x, train=train)    # resはx直結
-            else:
-                r = self.shortcut(x)
-                y = self.convs[1](y, r, train=train)    # resはshortcut経由
-                self.shortcut_used = True               # update有無のフラグ
-        else:
-            y = self.convs[1](y, train=train)
-        return y
-        
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
-
-    def update(self, eta=0.001, **kwargs):
-        if self.proj is not None and self.proj_used:
-            self.proj.update(eta=eta, **kwargs)
-        for conv in self.convs:
-            conv.update(eta=eta, **kwargs)
-        if self.residual and self.shortcut_used:
-            self.shortcut.update(eta=eta, **kwargs)
-            
-        
-class ConvBlockBottleneck(ConvBlock):
-    """
-    1x1 Conv を使ったボトルネック型 ConvBlock
-    - in_ch  -> mid_ch (1x1)
-    - mid_ch -> mid_ch (3x3)
-    - SpatialSelfAttention
-    - mid_ch -> out_ch (1x1)
-    """
-    def __init__(self, out_ch, stride=1, proj=False, bottleneck_ratio=0.5, min_mid_ch=16,
-                 residual=False, attention=False,
-                 activate=(None, None, None), pre_activation=False,
-                 **kwargs):
-        print('__init__', self.__class__.__name__, out_ch,
-              proj, bottleneck_ratio, min_mid_ch, kwargs)
-        self.out_ch = out_ch
-       
-        # mid_ch を下限を設けて決定(in_chとout_chの両方を見る)
-        mid_ch = max(int(out_ch * bottleneck_ratio), min_mid_ch)
-
-        # Conv 本体（bottleneck 構造）
-        self.convs = [
-            nn.Conv2dLayer(mid_ch, 1, 1, 0,# 1x1: in_ch  -> mid_ch
-                           activate=activate[0], pre_activation=pre_activation,
-                           **kwargs), 
-            nn.Conv2dLayer(mid_ch, 3, stride, 1,# 3x3: mid_ch -> mid_ch（padding=1 前提）
-                           activate=activate[1], pre_activation=pre_activation,
-                           **kwargs), 
-            nn.Conv2dLayer(out_ch, 1, 1, 0,# 1x1: mid_ch -> out_ch
-                           activate=activate[2], pre_activation=pre_activation,
-                           residual=residual, # 残差接続の注入点
-                           **kwargs),
-            ]
-        n_head = mid_ch//32
-        self.n_head = n_head
-        opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
-                        'w_decay' : kwargs.pop('w_decay',    0.0),}
-        # embedding からのベクトル加算用
-        if proj:
-            self.proj = nn.LinearLayer(mid_ch, **opt_for_opt)
-        else:
-            self.proj = None
-        self.proj_used = False      
-        self.residual = residual
-        if residual:
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
-        self.shortcut_used = False    
-        if attention:
-            self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
-        else:
-            self.attn = None
-
-    def forward(self, x, v=None, train=True):
-        in_ch = x.shape[1]
-        self.proj_used = False
-        self.shortcut_used=False 
-        y = self.convs[0](x, train=train)
-        y = self.convs[1](y, train=train)
-        if (self.proj is not None) and (v is not None): # timeやlabelのmlpからの注入口
-            z = self.proj(v, train=train)               # projで形状を合わせて
-            y = y + z[:,:,None,None]                    # 加算注入
-            self.proj_used = True  
-        if self.attn is not None:
-            y = self.attn(y)                            # attentionを挿入
-        if self.residual:
-            if in_ch == self.out_ch:
-                y = self.convs[2](y, x, train=train)    # resはx直結
-            else:
-                r = self.shortcut(x)
-                y = self.convs[2](y, r, train=train)    # resはshortcut経由
-                self.shortcut_used = True               # update有無のフラグ
-        else:
-            y = self.convs[2](y, train=train)
-        return y
 
 def palindrom(n):
     """ 2のべき乗が真ん中を最高にして対称に上り下りして並ぶ """
@@ -180,7 +33,7 @@ def palindrom(n):
 class UNetCore:
     """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
     def __init__(self, depth=3, in_ch=None, base_ch=32,
-                 proj=False, bottleneck=True, bottleneck_ratio=0.5,
+                 proj=False, bottleneck=False, bottleneck_ratio=0.5,
                  n_bottom=1, attention=False,
                  **kwargs):
         # ---- U-Net core skeleton ----
@@ -219,7 +72,7 @@ class UNetCore:
         self.stem = nn.Conv2dLayer(base_ch, self.stem_kernel, 1, stem_pad, **common_options)
 
         # 本体＝畳込みブロックとチャネル構成の決定
-        Conv = ConvBlockBottleneck if bottleneck else ConvBlock
+        Conv = sbh.ConvBlockBottleneck if bottleneck else sbh.ConvBlock
         c_down = [base_ch * (2 ** i) for i in range(self.depth)]
         c_bot  = base_ch * (2 ** (self.depth - 1)) 
         c_up   = [base_ch * (2 ** i) for i in reversed(range(self.depth))]
@@ -367,62 +220,40 @@ class UNet:
         bottleneck=True, bottleneck_ratio=0.5, n_bottom=1, attention=False,
         **kwargs):
 
-        # ---- embedding / conditioning ----
+        # ---- MLP専用の項目 embedding, conditioning ----
         self.time_embed  = kwargs.pop('time_embed', False)
         self.num_labels  = kwargs.pop('num_labels',  None)
         self.embed_dim   = kwargs.pop('embed_dim',    128)
 
-        # ---- activation / normalization ----
-        self.activate    = kwargs.pop('activate',  'ReLU')
-        self.pre_activation = kwargs.pop('pre_activation', False)
-        self.optimize    = kwargs.pop('optimize', 'AdamT')
-        self.w_decay     = kwargs.pop('w_decay',     0.01)
-
-        norm_options =   {'batchnorm' : kwargs.pop('batchnorm',    None),
-                          'layernorm' : kwargs.pop('layernorm',    None),
-                          'normaffine': kwargs.pop('normaffine',  False),}
-        
-        common_options = {**norm_options,
-                          'optimize': self.optimize, 'w_decay': self.w_decay} 
+        # ---- Coreとの共通項目 activation, optimize ----
+        self.activate    = kwargs.get('activate',  'ReLU')
+        optimize_options = {'optimize': kwargs.get('optimize', 'AdamT'),
+                            'w_decay' : kwargs.get('w_decay',     0.01)}
 
         proj = self.time_embed or (self.num_labels is not None)
-
-        core_options = {
-            **norm_options,
-            **kwargs, 
-            'activate'      : self.activate,
-            'pre_activation': self.pre_activation,
-            'optimize'      : self.optimize,
-            'w_decay'       : self.w_decay,
-        }
 
         self.core = UNetCore(
             depth=depth, in_ch=in_ch, base_ch=base_ch, proj=proj,
             bottleneck=bottleneck, bottleneck_ratio=bottleneck_ratio,
             n_bottom=n_bottom, attention=attention,
-            **core_options
+            **kwargs
         )
-
-        #if kwargs: # Safety check
-        #    raise TypeError(f"Unexpected keyword arguments: {list(kwargs.keys())}")
-
-       # timeおよびlabelのembeddingとその次元変換用のmlp
-        options_for_mlpn = {**common_options, 'activate': self.activate,}
-        options_for_mlpo = {'optimize': self.optimize, 'w_decay': self.w_decay}
 
         if self.time_embed:
             self.time_mlp = nn.Sequential(
                 nn.PositionalEncoding(dimension=self.embed_dim),
-                nn.NeuronLayer(base_ch*4, **options_for_mlpn),
-                nn.LinearLayer(self.embed_dim, **options_for_mlpo))
+                nn.NeuronLayer(self.embed_dim, activate=self.activate, **optimize_options),
+                #nn.LinearLayer(self.embed_dim, **optimize_options),
+                )
         else:
             self.time_mlp = None
 
         if self.num_labels is not None:
             self.label_mlp = nn.Sequential(
-                nn.Embedding(self.num_labels, self.embed_dim, optimize=self.optimize),
-                nn.NeuronLayer(base_ch*4, **options_for_mlpn),
-                nn.LinearLayer(self.embed_dim, **options_for_mlpo))
+                nn.Embedding(self.num_labels, self.embed_dim, **optimize_options),
+                nn.NeuronLayer(self.embed_dim, activate=self.activate, **optimize_options),
+                #nn.LinearLayer(self.embed_dim, **optimize_options),
+                )
         else:
             self.label_mlp = None
 
@@ -522,7 +353,7 @@ class CNN_MultiStageStack:
         self.stem = nn.Conv2dLayer(base_ch, stem_kernel, 0, **common_options)
 
         # 本体＝畳込みブロックとチャネル構成の決定
-        Conv = ConvBlockBottleneck if bottleneck else ConvBlock
+        Conv = sbh.ConvBlockBottleneck if bottleneck else sbh.ConvBlock
 
         if scale_direction == 'down':
             ch = [base_ch * (2 ** i) for i in range(depth)]
@@ -655,7 +486,7 @@ class ResStage:
             raise ValueError('Invalid stride specified.')
 
         self.blocks = nn.Sequential(
-            *[ConvBlock(chanels[i], strides[i], **options)
+            *[sbh.ConvBlock(chanels[i], strides[i], **options)
               for i in range(depth)]
             )
         
@@ -706,12 +537,13 @@ if __name__=='__main__':
         c = np.random.randint(1, 5)
         b = np.random.randint(1,10)
         x = np.random.rand(int(b), int(c), int(h), int(w))
+        x = np.hdarray(x)
 
         model = UNet(layernorm=True,pre_activation=True, residual=True)#bottleneck=False)#in_ch=int(c))
         print('\n', f'##### test No.{i} x.shape = {x.shape} #####')
         y = model(x)
         y.backtrace()
-        gx = model.core.down[0].convs[0].inputs[0].grad
+        gx = x.grad #model.core.down[0].inputs[0].grad
         print(f'##### y.shape = {y.shape} gx.shape = {gx.shape} #####')
 
     """#
