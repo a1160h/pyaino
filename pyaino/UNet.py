@@ -1,9 +1,10 @@
 # UNet
-# 20260616 A.Inoue
+# 20260617 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
 from pyaino import stems_blocks_heads as sbh
+from pyaino import skeletons 
 from pyaino import Neuron as nn
 from pyaino import Activators
 from pyaino import LossFunctions as lf
@@ -214,8 +215,7 @@ class UNetCore:
             self.up[i].update(eta=eta, **kwargs)
         self.out.update(eta=eta, **kwargs)
 
-class UNet:
-    """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
+class UNet_bkup:
     def __init__(self, depth=3, in_ch=None, base_ch=32,
         bottleneck=True, bottleneck_ratio=0.5, n_bottom=1, attention=False,
         **kwargs):
@@ -320,7 +320,70 @@ class UNet:
 
         return t_arr.astype(np.int32, copy=False)
 
+class UNet:
+    def __init__(self, depth=3, in_ch=None, base_ch=32,
+                 bottleneck=True, bottleneck_ratio=0.5, n_bottom=1,
+                 attention=False, **kwargs):
 
+        # ---- MLP専用の項目 embedding, conditioning ----
+        time_embed = kwargs.pop('time_embed', False)
+        num_labels = kwargs.pop('num_labels', None)
+        embed_dim  = kwargs.pop('embed_dim', 128)
+
+        # ---- Coreとの共通項目 activation, optimize ----
+        activate = kwargs.get('activate', 'ReLU')
+        optimize_options = {
+            'optimize': kwargs.get('optimize', 'AdamT'),
+            'w_decay' : kwargs.get('w_decay', 0.01),
+        }
+
+        proj = time_embed or (num_labels is not None)
+
+        core = UNetCore(
+            depth=depth,
+            in_ch=in_ch,
+            base_ch=base_ch,
+            proj=proj,
+            bottleneck=bottleneck,
+            bottleneck_ratio=bottleneck_ratio,
+            n_bottom=n_bottom,
+            attention=attention,
+            **kwargs
+        )
+
+        if time_embed:
+            time_mlp = nn.Sequential(
+                nn.PositionalEncoding(dimension=embed_dim),
+                nn.NeuronLayer(embed_dim, activate=activate, **optimize_options),
+            )
+        else:
+            time_mlp = None
+
+        if num_labels is not None:
+            label_mlp = nn.Sequential(
+                nn.Embedding(num_labels, embed_dim, **optimize_options),
+                nn.NeuronLayer(embed_dim, activate=activate, **optimize_options),
+            )
+        else:
+            label_mlp = None
+
+        self.model = skeletons.PredictionSkeleton(
+            core=core,
+            time_mlp=time_mlp,
+            label_mlp=label_mlp,
+        )
+
+
+    def forward(self, x, timesteps=None, labels=None, train=True):
+        return self.model(x, timesteps=timesteps, labels=labels, train=train)
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def update(self, eta=0.001, **kwargs):
+        self.model.update(eta=eta, **kwargs)
+
+        
 class CNN_MultiStageStack:
     """ UNetを起源とする汎用的なCNN """
 
