@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.06.15 A.Inoue
+# 2026.06.18 A.Inoue
 
 import copy
 import warnings
@@ -3540,17 +3540,29 @@ class PatchEmbeddingSimple(Function):
         self.linear.update(eta=eta, **kwargs)
 
 class Unpatchfy(Function):
-    def __init__(self, img_size, patch_size, **kwargs):
+    def __init__(self, img_size=None, patch_size=2, **kwargs):
         super().__init__()
-        self.img_size = img_size            # 出力画像の大きさ(C,Ih,Iw)
-        self.patch_size = patch_size        # パッチサイズ
+        self.config = img_size, patch_size
+        # linearのconfigは遅延設定だが、img_sizeとpatch_sizeを与えれば決まる        
+        self.linear = LinearLayer(None, matmul=True, **kwargs)
+
+    def fix_configuration(self, shape):
+        """ linearのconfigを設定 """
+        # config = (img_size, patch_size) は事前に設定しておく必要がある
+        if None in self.config:
+            raise ValueError(f'Either img_size or patch_size is bad.')
+        img_size, patch_size = self.config
         out_dim = img_size[0] * patch_size * patch_size        
-        self.linear = LinearLayer(out_dim, matmul=True, **kwargs)
+        self.linear.config = shape[-1], out_dim
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def __forward__(self, x, **kwargs):
+        if None in self.linear.config: # linearの設定を確認
+            self.fix_configuration(x.shape)
+            
         B, T, H = x.shape
-        P = self.patch_size
-        C, Ih, Iw = self.img_size
+        P = self.config[1]         # patch_size
+        C, Ih, Iw = self.config[0] # img_size
         m, n = Ih//P, Iw//P
         if (Ih/P)*(Iw/P)!=T:
             raise ValueError(f'Either input shape {x.shape} or output shape {self.img_size} is bad.')
@@ -3571,8 +3583,8 @@ class Unpatchfy(Function):
     def __backward__(self, gy):
         x, = self.inputs
         B, T, H = x.shape
-        P = self.patch_size
-        C, Ih, Iw = self.img_size
+        P = self.config[1]         # patch_size
+        C, Ih, Iw = self.config[0] # img_size
         m, n = Ih//P, Iw//P
 
         gx = snp.reshape(gy, (B, C, m, P, n, P))   # (B,C,Ih,Iw) → (B,C,m,P,n,P)
