@@ -1,5 +1,5 @@
 # UNet
-# 20260617 A.Inoue
+# 20260619 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -130,9 +130,11 @@ class UNetCore:
         if self.skip_ratio is not None and self.skip_ratio > 0:
             self.skip_proj = []
             for i in range(depth):
-                proj_ch = max(1, round(c_down[i] * skip_ratio))
+                proj_ch = max(1, round(c_down[i] * self.skip_ratio))
                 self.skip_proj.append(nn.Conv2dLayer(
-                                      proj_ch, 1, 0, **options_for_skip_proj)) 
+                                      proj_ch, 1, 0, **options_for_skip_proj))
+
+        self.crop_infos = None       
 
     def fix_out_ch(self, shape):
         """ 出力のConv2dの出力チャネル数の確定(入力の形状を見て合わせる) """
@@ -146,18 +148,39 @@ class UNetCore:
             self.out.config = tuple(list_out_config)
             #print(self.out.config)
 
+    def reset_crop_infos(self):
+        self.crop_infos = []
+
     def center_crop(self, x, crop_h, crop_w):
         h, w = x.shape[-2:]
+        if (h, w) == (crop_h, crop_w): # はじめから一致
+            self.crop_infos.append(None)
+            return x
+            
         # 開始位置の計算
         start_h = (h - crop_h) // 2
         start_w = (w - crop_w) // 2
+        self.crop_infos.append((x.shape, start_h, start_w, crop_h, crop_w))
         # スライス
         return x[:, :, start_h:start_h+crop_h, start_w:start_w+crop_w]
 
+    def center_uncrop(self, gx):
+        info = self.crop_infos.pop()
+        if info is None:
+            return gx
+        before_shape, start_h, start_w, crop_h, crop_w = info
+        B, C, h0, w0 = before_shape
+        gy = np.zeros(before_shape, dtype=gx.dtype)
+        gy[:, :, start_h:start_h+crop_h, start_w:start_w+crop_w] = gx
+        return gy
+
+
     def forward(self, x, v=None, train=True):
+        
         self.fix_out_ch(x.shape)
         shapes = []
-        zs = []    
+        zs = []
+        self.reset_crop_infos()
 
         # Stem
         x = self.stem(x)
@@ -177,9 +200,7 @@ class UNetCore:
         for i in range(self.depth):
             shape = shapes.pop()   # 元の形状=Up変換後の形状　 
             x = self.upsample[i](x)                   # H/4, W/4
-            if x.shape[-2:] != shape[-2:]:            # 形状が違う場合
-                # x = x[:, :, 0:shape[-2], 0:shape[-1]]        # 左上基準でもOK
-                x = self.center_crop(x, shape[-2], shape[-1]) # center_crop
+            x = self.center_crop(x, shape[-2], shape[-1]) # center_crop
 
             z = zs.pop()           # Downパスの中間結果を逆順FILOで取出す
             if self.skip_ratio is None:
@@ -201,6 +222,49 @@ class UNetCore:
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
+
+    def backward(self, gy):
+        gx = self.out.backward(gy)
+
+        gzs = [None] * self.depth
+
+        # Up
+        for i in reversed(range(self.depth)):
+            gx = self.up[i].backward(gx)
+
+            if self.skip_ratio is None:
+                gx, gz = self.concat[i].backward(gx)
+                j = self.depth - 1 - i
+                gzs[j] = gz
+
+            elif self.skip_ratio > 0:
+                gx, gz = self.concat[i].backward(gx)
+                j = self.depth - 1 - i
+                gz = self.skip_proj[j].backward(gz)
+                gzs[j] = gz
+
+            elif self.skip_ratio == 0:
+                pass
+
+            gx = self.center_uncrop(gx)
+            gx = self.upsample[i].backward(gx)
+
+        # Bottleneck
+        for i in reversed(range(self.n_bottom)):
+            gx = self.bot[i].backward(gx)
+
+        # Down
+        for i in reversed(range(self.depth)):
+            gx = self.pool[i].backward(gx)
+
+            if gzs[i] is not None:
+                gx = gx + gzs[i]
+
+            gx = self.down[i].backward(gx)
+
+        gx = self.stem.backward(gx)
+        return gx
+
 
     def update(self, eta=0.001, **kwargs):
         self.stem.update(eta=eta, **kwargs)
@@ -325,17 +389,10 @@ class UNet:
                  bottleneck=True, bottleneck_ratio=0.5, n_bottom=1,
                  attention=False, **kwargs):
 
-        # ---- MLP専用の項目 embedding, conditioning ----
+        # ---- MLPの項目 -> projの有無 ----
         time_embed = kwargs.pop('time_embed', False)
-        num_labels = kwargs.pop('num_labels', None)
-        embed_dim  = kwargs.pop('embed_dim', 128)
-
-        # ---- Coreとの共通項目 activation, optimize ----
-        activate = kwargs.get('activate', 'ReLU')
-        optimize_options = {
-            'optimize': kwargs.get('optimize', 'AdamT'),
-            'w_decay' : kwargs.get('w_decay', 0.01),
-        }
+        num_labels = kwargs.pop('num_labels',  None)
+        embed_dim  = kwargs.pop('embed_dim',    128)
 
         proj = time_embed or (num_labels is not None)
 
@@ -348,34 +405,22 @@ class UNet:
             bottleneck_ratio=bottleneck_ratio,
             n_bottom=n_bottom,
             attention=attention,
-            **kwargs
-        )
-
-        if time_embed:
-            time_mlp = nn.Sequential(
-                nn.PositionalEncoding(dimension=embed_dim),
-                nn.NeuronLayer(embed_dim, activate=activate, **optimize_options),
+            **kwargs,
             )
-        else:
-            time_mlp = None
-
-        if num_labels is not None:
-            label_mlp = nn.Sequential(
-                nn.Embedding(num_labels, embed_dim, **optimize_options),
-                nn.NeuronLayer(embed_dim, activate=activate, **optimize_options),
-            )
-        else:
-            label_mlp = None
-
+        
         self.model = skeletons.PredictionSkeleton(
             core=core,
-            time_mlp=time_mlp,
-            label_mlp=label_mlp,
-        )
+            time_embed=time_embed,
+            num_labels=num_labels,
+            embed_dim=embed_dim,
+            **kwargs,
+            )
 
+    def forward(self, x, timesteps=None, labels=None, **kwargs):
+        return self.model(x, timesteps=timesteps, labels=labels, **kwargs)
 
-    def forward(self, x, timesteps=None, labels=None, train=True):
-        return self.model(x, timesteps=timesteps, labels=labels, train=train)
+    def backward(self, gy, **kwargs):
+        return self.model.backward(gy, **kwargs)
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
@@ -602,11 +647,13 @@ if __name__=='__main__':
         x = np.random.rand(int(b), int(c), int(h), int(w))
         x = np.hdarray(x)
 
-        model = UNet(layernorm=True,pre_activation=True, residual=True)#bottleneck=False)#in_ch=int(c))
+        model = UNetCore(layernorm=True,pre_activation=True, residual=True)#bottleneck=False)#in_ch=int(c))
         print('\n', f'##### test No.{i} x.shape = {x.shape} #####')
         y = model(x)
-        y.backtrace()
-        gx = x.grad #model.core.down[0].inputs[0].grad
+        #y.backtrace()
+        gy = np.ones_like(y)
+        gx = model.backward(gy)
+        #gx = x.grad #model.core.down[0].inputs[0].grad
         print(f'##### y.shape = {y.shape} gx.shape = {gx.shape} #####')
 
     """#

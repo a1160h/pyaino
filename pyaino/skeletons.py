@@ -1,26 +1,37 @@
 # skeletons
-# 20260617 A.Inoue
+# 20260619 A.Inoue
 
 from pyaino.Config import *
-#set_derivative(True)
-#from pyaino import stems_blocks_heads as sbh
-#from pyaino import Neuron as nn
-#from pyaino import Activators
-#from pyaino import LossFunctions as lf
-#from pyaino import Functions as F
-#from pyaino import common_function as cf
-#import warnings
-#import copy
-
+from pyaino import Neuron as nn
 
 class PredictionSkeleton:
-    def __init__(self, core, time_mlp=None, label_mlp=None):
+    def __init__(self, core, time_embed=False, num_labels=None, embed_dim=128,
+                 **kwargs):
+
         self.core = core
-        self.time_mlp = time_mlp
-        self.label_mlp = label_mlp
+
+        mlp_option = {'optimize' : kwargs.pop('optimize', 'SGD'),
+                      'w_decay'  : kwargs.pop('w_decay',   0.0 ),}
+
+        if time_embed:
+            self.time_mlp = nn.Sequential(
+                nn.PositionalEncoding(dimension=embed_dim),
+                nn.NeuronLayer(embed_dim, activate=None, **mlp_option),
+            )
+        else:
+            self.time_mlp = None
+
+        if num_labels is not None:
+            self.label_mlp = nn.Sequential(
+                nn.Embedding(num_labels, embed_dim, **mlp_option),
+                nn.NeuronLayer(embed_dim, activate=None, **mlp_option),
+            )
+        else:
+            self.label_mlp = None
+
         self.time_mlp_used = False; self.label_mlp_used = False
 
-    def forward(self, x, timesteps=None, labels=None, train=True):
+    def forward(self, x, timesteps=None, labels=None, **kwargs):
         self.time_mlp_used  = False
         self.label_mlp_used = False
         time_ctx  = None
@@ -29,11 +40,11 @@ class PredictionSkeleton:
         if (self.time_mlp is not None) and (timesteps is not None):
             t0 = timesteps
             t0 = self.normalize_t(t0, x.shape[0])    # バッチサイズだけ合わせる
-            time_ctx = self.time_mlp(t0, train=train)
+            time_ctx = self.time_mlp(t0, **kwargs)
             self.time_mlp_used = True  
         # label embedding -> mlp
         if (self.label_mlp is not None) and (labels is not None):
-            label_ctx = self.label_mlp(labels, train=train)
+            label_ctx = self.label_mlp(labels, **kwargs)
             self.label_mlp_used = True 
         # 注入ベクトルの確定(使ったことを受けて設定)
         if self.time_mlp_used and self.label_mlp_used: 
@@ -45,7 +56,7 @@ class PredictionSkeleton:
         else:
             v = None
             
-        y = self.core(x, v=v, train=train)
+        y = self.core(x, v=v, **kwargs)
         return y
 
     def __call__(self, *args, **kwargs):
@@ -82,10 +93,16 @@ class PredictionSkeleton:
 
 
 class VAESkeleton:
-    def __init__(self, encoder, sampling, decoder, loss_function,
+    def __init__(self, encoder, decoder, loss_function,
                  alpha=1.0, **kwargs):
         self.encoder  = encoder
-        self.sampling = sampling
+        
+        self.sampling = nn.LatentSampling(
+            rate = kwargs.pop('rate', 1.0), # 正規分布の乱数のスケール係数
+            kld  = kwargs.pop('kld',  1.0), # KullbackLeiblerDivergenceのスケール係数
+            mil  = kwargs.pop('mil',  0.0), # MutualInformationLossのスケール係数
+            )
+
         self.decoder  = decoder
         self.loss_function = loss_function
         self.alpha = alpha # 画像と潜在変数のスケール合わせ
