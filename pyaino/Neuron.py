@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.06.18 A.Inoue
+# 2026.06.20 A.Inoue
 
 import copy
 import warnings
@@ -24,9 +24,12 @@ class Sequential:
         self.outputshape = {}
         print(self.layers)
 
-    def forward(self, x, **kwargs):
-        y = x
-        for i, layer in enumerate(self.layers):
+    def forward(self, *x, **kwargs):
+        layer = self.layers[0]
+        self.error_layer = layer
+        y = layer.forward(*x, **kwargs)
+        self.outputshape['0'+layer.__class__.__name__] = y.shape
+        for i, layer in enumerate(self.layers[1:], start=1):
             self.error_layer = layer
             y = layer.forward(y, **kwargs)
             self.outputshape[str(i)+layer.__class__.__name__] = y.shape # デバグ用
@@ -81,10 +84,13 @@ class SequentialWithLoss:
         self.outputshape = {}
         print(self.layers)
 
-    def forward(self, x, t=None, **kwargs):
-        y = x
+    def forward(self, *x, t=None, **kwargs):
+        layer = self.layers[0]
+        self.error_layer = layer
+        y = layer.forward(*x, **kwargs)
+        self.outputshape['0'+layer.__class__.__name__] = y.shape
         # 最終層以前まで
-        for i, layer in enumerate(self.layers[:-1]): 
+        for i, layer in enumerate(self.layers[1:-1], start=1): 
             self.error_layer = layer                                    # デバグ用
             y = layer.forward(y, **kwargs)
             self.outputshape[str(i)+layer.__class__.__name__] = y.shape # デバグ用
@@ -257,7 +263,7 @@ class Parameter(Function):
     def __init__(self, *size, **kwargs):
         super().__init__()
         self.size = size
-        optimize        = kwargs.pop('optimize', 'SGD') 
+        optimize = kwargs.pop('optimize', 'SGD') 
         self.w, self.grad_w = None, None
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)
 
