@@ -3571,7 +3571,7 @@ class Unpatchfy(Function):
         C, Ih, Iw = self.config[0] # img_size
         m, n = Ih//P, Iw//P
         if (Ih/P)*(Iw/P)!=T:
-            raise ValueError(f'Either input shape {x.shape} or output shape {self.img_size} is bad.')
+            raise ValueError(f'Either input shape {x.shape} or config {self.config} is bad.')
 
         y = self.linear(x, **kwargs)        # (B,T,H) → (B,T,D) 
 
