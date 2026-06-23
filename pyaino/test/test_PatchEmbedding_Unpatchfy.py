@@ -27,9 +27,8 @@ model = nn.SequentialWithLoss(
 cf.get_obj_info(model)
 
 
-# -- 学習と経過の記録 --
 for i in range(300):
-    y, loss = model(x, x)
+    y, loss = model(x, t=x)
     model.backward()
     #loss.backtrace()
     model.update(eta=0.0003)
