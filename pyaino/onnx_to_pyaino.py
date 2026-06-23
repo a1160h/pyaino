@@ -15,6 +15,48 @@ set_np('numpy')
 from pyaino import Neuron
 from pyaino import Activators
 
+def restore_activation(op_type, node):
+    if op_type == 'Relu':
+        return Activators.ReLU()
+    elif op_type == 'LeakyRelu':
+        alpha = 0.01
+        for attr in node.attribute:
+            if attr.name == 'alpha':
+                alpha = attr.f
+        return Activators.LReLU(c=alpha)
+    elif op_type == 'Sigmoid':
+        return Activators.Sigmoid()
+    elif op_type == 'Tanh':
+        return Activators.Tanh()
+    elif op_type == 'Softmax':
+        return Activators.Softmax()
+    elif op_type == 'Identity':
+        return Activators.Identity()
+    elif op_type == 'Elu':
+        alpha = 1.0
+        for attr in node.attribute:
+            if attr.name == 'alpha':
+                alpha = attr.f
+        return Activators.ELU(c=alpha)
+    elif op_type == 'Softplus':
+        return Activators.Softplus()
+    elif op_type == 'Gelu':
+        approx = 'none'
+        for attr in node.attribute:
+            if attr.name == 'approximate':
+                approx = attr.s.decode('utf-8') if isinstance(attr.s, bytes) else attr.s
+        if approx == 'tanh':
+            return Activators.GELUap()
+        else:
+            return Activators.GELU()
+    elif op_type == 'Swish':
+        alpha = 1.0
+        for attr in node.attribute:
+            if attr.name == 'alpha':
+                alpha = attr.f
+        return Activators.Swish(beta=alpha)
+    return None
+
 def import_onnx_to_pyaino(onnx_path):
     """
     ONNXモデルファイルを読み込み、pyainoのSequentialモデルとして再構築（インポート）します。
@@ -34,14 +76,16 @@ def import_onnx_to_pyaino(onnx_path):
     
     pyaino_layers = []       # 再構築したpyainoレイヤーオブジェクトの格納用リスト
     
+    skip_nodes = set()
+    
     for i, node in enumerate(graph.node):
+        if node.name in skip_nodes:
+            continue
+            
         op_type = node.op_type
         
         # --- 全結合層 (Gemm) ノードの復元 ---
-        # ※ ONNXにおける Gemm ノードは、pyainoの NeuronLayer にマッピングします。
-        # NeuronLayerはBaseLayerを継承しているため、後段の活性化関数埋め込み(postphase)が扱えます。
         if op_type == 'Gemm':
-            # Gemmの入力順は [入力テンソル名, 重みテンソル名, バイアステンソル名(オプション)] です
             input_name = node.input[0]
             weight_name = node.input[1]
             bias_name = node.input[2] if len(node.input) > 2 else None
@@ -52,14 +96,10 @@ def import_onnx_to_pyaino(onnx_path):
             out_features, in_features = w_onnx.shape
             bias_enabled = bias_name is not None
             
-            # NeuronLayerをインスタンス化します
-            layer = Neuron.NeuronLayer(in_features, out_features, bias=bias_enabled)
-            
-            # pyainoの初期パラメータ設定を確定させます
+            layer = Neuron.NeuronLayer(in_features, out_features, bias=bias_enabled, full_connection=True)
             layer.config = (in_features, out_features)
             layer.parameters.init_parameter()
             
-            # 【重要】ONNXの重み [out, in] を pyainoの [in, out] レイアウトに戻すため転置（.T）して流し込みます。
             layer.parameters.w = w_onnx.T
             if bias_enabled:
                 layer.parameters.b = b_onnx
@@ -68,7 +108,6 @@ def import_onnx_to_pyaino(onnx_path):
             
         # --- 2次元畳み込み層 (Conv) ノードの復元 ---
         elif op_type == 'Conv':
-            # Convの入力は [入力テンソル名, 重みテンソル名, バイアステンソル名(オプション)] です
             input_name = node.input[0]
             weight_name = node.input[1]
             bias_name = node.input[2] if len(node.input) > 2 else None
@@ -78,7 +117,6 @@ def import_onnx_to_pyaino(onnx_path):
             
             M, C, Fh, Fw = w_onnx.shape
             
-            # ストライドとパディングの属性をスキャンして取得します
             strides = [1, 1]
             pads = [0, 0, 0, 0]
             for attr in node.attribute:
@@ -87,20 +125,14 @@ def import_onnx_to_pyaino(onnx_path):
                 elif attr.name == 'pads':
                     pads = list(attr.ints)
                     
-            # pyainoは正方形のストライドとパディングを前提としているため、先頭の要素を採用します
             pad = pads[0]
             stride = strides[0]
             bias_enabled = bias_name is not None
             
-            # Conv2dLayerをインスタンス化します
             layer = Neuron.Conv2dLayer(M, Fh, stride, pad, bias=bias_enabled)
-            
-            # 畳み込みパラメータ情報を初期化します (config: C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow)
             layer.config = (C, None, None, M, Fh, Fw, stride, stride, pad, None, None)
             layer.parameters.init_parameter()
             
-            # 【重要】ONNXの4次元重み [M, C, Fh, Fw] を pyaino用の2次元 [C*Fh*Fw, M] に変換します。
-            # リシェイプしたうえで、列優先になるよう転置（.T）を行います。
             w_pyaino = w_onnx.reshape(M, -1).T
             layer.parameters.w = w_pyaino
             
@@ -109,65 +141,204 @@ def import_onnx_to_pyaino(onnx_path):
                 
             pyaino_layers.append(layer)
             
-        # --- ReLU 活性化関数の復元 ---
-        elif op_type == 'Relu':
-            # エクスポート時に埋め込まれた（ノード名に "embedded" が含まれる）ものであれば、
-            # 新規レイヤーとして追加するのではなく、直前のレイヤーの後処理(postphase.activator)としてドロップインします。
+        # --- 活性化関数の復元 ---
+        elif op_type in ('Relu', 'LeakyRelu', 'Sigmoid', 'Tanh', 'Softmax', 'Identity', 'Elu', 'Softplus', 'Gelu', 'Swish'):
+            # 埋め込まれた活性化関数の復元
             if "embedded" in node.name:
                 if len(pyaino_layers) > 0:
                     prev_layer = pyaino_layers[-1]
                     if hasattr(prev_layer, 'postphase'):
-                        prev_layer.postphase.activator = Activators.ReLU()
+                        prev_layer.postphase.activator = restore_activation(op_type, node)
             else:
-                # 独立した計算ノードとして構築されている場合は、独立したレイヤーとして追加します
-                pyaino_layers.append(Activators.ReLU())
+                # 独立した活性化関数レイヤー
+                pyaino_layers.append(restore_activation(op_type, node))
                 
-        # --- LeakyReLU 活性化関数の復元 ---
-        elif op_type == 'LeakyRelu':
-            alpha = 0.01
-            for attr in node.attribute:
-                if attr.name == 'alpha':
-                    alpha = attr.f
+        # --- Flatten の復元 (スキップ) ---
+        elif op_type == 'Flatten':
+            continue
             
-            if "embedded" in node.name:
-                if len(pyaino_layers) > 0:
-                    prev_layer = pyaino_layers[-1]
-                    if hasattr(prev_layer, 'postphase'):
-                        # 【重要】pyaino側のLReLUの引数 'c'（負の傾き）にONNXの 'alpha' を設定します。
-                        prev_layer.postphase.activator = Activators.LReLU(c=alpha)
+        # --- MaxPool / AveragePool の復元 ---
+        elif op_type in ('MaxPool', 'AveragePool'):
+            kernel_shape = [2, 2]
+            pads = [0, 0, 0, 0]
+            for attr in node.attribute:
+                if attr.name == 'kernel_shape':
+                    kernel_shape = list(attr.ints)
+                elif attr.name == 'pads':
+                    pads = list(attr.ints)
+            pad = pads[0] if len(pads) > 0 else 0
+            pool_size = kernel_shape[0]
+            method = 'max' if op_type == 'MaxPool' else 'avg'
+            
+            pyaino_layers.append(Neuron.Pooling2dLayer(pool_size, pad, method))
+
+        # --- Dropout / Dropout2 の復元 ---
+        elif op_type == 'Dropout':
+            ratio_val = 0.5
+            if len(node.input) > 1:
+                ratio_name = node.input[1]
+                if ratio_name in initializers:
+                    ratio_val = float(initializers[ratio_name])
+            
+            if "Dropout2" in node.name:
+                pyaino_layers.append(Neuron.Dropout2(preset=ratio_val))
             else:
-                pyaino_layers.append(Activators.LReLU(c=alpha))
-                
-        # --- Sigmoid 活性化関数の復元 ---
-        elif op_type == 'Sigmoid':
-            if "embedded" in node.name:
-                if len(pyaino_layers) > 0:
-                    prev_layer = pyaino_layers[-1]
-                    if hasattr(prev_layer, 'postphase'):
-                        prev_layer.postphase.activator = Activators.Sigmoid()
+                pyaino_layers.append(Neuron.Dropout(preset=ratio_val))
+
+        # --- GlobalAveragePool の復元 ---
+        elif op_type == 'GlobalAveragePool':
+            pyaino_layers.append(Neuron.GlobalAveragePooling())
+
+        # --- BatchNormalization の復元 ---
+        elif op_type == 'BatchNormalization':
+            parts = node.name.split('__')
+            orig_class_name = parts[0]
+            sb_enabled = False
+            for k in range(len(parts) - 1):
+                if parts[k] == 'sb':
+                    sb_enabled = (parts[k+1] == '1')
+                    break
+                    
+            scale_name = node.input[1]
+            bias_name = node.input[2]
+            mean_name = node.input[3]
+            var_name = node.input[4]
+            
+            scale_val = initializers[scale_name]
+            bias_val = initializers[bias_name]
+            mean_val = initializers[mean_name]
+            var_val = initializers[var_name]
+            
+            C = len(scale_val)
+            
+            eps_val = 1e-12
+            for attr in node.attribute:
+                if attr.name == 'epsilon':
+                    eps_val = attr.f
+                    
+            if orig_class_name in ('BatchNorm2d', 'batch_norm_2d'):
+                layer = Neuron.BatchNorm2d(scale_and_bias=sb_enabled, eps=eps_val)
+                param_shape = (1, C, 1, 1)
+            elif orig_class_name in ('BatchNorm1d', 'batch_norm_1d'):
+                layer = Neuron.BatchNorm1d(scale_and_bias=sb_enabled, eps=eps_val)
+                param_shape = (1, C, 1)
             else:
-                pyaino_layers.append(Activators.Sigmoid())
+                layer = Neuron.BatchNormalization(scale_and_bias=sb_enabled, eps=eps_val)
+                param_shape = (1, C)
                 
-        # --- Tanh 活性化関数の復元 ---
-        elif op_type == 'Tanh':
-            if "embedded" in node.name:
-                if len(pyaino_layers) > 0:
-                    prev_layer = pyaino_layers[-1]
-                    if hasattr(prev_layer, 'postphase'):
-                        prev_layer.postphase.activator = Activators.Tanh()
+            dummy_shape = [1] * len(param_shape)
+            dummy_shape[1] = C
+            layer.init_parameters(dummy_shape)
+            
+            layer.gamma = scale_val.reshape(param_shape)
+            layer.beta = bias_val.reshape(param_shape)
+            layer.mu_ppl = mean_val.reshape(param_shape)
+            layer.sigma_ppl = np.sqrt(var_val).reshape(param_shape)
+            
+            pyaino_layers.append(layer)
+
+        # --- LayerNormalization の復元 ---
+        elif op_type == 'LayerNormalization':
+            parts = node.name.split('__')
+            orig_class_name = parts[0]
+            sb_enabled = False
+            for k in range(len(parts) - 1):
+                if parts[k] == 'sb':
+                    sb_enabled = (parts[k+1] == '1')
+                    break
+                    
+            scale_name = node.input[1]
+            bias_name = node.input[2]
+            
+            scale_val = initializers[scale_name]
+            bias_val = initializers[bias_name]
+            
+            eps_val = 1e-12
+            for attr in node.attribute:
+                if attr.name == 'epsilon':
+                    eps_val = attr.f
+                    
+            if orig_class_name in ('LayerNorm2d', 'layer_norm_2d'):
+                layer = Neuron.LayerNorm2d(scale_and_bias=sb_enabled, eps=eps_val)
+            elif orig_class_name in ('LayerNorm1d', 'layer_norm_1d'):
+                layer = Neuron.LayerNorm1d(scale_and_bias=sb_enabled, eps=eps_val)
             else:
-                pyaino_layers.append(Activators.Tanh())
+                node_axis = -1
+                for attr in node.attribute:
+                    if attr.name == 'axis':
+                        node_axis = attr.i
+                layer = Neuron.LayerNormalization(axis=node_axis, scale_and_bias=sb_enabled, eps=eps_val)
                 
-        # --- Softmax 活性化関数の復元 ---
-        elif op_type == 'Softmax':
-            if "embedded" in node.name:
-                if len(pyaino_layers) > 0:
-                    prev_layer = pyaino_layers[-1]
-                    if hasattr(prev_layer, 'postphase'):
-                        prev_layer.postphase.activator = Activators.Softmax()
+            param_shape = (1, *scale_val.shape)
+            layer.init_parameters(param_shape)
+            
+            layer.gamma = scale_val.reshape(param_shape)
+            layer.beta = bias_val.reshape(param_shape)
+            
+            pyaino_layers.append(layer)
+
+        # --- InstanceNormalization の復元 ---
+        elif op_type == 'InstanceNormalization':
+            parts = node.name.split('__')
+            sb_enabled = False
+            for k in range(len(parts) - 1):
+                if parts[k] == 'sb':
+                    sb_enabled = (parts[k+1] == '1')
+                    break
+                    
+            scale_name = node.input[1]
+            bias_name = node.input[2]
+            
+            scale_val = initializers[scale_name]
+            bias_val = initializers[bias_name]
+            
+            eps_val = 1e-12
+            for attr in node.attribute:
+                if attr.name == 'epsilon':
+                    eps_val = attr.f
+                    
+            layer = Neuron.InstanceNorm2d(scale_and_bias=sb_enabled, eps=eps_val)
+            
+            C = len(scale_val)
+            param_shape = (1, C, 1, 1)
+            layer.init_parameters((1, C, 2, 2))
+            
+            layer.gamma = scale_val.reshape(param_shape)
+            layer.beta = bias_val.reshape(param_shape)
+            
+            pyaino_layers.append(layer)
+
+        # --- ScaleAndBias の復元 ---
+        elif op_type == 'Mul' and "ScaleAndBias" in node.name:
+            parts = node.name.split('__')
+            axis_str = parts[3]
+            if axis_str == 'None':
+                axis_val = None
             else:
-                pyaino_layers.append(Activators.Softmax())
-                
+                axis_parts = axis_str.split('_')
+                axis_val = tuple(int(x) for x in axis_parts)
+                if len(axis_val) == 1:
+                    axis_val = axis_val[0]
+                    
+            exclude_val = (parts[5] == '1')
+            
+            gamma_name = node.input[1]
+            gamma_val = initializers[gamma_name]
+            
+            # 次の Add ノードから beta を取得
+            next_node = graph.node[i+1]
+            beta_name = next_node.input[1]
+            beta_val = initializers[beta_name]
+            
+            layer = Neuron.ScaleAndBias(axis=axis_val, exclude=exclude_val)
+            layer.init_parameters(gamma_val.shape)
+            
+            layer.gamma = gamma_val
+            layer.beta = beta_val
+            
+            pyaino_layers.append(layer)
+            skip_nodes.add(next_node.name)
+            
         else:
             print(f"サポートされていない演算ノード '{node.name}' (型: {op_type}) をスキップします。")
             
