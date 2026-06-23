@@ -14,20 +14,44 @@ set_np('numpy')
 
 from pyaino import Neuron
 from pyaino import Activators
+from pyaino import Functions
 
-def make_activation_node(act_layer, input_name, output_name, name_prefix):
+def make_activation_node(act_layer, input_name, output_name, name_prefix, onnx_nodes, onnx_initializers):
     act_class = act_layer.__class__.__name__
     if act_class in ('ReLU', 'ReLU_bkup') or issubclass(act_layer.__class__, Activators.ReLU):
         return helper.make_node('Relu', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__relu")
     elif act_class in ('LReLU', 'LReLU_bkup') or issubclass(act_layer.__class__, Activators.LReLU):
         slope = getattr(act_layer, 'c', 0.01)
         return helper.make_node('LeakyRelu', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__lrelu", alpha=float(slope))
-    elif act_class in ('Sigmoid',) or issubclass(act_layer.__class__, Activators.Sigmoid):
+    elif act_class in ('Sigmoid', 'SigmoidOut', 'SigmoidWithLoss') or issubclass(act_layer.__class__, (Activators.Sigmoid, Activators.SigmoidOut, Activators.SigmoidWithLoss)):
         return helper.make_node('Sigmoid', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__sigmoid")
     elif act_class in ('Tanh',) or issubclass(act_layer.__class__, Activators.Tanh):
         return helper.make_node('Tanh', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__tanh")
-    elif act_class in ('Softmax',) or issubclass(act_layer.__class__, Activators.Softmax):
-        return helper.make_node('Softmax', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__softmax", axis=-1)
+    elif act_class in ('Softmax', 'Softmax2', 'SoftmaxWithLoss', 'SoftmaxWithLoss2', 'SoftmaxCrossEntropy') or issubclass(act_layer.__class__, (Activators.Softmax, Activators.Softmax2, Activators.SoftmaxWithLoss, Activators.SoftmaxWithLoss2, Activators.SoftmaxCrossEntropy)):
+        temp_val = getattr(act_layer, 'temperature', 1.0)
+        if temp_val != 1.0:
+            temp_name = f"{name_prefix}_softmax_temp"
+            temp_init = helper.make_tensor(
+                name=temp_name,
+                data_type=TensorProto.FLOAT,
+                dims=[],
+                vals=[float(temp_val)]
+            )
+            onnx_initializers.append(temp_init)
+            
+            div_out = f"{name_prefix}_softmax_div_out"
+            div_node = helper.make_node(
+                op_type='Div',
+                inputs=[input_name, temp_name],
+                outputs=[div_out],
+                name=f"{name_prefix}__softmax_div"
+            )
+            onnx_nodes.append(div_node)
+            softmax_in = div_out
+        else:
+            softmax_in = input_name
+            
+        return helper.make_node('Softmax', inputs=[softmax_in], outputs=[output_name], name=f"{name_prefix}__softmax", axis=-1)
     elif act_class in ('Identity',) or issubclass(act_layer.__class__, Activators.Identity):
         return helper.make_node('Identity', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__identity")
     elif act_class in ('ELU',) or issubclass(act_layer.__class__, Activators.ELU):
@@ -42,8 +66,32 @@ def make_activation_node(act_layer, input_name, output_name, name_prefix):
     elif act_class in ('Swish',) or issubclass(act_layer.__class__, Activators.Swish):
         beta = getattr(act_layer, 'beta', 1.0)
         return helper.make_node('Swish', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__swish", alpha=float(beta))
+    elif act_class in ('Mish',) or issubclass(act_layer.__class__, Activators.Mish):
+        return helper.make_node('Mish', inputs=[input_name], outputs=[output_name], name=f"{name_prefix}__mish")
+    elif act_class in ('Step',) or issubclass(act_layer.__class__, Activators.Step):
+        t_val = getattr(act_layer, 't', 0.0)
+        t_name = f"{name_prefix}_step_t"
+        t_init = helper.make_tensor(
+            name=t_name,
+            data_type=TensorProto.FLOAT,
+            dims=[],
+            vals=[float(t_val)]
+        )
+        onnx_initializers.append(t_init)
+        
+        greater_out = f"{name_prefix}_step_greater_out"
+        greater_node = helper.make_node(
+            op_type='Greater',
+            inputs=[input_name, t_name],
+            outputs=[greater_out],
+            name=f"{name_prefix}__step_greater"
+        )
+        onnx_nodes.append(greater_node)
+        
+        return helper.make_node('Cast', inputs=[greater_out], outputs=[output_name], name=f"{name_prefix}__step_cast", to=TensorProto.FLOAT)
     else:
         raise NotImplementedError(f"活性化関数 '{act_class}' の変換はサポートされていません。")
+
 
 def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
     """
@@ -400,10 +448,250 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
             )
             onnx_nodes.append(add_node)
             current_input_name = layer_output_name
+
+        # --- Reshape の変換 ---
+        elif class_name == 'Reshape':
+            shape_name = f"layer_{i}_reshape_shape"
+            shape_val = list(layer.shape)
+            shape_init = helper.make_tensor(
+                name=shape_name,
+                data_type=TensorProto.INT64,
+                dims=[len(shape_val)],
+                vals=shape_val
+            )
+            onnx_initializers.append(shape_init)
             
+            reshape_node = helper.make_node(
+                op_type='Reshape',
+                inputs=[current_input_name, shape_name],
+                outputs=[layer_output_name],
+                name=f"Reshape__{i}"
+            )
+            onnx_nodes.append(reshape_node)
+            current_input_name = layer_output_name
+
+        # --- Mean の変換 (ONNX ReduceMean にマップ) ---
+        elif class_name == 'Mean':
+            axes_name = f"layer_{i}_mean_axes"
+            axes_val = list(layer.axis) if isinstance(layer.axis, (list, tuple)) else ([layer.axis] if layer.axis is not None else [])
+            inputs = [current_input_name]
+            if layer.axis is not None:
+                axes_init = helper.make_tensor(
+                    name=axes_name,
+                    data_type=TensorProto.INT64,
+                    dims=[len(axes_val)],
+                    vals=axes_val
+                )
+                onnx_initializers.append(axes_init)
+                inputs.append(axes_name)
+                
+            mean_node = helper.make_node(
+                op_type='ReduceMean',
+                inputs=inputs,
+                outputs=[layer_output_name],
+                name=f"Mean__{i}",
+                keepdims=1 if layer.keepdims else 0
+            )
+            onnx_nodes.append(mean_node)
+            current_input_name = layer_output_name
+            
+        # --- Conv1dLayer の変換 ---
+        elif class_name == 'Conv1dLayer':
+            C, Iw, M, Fw, stride, pad, Ow = layer.config
+            w_val = np.array(layer.parameters.w)
+            w_onnx = w_val.T.reshape(M, C, Fw)
+            
+            w_name = f"layer_{i}_weight"
+            w_init = helper.make_tensor(w_name, TensorProto.FLOAT, w_onnx.shape, w_onnx.flatten().tolist())
+            onnx_initializers.append(w_init)
+            
+            inputs = [current_input_name, w_name]
+            if layer.bias:
+                b_val = np.array(layer.parameters.b)
+                b_name = f"layer_{i}_bias"
+                b_init = helper.make_tensor(b_name, TensorProto.FLOAT, b_val.shape, b_val.tolist())
+                onnx_initializers.append(b_init)
+                inputs.append(b_name)
+                
+            conv_node = helper.make_node(
+                op_type='Conv',
+                inputs=inputs,
+                outputs=[layer_output_name],
+                name=f"Conv1dLayer__{i}",
+                pads=[pad, pad],
+                strides=[stride],
+                kernel_shape=[Fw]
+            )
+            onnx_nodes.append(conv_node)
+            current_input_name = layer_output_name
+
+        # --- Conv1dTransposeLayer / DeConv1dLayer の変換 ---
+        elif class_name in ('Conv1dTransposeLayer', 'DeConv1dLayer'):
+            C, Iw, M, Fw, stride, pad, Ow = layer.config
+            w_val = np.array(layer.parameters.w)
+            w_onnx = w_val.reshape(C, M, Fw)
+            
+            w_name = f"layer_{i}_weight"
+            w_init = helper.make_tensor(w_name, TensorProto.FLOAT, w_onnx.shape, w_onnx.flatten().tolist())
+            onnx_initializers.append(w_init)
+            
+            inputs = [current_input_name, w_name]
+            if layer.bias:
+                b_val = np.array(layer.parameters.b)
+                if len(b_val) == M * Fw:
+                    b_val = b_val.reshape(M, Fw).mean(axis=1)
+                b_name = f"layer_{i}_bias"
+                b_init = helper.make_tensor(b_name, TensorProto.FLOAT, [M], b_val.tolist())
+                onnx_initializers.append(b_init)
+                inputs.append(b_name)
+                
+            deconv_node = helper.make_node(
+                op_type='ConvTranspose',
+                inputs=inputs,
+                outputs=[layer_output_name],
+                name=f"{class_name}__{i}",
+                pads=[pad, pad],
+                strides=[stride],
+                kernel_shape=[Fw]
+            )
+            onnx_nodes.append(deconv_node)
+            current_input_name = layer_output_name
+
+        # --- Conv2dTransposeLayer / DeConv2dLayer / DeConvLayer の変換 ---
+        elif class_name in ('Conv2dTransposeLayer', 'DeConv2dLayer', 'DeConvLayer'):
+            C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = layer.config
+            w_val = np.array(layer.parameters.w)
+            w_onnx = w_val.reshape(C, M, Fh, Fw)
+            
+            w_name = f"layer_{i}_weight"
+            w_init = helper.make_tensor(w_name, TensorProto.FLOAT, w_onnx.shape, w_onnx.flatten().tolist())
+            onnx_initializers.append(w_init)
+            
+            inputs = [current_input_name, w_name]
+            if layer.bias:
+                b_val = np.array(layer.parameters.b)
+                if len(b_val) == M * Fh * Fw:
+                    b_val = b_val.reshape(M, Fh, Fw).mean(axis=(1, 2))
+                b_name = f"layer_{i}_bias"
+                b_init = helper.make_tensor(b_name, TensorProto.FLOAT, [M], b_val.tolist())
+                onnx_initializers.append(b_init)
+                inputs.append(b_name)
+                
+            deconv_node = helper.make_node(
+                op_type='ConvTranspose',
+                inputs=inputs,
+                outputs=[layer_output_name],
+                name=f"{class_name}__{i}",
+                pads=[pad, pad, pad, pad],
+                strides=[Sh, Sw],
+                kernel_shape=[Fh, Fw]
+            )
+            onnx_nodes.append(deconv_node)
+            current_input_name = layer_output_name
+
+        # --- 1次元プーリング層 (Pooling1dLayer) の変換 ---
+        elif class_name in ('Pooling1dLayer', 'Pooling1d'):
+            C, Iw, pool, pad, Ow = layer.config
+            op_type = 'MaxPool' if getattr(layer, 'method', 'max') == 'max' else 'AveragePool'
+            pool_node = helper.make_node(
+                op_type=op_type,
+                inputs=[current_input_name],
+                outputs=[layer_output_name],
+                name=f"{class_name}__{i}",
+                kernel_shape=[pool],
+                strides=[pool],
+                pads=[pad, pad]
+            )
+            onnx_nodes.append(pool_node)
+            current_input_name = layer_output_name
+
+        # --- Interpolate2d / Interpolate2dLayer / Interpolate2dNearest の変換 ---
+        elif class_name in ('Interpolate2d', 'Interpolate2dLayer', 'Interpolate2dNearest'):
+            Ih, Iw, Oh, Ow, mode, align = layer.config
+            
+            scales_name = f"layer_{i}_resize_scales"
+            scales_val = [1.0, 1.0, float(Oh)/float(Ih), float(Ow)/float(Iw)]
+            scales_init = helper.make_tensor(
+                name=scales_name,
+                data_type=TensorProto.FLOAT,
+                dims=[4],
+                vals=scales_val
+            )
+            onnx_initializers.append(scales_init)
+            
+            resize_node = helper.make_node(
+                op_type='Resize',
+                inputs=[current_input_name, "", scales_name],
+                outputs=[layer_output_name],
+                name=f"resize_{i}",
+                mode='nearest' if mode == 'nearest' else 'linear',
+                coordinate_transformation_mode='asymmetric'
+            )
+            onnx_nodes.append(resize_node)
+            current_input_name = layer_output_name
+
+        # --- Embedding の変換 ---
+        elif class_name == 'Embedding':
+            vocab_size, wordvec_size = layer.config
+            w_val = np.array(layer.parameters.w)
+            
+            w_name = f"layer_{i}_weight"
+            w_init = helper.make_tensor(
+                name=w_name,
+                data_type=TensorProto.FLOAT,
+                dims=w_val.shape,
+                vals=w_val.flatten().tolist()
+            )
+            onnx_initializers.append(w_init)
+            
+            cast_out = f"layer_{i}_embed_cast_out"
+            cast_node = helper.make_node(
+                op_type='Cast',
+                inputs=[current_input_name],
+                outputs=[cast_out],
+                name=f"Cast_for_Embedding__{i}",
+                to=TensorProto.INT64
+            )
+            onnx_nodes.append(cast_node)
+            
+            gather_node = helper.make_node(
+                op_type='Gather',
+                inputs=[w_name, cast_out],
+                outputs=[layer_output_name],
+                name=f"Embedding__{i}",
+                axis=0
+            )
+            onnx_nodes.append(gather_node)
+            current_input_name = layer_output_name
+
+        # --- Flatten の変換 ---
+        elif class_name == 'Flatten':
+            flatten_node = helper.make_node(
+                op_type='Flatten',
+                inputs=[current_input_name],
+                outputs=[layer_output_name],
+                name=f"Flatten__{i}",
+                axis=1
+            )
+            onnx_nodes.append(flatten_node)
+            current_input_name = layer_output_name
+
+        # --- Transpose の変換 ---
+        elif class_name == 'Transpose':
+            axes_val = list(layer.axes)
+            transpose_node = helper.make_node(
+                op_type='Transpose',
+                inputs=[current_input_name],
+                outputs=[layer_output_name],
+                name=f"Transpose__{i}",
+                perm=axes_val
+            )
+            onnx_nodes.append(transpose_node)
+            current_input_name = layer_output_name
+
         # --- 単体の活性化関数レイヤーの変換 ---
-        elif class_name in ('ReLU', 'ReLU_bkup', 'LReLU', 'LReLU_bkup', 'Sigmoid', 'Tanh', 'Softmax', 'Identity', 'ELU', 'Softplus', 'GELU', 'GELUap', 'Swish') or issubclass(layer.__class__, (Activators.ReLU, Activators.LReLU, Activators.Sigmoid, Activators.Tanh, Activators.Softmax, Activators.Identity, Activators.ELU, Activators.Softplus, Activators.GELU, Activators.GELUap, Activators.Swish)):
-            act_node = make_activation_node(layer, current_input_name, layer_output_name, f"layer_{i}")
+        elif class_name in ('ReLU', 'ReLU_bkup', 'LReLU', 'LReLU_bkup', 'Sigmoid', 'SigmoidOut', 'SigmoidWithLoss', 'Tanh', 'Softmax', 'Softmax2', 'SoftmaxWithLoss', 'SoftmaxWithLoss2', 'SoftmaxCrossEntropy', 'Identity', 'ELU', 'Softplus', 'GELU', 'GELUap', 'Swish', 'Mish', 'Step') or issubclass(layer.__class__, (Activators.ReLU, Activators.LReLU, Activators.Sigmoid, Activators.SigmoidOut, Activators.SigmoidWithLoss, Activators.Tanh, Activators.Softmax, Activators.Softmax2, Activators.SoftmaxWithLoss, Activators.SoftmaxWithLoss2, Activators.SoftmaxCrossEntropy, Activators.Identity, Activators.ELU, Activators.Softplus, Activators.GELU, Activators.GELUap, Activators.Swish, Activators.Mish, Activators.Step)):
+            act_node = make_activation_node(layer, current_input_name, layer_output_name, f"layer_{i}", onnx_nodes, onnx_initializers)
             onnx_nodes.append(act_node)
             current_input_name = layer_output_name
             
@@ -421,7 +709,7 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
                 
                 # 内包されている活性化関数の種類に応じて、ONNXのノードを追加作成します。
                 # 逆変換（onnx_to_pyaino）時に元に戻せるよう、ノード名に "embedded" というキーワードを含めます。
-                act_node = make_activation_node(act, current_input_name, act_output_name, f"embedded_layer_{i}")
+                act_node = make_activation_node(act, current_input_name, act_output_name, f"embedded_layer_{i}", onnx_nodes, onnx_initializers)
                 
                 onnx_nodes.append(act_node)
                 current_input_name = act_output_name

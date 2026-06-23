@@ -14,6 +14,7 @@ set_np('numpy')
 
 from pyaino import Neuron
 from pyaino import Activators
+from pyaino import Functions
 
 def restore_activation(op_type, node):
     if op_type == 'Relu':
@@ -55,6 +56,8 @@ def restore_activation(op_type, node):
             if attr.name == 'alpha':
                 alpha = attr.f
         return Activators.Swish(beta=alpha)
+    elif op_type == 'Mish':
+        return Activators.Mish()
     return None
 
 def import_onnx_to_pyaino(onnx_path):
@@ -107,42 +110,55 @@ def import_onnx_to_pyaino(onnx_path):
             pyaino_layers.append(layer)
             
         # --- 2次元畳み込み層 (Conv) ノードの復元 ---
+        # --- 畳み込み層 (Conv) ノードの復元 (1D/2D両対応) ---
         elif op_type == 'Conv':
             input_name = node.input[0]
             weight_name = node.input[1]
             bias_name = node.input[2] if len(node.input) > 2 else None
             
-            w_onnx = initializers[weight_name]  # ONNXでの形状: (M, C, Fh, Fw)
+            w_onnx = initializers[weight_name]  # ONNXでの形状: (M, C, Fh, Fw) または (M, C, Fw)
             b_onnx = initializers[bias_name] if bias_name else None
             
-            M, C, Fh, Fw = w_onnx.shape
-            
-            strides = [1, 1]
-            pads = [0, 0, 0, 0]
+            strides = []
+            pads = []
+            kernel_shape = []
             for attr in node.attribute:
                 if attr.name == 'strides':
                     strides = list(attr.ints)
                 elif attr.name == 'pads':
                     pads = list(attr.ints)
+                elif attr.name == 'kernel_shape':
+                    kernel_shape = list(attr.ints)
                     
-            pad = pads[0]
-            stride = strides[0]
             bias_enabled = bias_name is not None
             
-            layer = Neuron.Conv2dLayer(M, Fh, stride, pad, bias=bias_enabled)
-            layer.config = (C, None, None, M, Fh, Fw, stride, stride, pad, None, None)
-            layer.parameters.init_parameter()
-            
-            w_pyaino = w_onnx.reshape(M, -1).T
-            layer.parameters.w = w_pyaino
-            
-            if bias_enabled:
-                layer.parameters.b = b_onnx
-                
-            pyaino_layers.append(layer)
+            if len(kernel_shape) == 1:
+                M, C, Fw = w_onnx.shape
+                stride = strides[0] if strides else 1
+                pad = pads[0] if pads else 0
+                layer = Neuron.Conv1dLayer(M, Fw, stride=stride, pad=pad, bias=bias_enabled)
+                layer.config = (C, None, M, Fw, stride, pad, None)
+                layer.parameters.init_parameter()
+                w_pyaino = w_onnx.reshape(M, -1).T
+                layer.parameters.w = w_pyaino
+                if bias_enabled:
+                    layer.parameters.b = b_onnx
+                pyaino_layers.append(layer)
+            else:
+                M, C, Fh, Fw = w_onnx.shape
+                stride = strides[0] if strides else 1
+                pad = pads[0] if pads else 0
+                layer = Neuron.Conv2dLayer(M, Fh, stride, pad, bias=bias_enabled)
+                layer.config = (C, None, None, M, Fh, Fw, stride, stride, pad, None, None)
+                layer.parameters.init_parameter()
+                w_pyaino = w_onnx.reshape(M, -1).T
+                layer.parameters.w = w_pyaino
+                if bias_enabled:
+                    layer.parameters.b = b_onnx
+                pyaino_layers.append(layer)
             
         # --- 活性化関数の復元 ---
-        elif op_type in ('Relu', 'LeakyRelu', 'Sigmoid', 'Tanh', 'Softmax', 'Identity', 'Elu', 'Softplus', 'Gelu', 'Swish'):
+        elif op_type in ('Relu', 'LeakyRelu', 'Sigmoid', 'Tanh', 'Softmax', 'Identity', 'Elu', 'Softplus', 'Gelu', 'Swish', 'Mish'):
             # 埋め込まれた活性化関数の復元
             if "embedded" in node.name:
                 if len(pyaino_layers) > 0:
@@ -153,11 +169,11 @@ def import_onnx_to_pyaino(onnx_path):
                 # 独立した活性化関数レイヤー
                 pyaino_layers.append(restore_activation(op_type, node))
                 
-        # --- Flatten の復元 (スキップ) ---
+        # --- Flatten の復元 ---
         elif op_type == 'Flatten':
-            continue
+            pyaino_layers.append(Neuron.Flatten())
             
-        # --- MaxPool / AveragePool の復元 ---
+        # --- MaxPool / AveragePool の復元 (1D/2D両対応) ---
         elif op_type in ('MaxPool', 'AveragePool'):
             kernel_shape = [2, 2]
             pads = [0, 0, 0, 0]
@@ -170,7 +186,10 @@ def import_onnx_to_pyaino(onnx_path):
             pool_size = kernel_shape[0]
             method = 'max' if op_type == 'MaxPool' else 'avg'
             
-            pyaino_layers.append(Neuron.Pooling2dLayer(pool_size, pad, method))
+            if len(kernel_shape) == 1:
+                pyaino_layers.append(Neuron.Pooling1dLayer(pool_size, pad, method))
+            else:
+                pyaino_layers.append(Neuron.Pooling2dLayer(pool_size, pad, method))
 
         # --- Dropout / Dropout2 の復元 ---
         elif op_type == 'Dropout':
@@ -338,58 +357,175 @@ def import_onnx_to_pyaino(onnx_path):
             
             pyaino_layers.append(layer)
             skip_nodes.add(next_node.name)
+
+        # --- Transpose の復元 ---
+        elif op_type == 'Transpose':
+            perm_val = (1, 0)
+            for attr in node.attribute:
+                if attr.name == 'perm':
+                    perm_val = tuple(attr.ints)
+            layer = Functions.Transpose(*perm_val)
+            pyaino_layers.append(layer)
+
+        # --- Reshape の復元 ---
+        elif op_type == 'Reshape':
+            shape_name = node.input[1]
+            shape_val = initializers[shape_name]
+            target_shape = tuple(int(x) for x in shape_val)
+            pyaino_layers.append(Functions.Reshape(target_shape))
+
+        # --- ReduceMean の復元 ---
+        elif op_type == 'ReduceMean':
+            keepdims_val = True
+            for attr in node.attribute:
+                if attr.name == 'keepdims':
+                    keepdims_val = (attr.i == 1)
             
+            axes_val = None
+            if len(node.input) > 1:
+                axes_name = node.input[1]
+                if axes_name in initializers:
+                    axes_arr = initializers[axes_name]
+                    if axes_arr.ndim == 0:
+                        axes_val = int(axes_arr)
+                    elif len(axes_arr) == 1:
+                        axes_val = int(axes_arr[0])
+                    else:
+                        axes_val = tuple(int(x) for x in axes_arr)
+            
+            pyaino_layers.append(Functions.Mean(axis=axes_val, keepdims=keepdims_val))
+
+        # --- ConvTranspose (1D / 2D) の復元 ---
+        elif op_type == 'ConvTranspose':
+            weight_name = node.input[1]
+            bias_name = node.input[2] if len(node.input) > 2 else None
+            
+            w_onnx = initializers[weight_name]
+            b_onnx = initializers[bias_name] if bias_name else None
+            
+            strides = []
+            pads = []
+            kernel_shape = []
+            for attr in node.attribute:
+                if attr.name == 'strides':
+                    strides = list(attr.ints)
+                elif attr.name == 'pads':
+                    pads = list(attr.ints)
+                elif attr.name == 'kernel_shape':
+                    kernel_shape = list(attr.ints)
+                    
+            bias_enabled = bias_name is not None
+            
+            if len(kernel_shape) == 1:
+                C, M, Fw = w_onnx.shape
+                stride = strides[0] if strides else 2
+                pad = pads[0] if pads else 1
+                layer = Neuron.Conv1dTransposeLayer(M, Fw, stride=stride, pad=pad, bias=bias_enabled)
+                layer.config = (C, None, M, Fw, stride, pad, None)
+                layer.parameters.init_parameter()
+                w_pyaino = w_onnx.reshape(C, M * Fw)
+                layer.parameters.w = w_pyaino
+                if bias_enabled:
+                    layer.parameters.b = b_onnx
+                pyaino_layers.append(layer)
+            else:
+                C, M, Fh, Fw = w_onnx.shape
+                Sh, Sw = strides if strides else (2, 2)
+                pad = pads[0] if pads else 1
+                layer = Neuron.Conv2dTransposeLayer(M, (Fh, Fw), stride=(Sh, Sw), pad=pad, bias=bias_enabled)
+                layer.config = (C, None, None, M, Fh, Fw, Sh, Sw, pad, None, None)
+                layer.parameters.init_parameter()
+                w_pyaino = w_onnx.reshape(C, M * Fh * Fw)
+                layer.parameters.w = w_pyaino
+                if bias_enabled:
+                    layer.parameters.b = b_onnx
+                pyaino_layers.append(layer)
+
+        # --- Resize (Interpolate2d) の復元 ---
+        elif op_type == 'Resize':
+            mode_val = 'nearest'
+            for attr in node.attribute:
+                if attr.name == 'mode':
+                    mode_val = attr.s.decode('utf-8') if isinstance(attr.s, bytes) else attr.s
+            mode = 'nearest' if mode_val == 'nearest' else 'bilinear'
+            
+            scale_factor = None
+            size = None
+            if len(node.input) > 2 and node.input[2] != "":
+                scales_name = node.input[2]
+                if scales_name in initializers:
+                    scales_arr = initializers[scales_name]
+                    if len(scales_arr) >= 4:
+                        scale_factor = (float(scales_arr[2]), float(scales_arr[3]))
+            if len(node.input) > 3 and node.input[3] != "":
+                sizes_name = node.input[3]
+                if sizes_name in initializers:
+                    sizes_arr = initializers[sizes_name]
+                    if len(sizes_arr) >= 4:
+                        size = (int(sizes_arr[2]), int(sizes_arr[3]))
+                        
+            if scale_factor is not None:
+                layer = Neuron.Interpolate2d(scale_factor=scale_factor, mode=mode)
+            elif size is not None:
+                layer = Neuron.Interpolate2d(size=size, mode=mode)
+            else:
+                layer = Neuron.Interpolate2d(scale_factor=2, mode=mode)
+            pyaino_layers.append(layer)
+
+        # --- Cast の復元 (スキップ) ---
+        elif op_type == 'Cast':
+            continue
+
+        # --- Gather (Embedding) の復元 ---
+        elif op_type == 'Gather':
+            axis_val = 0
+            for attr in node.attribute:
+                if attr.name == 'axis':
+                    axis_val = attr.i
+            
+            if axis_val == 0:
+                weight_name = node.input[0]
+                w_onnx = initializers[weight_name]
+                vocab_size, wordvec_size = w_onnx.shape
+                
+                layer = Neuron.Embedding(vocab_size, wordvec_size)
+                layer.parameters()
+                layer.parameters.w = w_onnx.copy()
+                pyaino_layers.append(layer)
+
+        # --- Div + Softmax (Softmax2) の復元 ---
+        elif op_type == 'Div':
+            next_node = graph.node[i+1] if i+1 < len(graph.node) else None
+            if next_node and next_node.op_type == 'Softmax':
+                temp_name = node.input[1]
+                temp_val = 1.0
+                if temp_name in initializers:
+                    temp_arr = initializers[temp_name]
+                    temp_val = float(temp_arr.flatten()[0])
+                
+                layer = Activators.Softmax2(temperature=temp_val)
+                pyaino_layers.append(layer)
+                skip_nodes.add(next_node.name)
+            else:
+                pass
+
+        # --- Greater + Cast (Step) の復元 ---
+        elif op_type == 'Greater':
+            next_node = graph.node[i+1] if i+1 < len(graph.node) else None
+            if next_node and next_node.op_type == 'Cast':
+                t_name = node.input[1]
+                t_val = 0.0
+                if t_name in initializers:
+                    t_arr = initializers[t_name]
+                    t_val = float(t_arr.flatten()[0])
+                    
+                layer = Activators.Step(t=t_val)
+                pyaino_layers.append(layer)
+                skip_nodes.add(next_node.name)
+
         else:
             print(f"サポートされていない演算ノード '{node.name}' (型: {op_type}) をスキップします。")
             
     # 再構築された全レイヤーをまとめて Sequential モデルにします
     sequential_model = Neuron.Sequential(*pyaino_layers)
     return sequential_model
-
-# --- 単体実行時の検証テストセクション ---
-if __name__ == '__main__':
-    print("--------------------------------------------------")
-    print("ONNX -> pyaino 直接インポート検証テストを実行中...")
-    print("--------------------------------------------------")
-    
-    # 変換対象となるONNXファイルを指定 (pyaino_to_onnx.pyによって生成されたファイル)
-    onnx_path = "verification_model.onnx"
-    
-    if not os.path.exists(onnx_path):
-        print(f"[ERROR] {onnx_path} が見つかりません。まず pyaino_to_onnx.py を実行してください。")
-        sys.exit(1)
-        
-    # ONNXからpyainoモデルを復元
-    restored_model = import_onnx_to_pyaino(onnx_path)
-    
-    # 復元されたモデルの構造を確認
-    print("\n復元された pyaino モデルの構造概要:")
-    restored_model.summary()
-    
-    # 検証用の固定の入力データを用意 (再現性のためシードを固定)
-    np.random.seed(42)
-    test_x = np.random.randn(4, 10).astype(np.float32)
-    
-    # 復元した pyaino モデルの推論を実行
-    restored_output = restored_model.forward(test_x)
-    print("\n復元された pyaino モデルの出力結果:\n", restored_output)
-    
-    # 元のONNXファイルをONNX Runtimeで読み込み基準出力を計算
-    ort_session = ort.InferenceSession(onnx_path)
-    input_name = ort_session.get_inputs()[0].name
-    ort_outputs = ort_session.run(None, {input_name: test_x})
-    ort_output = ort_outputs[0]
-    
-    print("\nONNX Runtime の基準出力結果:\n", ort_output)
-    
-    # 2つの出力の絶対誤差を計算
-    diff = np.abs(restored_output - ort_output)
-    max_difference = np.max(diff)
-    print(f"\n復元モデル と ONNX Runtime 間の最大絶対誤差: {max_difference:.2e}")
-    
-    # 誤差が 1e-6 以下ならテスト合格
-    if max_difference < 1e-6:
-        print("[PASS] ONNX -> pyaino 復元検証成功！ 出力結果は完全に一致しています。")
-    else:
-        print("[FAIL] 復元モデルとONNX計算結果の間に不一致が検出されました。")
-        sys.exit(1)
