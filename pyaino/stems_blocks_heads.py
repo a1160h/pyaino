@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260616 A.Inoue
+# 20260623 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -107,35 +107,34 @@ class ConvBlock(nucleus.Function):
     - out_ch -> out_ch (3x3)
     """
     def __init__(self, out_ch, stride=1, proj=False, 
-                 residual=False, attention=False,
-                 activate=(None, None), pre_activation=False, 
+                 residual=False, attention=False, pre_activation=False, 
                  **kwargs):
         super().__init__()
         print('__init__', self.__class__.__name__, out_ch, stride, kwargs)
         self.out_ch = out_ch
         # Conv 本体（非bottleneck 構造）
+        activate = kwargs.pop('activate', 'ReLU')
         self.convs = [
             nn.Conv2dLayer(out_ch, 3, stride, 1,
-                           activate=activate[0], pre_activation=pre_activation,
+                           activate=activate, pre_activation=pre_activation,
                            **kwargs),
             nn.Conv2dLayer(out_ch, 3, 1, 1,
-                           activate=activate[1], pre_activation=pre_activation,
+                           activate=activate, pre_activation=pre_activation,
                            residual=residual, # 残差接続の注入点
                            **kwargs)
             ]
-        n_head = out_ch//32 
+        n_head = max(out_ch//32, 1) 
         self.n_head = n_head
-        opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
-                        'w_decay' : kwargs.pop('w_decay',    0.0),}
+        
         # embedding からのベクトル加算用
         if proj:
-            self.proj = nn.LinearLayer(out_ch, **opt_for_opt) # 出力幅未定
+            self.proj = nn.LinearLayer(out_ch, **kwargs) # 出力幅未定
         else:
             self.proj = None
         self.proj_used = False
         self.residual = residual      # 残差接続の有無 
         if residual:    
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **kwargs)
         self.shortcut_used = False    
         if attention:
             self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)
@@ -218,8 +217,7 @@ class ConvBlockBottleneck(ConvBlock):
     - mid_ch -> out_ch (1x1)
     """
     def __init__(self, out_ch, stride=1, proj=False, bottleneck_ratio=0.5, min_mid_ch=16,
-                 residual=False, attention=False,
-                 activate=(None, None, None), pre_activation=False,
+                 residual=False, attention=False, pre_activation=False,
                  **kwargs):
         nucleus.Function.__init__(self)
         print('__init__', self.__class__.__name__, out_ch,
@@ -230,31 +228,34 @@ class ConvBlockBottleneck(ConvBlock):
         mid_ch = max(int(out_ch * bottleneck_ratio), min_mid_ch)
 
         # Conv 本体（bottleneck 構造）
+        activate = kwargs.pop('activate', 'ReLU')
+        if pre_activation:
+            activates = activate, activate, activate
+        else: # 通常は3段目は直出力(残差接続の接続点)
+            activates = activate, activate, None
         self.convs = [
             nn.Conv2dLayer(mid_ch, 1, 1, 0,# 1x1: in_ch  -> mid_ch
-                           activate=activate[0], pre_activation=pre_activation,
+                           activate=activates[0], pre_activation=pre_activation,
                            **kwargs), 
             nn.Conv2dLayer(mid_ch, 3, stride, 1,# 3x3: mid_ch -> mid_ch（padding=1 前提）
-                           activate=activate[1], pre_activation=pre_activation,
+                           activate=activates[1], pre_activation=pre_activation,
                            **kwargs), 
             nn.Conv2dLayer(out_ch, 1, 1, 0,# 1x1: mid_ch -> out_ch
-                           activate=activate[2], pre_activation=pre_activation,
+                           activate=activates[2], pre_activation=pre_activation,
                            residual=residual, # 残差接続の注入点
                            **kwargs),
             ]
-        n_head = mid_ch//32
+        n_head = max(mid_ch//32, 1)
         self.n_head = n_head
-        opt_for_opt = {'optimize' : kwargs.pop('optimize', 'SGD'),
-                        'w_decay' : kwargs.pop('w_decay',    0.0),}
         # embedding からのベクトル加算用
         if proj:
-            self.proj = nn.LinearLayer(mid_ch, **opt_for_opt)
+            self.proj = nn.LinearLayer(mid_ch, **kwargs)
         else:
             self.proj = None
         self.proj_used = False      
         self.residual = residual
         if residual:
-            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **opt_for_opt)
+            self.shortcut = nn.Conv2dLayer(out_ch, 1, stride, 0, **kwargs)
         self.shortcut_used = False    
         if attention:
             self.attn = nn.SpatialSelfAttention(n_head=n_head, **kwargs)

@@ -1,5 +1,5 @@
 # UNet
-# 20260619 A.Inoue
+# 20260623 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -33,44 +33,30 @@ def palindrom(n):
 
 class UNetCore:
     """ 完全畳み込み構造のUNetで(H,W)は2のべき乗でなくても対応 """
-    def __init__(self, depth=3, in_ch=None, base_ch=32,
+    def __init__(self, depth=3, n_bottom=1, base_ch=32, in_ch=None,
                  proj=False, bottleneck=False, bottleneck_ratio=0.5,
-                 n_bottom=1, attention=False,
+                 attention=False,
                  **kwargs):
+        """ 設定の確定 """
         # ---- U-Net core skeleton ----
         self.depth       = depth
-        self.in_ch       = in_ch
-        self.base_ch     = base_ch
-        self.bottleneck  = bottleneck
-        self.bottleneck_ratio = bottleneck_ratio
         self.n_bottom    = n_bottom
-        self.attention   = attention
-
-        # ---- architecture variations ----
-        self.stem_kernel = kwargs.pop('stem_kernel',    1)
+        self.base_ch     = base_ch
+        self.in_ch       = in_ch # Noneのままでも遅延設定によりOK
         self.skip_ratio  = kwargs.pop('skip_ratio',  None)
-        self.residual    = kwargs.pop('residual',   False)
-        self.bias_last   = kwargs.pop('bias_last',  False)
 
-        # ---- activation / normalization ----
-        self.activate    = kwargs.pop('activate',  'ReLU')
-        self.pre_activation = kwargs.pop('pre_activation', False)
-        self.optimize    = kwargs.pop('optimize', 'AdamT')
-        self.w_decay     = kwargs.pop('w_decay',     0.01)
-
-        norm_options =   {'batchnorm' : kwargs.pop('batchnorm',    None),
-                          'layernorm' : kwargs.pop('layernorm',    None),
-                          'normaffine': kwargs.pop('normaffine',  False),}
-        
-        common_options = {**norm_options,
-                          'optimize': self.optimize, 'w_decay': self.w_decay} 
-
-        if kwargs: # Safety check
-            raise TypeError(f"Unexpected keyword arguments: {list(kwargs.keys())}")
-
-        # Stem 入力直は、ActやNormではなく、Convから
-        stem_pad = 1 if self.stem_kernel > 1 else 0 # 仮処置20260413AI
-        self.stem = nn.Conv2dLayer(base_ch, self.stem_kernel, 1, stem_pad, **common_options)
+        # ---- Block options ----
+        block_options = {
+            'proj'          : proj,  # projの有効無効を指定
+            'residual'      : kwargs.pop('residual',       False),
+            'pre_activation': kwargs.pop('pre_activation', False),
+            'activate'      : kwargs.pop('activate',      'ReLU'),
+            'batchnorm'     : kwargs.pop('batchnorm',       None),
+            'layernorm'     : kwargs.pop('layernorm',       None),
+            'normaffine'    : kwargs.pop('normaffine',     False),
+            }
+        if bottleneck:
+            block_options['bottleneck_ratio'] = bottleneck_ratio
 
         # 本体＝畳込みブロックとチャネル構成の決定
         Conv = sbh.ConvBlockBottleneck if bottleneck else sbh.ConvBlock
@@ -78,36 +64,20 @@ class UNetCore:
         c_bot  = base_ch * (2 ** (self.depth - 1)) 
         c_up   = [base_ch * (2 ** i) for i in reversed(range(self.depth))]
 
-        # 畳込みブロック
-        options_for_blocks = {**common_options, 
-                              'proj'          : proj,  # projの有効無効を指定
-                              'residual'      : self.residual,
-                              'pre_activation': self.pre_activation,}
-        if bottleneck:
-            options_for_blocks['bottleneck_ratio'] = bottleneck_ratio
+        """ 組上げ """
+        # Stem 入力直は、ActやNormではなく、Convから
+        self.stem = nn.Conv2dLayer(base_ch, 1, 1, 0, **kwargs)
 
-        if bottleneck and self.pre_activation: 
-            options_for_blocks['activate'] = self.activate, self.activate, self.activate
-        elif bottleneck:
-            options_for_blocks['activate'] = self.activate, self.activate, None
-        else:
-            options_for_blocks['activate'] = self.activate, self.activate
-
-        options_for_attnblk = options_for_blocks.copy()
-        options_for_attnblk['attention'] = self.attention 
-            
         # Down path
         self.down , self.pool = [], []
         for i in range(self.depth):
-            self.down.append(Conv(c_down[i], **options_for_blocks))
+            self.down.append(Conv(c_down[i], **block_options, **kwargs))
             self.pool.append(nn.Pooling2dLayer(2))
                 
         # Bottleneck
         self.bot = []
-        attn_pos = (n_bottom - 1) // 2 # この位置だけattentionを入れる
         for i in range(self.n_bottom):
-            options = options_for_attnblk #if i==attn_pos else options_for_blocks
-            self.bot.append(Conv(c_bot, **options))
+            self.bot.append(Conv(c_bot, attention=attention, **block_options, **kwargs))
 
         # Up path（Upsample + concat + Conv）
         self.upsample, self.concat, self.up = [], [], []
@@ -115,24 +85,20 @@ class UNetCore:
             self.upsample.append(nn.Interpolate2d(scale_factor=2,
                                           mode='bilinear', align='center'))
             self.concat.append(F.Concatenate())
-            self.up.append(Conv(c_up[i], **options_for_blocks))
+            self.up.append(Conv(c_up[i], **block_options, **kwargs))
 
-        # 出力Head  チャネル数合わせのみで、ActもNormも無し
-        options_for_ol = {**common_options,
-                          'bias'           : self.bias_last,}
         # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
-        self.out = nn.Conv2dLayer(in_ch, 1, 0, **options_for_ol)
-            
-        # down->upのスキップ接続　
-        options_for_skip_proj = {'optimize' : self.optimize, 'w_decay' : self.w_decay,}
+        self.out = nn.Conv2dLayer(in_ch, 1, 1, 0, bias=False, **kwargs)
 
+        # down->upのスキップ接続　
         # Skip projection (弱スキップ:カーネルサイズ1でskip_ratioに従いチャネル圧縮)
         if self.skip_ratio is not None and self.skip_ratio > 0:
             self.skip_proj = []
             for i in range(depth):
                 proj_ch = max(1, round(c_down[i] * self.skip_ratio))
-                self.skip_proj.append(nn.Conv2dLayer(
-                                      proj_ch, 1, 0, **options_for_skip_proj))
+                self.skip_proj.append(
+                    nn.Conv2dLayer(proj_ch, 1, 1, 0, **kwargs)
+                    )
 
         self.crop_infos = None       
 
@@ -280,8 +246,8 @@ class UNetCore:
         self.out.update(eta=eta, **kwargs)
 
 class UNet_bkup:
-    def __init__(self, depth=3, in_ch=None, base_ch=32,
-        bottleneck=True, bottleneck_ratio=0.5, n_bottom=1, attention=False,
+    def __init__(self, depth=3, n_bottom=1, in_ch=None, base_ch=32,
+        bottleneck=True, bottleneck_ratio=0.5, attention=False,
         **kwargs):
 
         # ---- MLP専用の項目 embedding, conditioning ----
@@ -385,8 +351,8 @@ class UNet_bkup:
         return t_arr.astype(np.int32, copy=False)
 
 class UNet:
-    def __init__(self, depth=3, in_ch=None, base_ch=32,
-                 bottleneck=True, bottleneck_ratio=0.5, n_bottom=1,
+    def __init__(self, depth=3, n_bottom=1, in_ch=None, base_ch=32,
+                 bottleneck=True, bottleneck_ratio=0.5,
                  attention=False, **kwargs):
 
         # ---- MLPの項目 -> projの有無 ----
@@ -407,7 +373,8 @@ class UNet:
             attention=attention,
             **kwargs,
             )
-        
+
+        kwargs.pop('residual', None) # Skeletonにはresidualは不要
         self.model = skeletons.PredictionSkeleton(
             core=core,
             time_embed=time_embed,
@@ -636,7 +603,6 @@ class ClassificationHead:
     def update(self, **kwargs):
         self.net[1].update(**kwargs)
          
-
 if __name__=='__main__':
     set_derivative(True)
 
@@ -647,13 +613,18 @@ if __name__=='__main__':
         x = np.random.rand(int(b), int(c), int(h), int(w))
         x = np.hdarray(x)
 
-        model = UNetCore(layernorm=True,pre_activation=True, residual=True)#bottleneck=False)#in_ch=int(c))
+        model = UNet(layernorm=bool(np.random.randint(0, 2)),
+                         pre_activation=bool(np.random.randint(0, 2)),
+                         residual=bool(np.random.randint(0, 2)),
+                         bottleneck=bool(np.random.randint(0, 2)),
+                         attention=bool(np.random.randint(0, 2)),
+                         )#in_ch=int(c))
         print('\n', f'##### test No.{i} x.shape = {x.shape} #####')
         y = model(x)
-        #y.backtrace()
+        y.backtrace()
         gy = np.ones_like(y)
-        gx = model.backward(gy)
-        #gx = x.grad #model.core.down[0].inputs[0].grad
+        #gx = model.backward(gy)
+        gx = x.grad #model.core.down[0].inputs[0].grad
         print(f'##### y.shape = {y.shape} gx.shape = {gx.shape} #####')
 
     """#
@@ -672,3 +643,5 @@ if __name__=='__main__':
         print(f'##### y.shape = {y.shape} gx.shape = {gx.shape} #####')
 
     #"""#
+
+
