@@ -93,6 +93,22 @@ def make_activation_node(act_layer, input_name, output_name, name_prefix, onnx_n
         raise NotImplementedError(f"活性化関数 '{act_class}' の変換はサポートされていません。")
 
 
+def flatten_layers(pyaino_model_or_layer):
+    """
+    Sequential モデルの中にさらに Sequential がネストされている場合、
+    それを再帰的に平坦化して、フラットなレイヤーのリストを返します。
+    """
+    flat_layers = []
+    class_name = pyaino_model_or_layer.__class__.__name__
+    
+    if class_name in ('Sequential', 'Sequential2', 'SequentialWithLoss'):
+        for layer in pyaino_model_or_layer.layers:
+            flat_layers.extend(flatten_layers(layer))
+    else:
+        flat_layers.append(pyaino_model_or_layer)
+        
+    return flat_layers
+
 def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
     """
     pyainoのモデル（Sequentialまたは単一レイヤー）を直接ONNX形式へエクスポートします。
@@ -118,11 +134,8 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
         shape=input_shape
     )
     
-    # 複数レイヤーを内包する Sequential と、単一のレイヤーオブジェクトの両方に対応します
-    if pyaino_model.__class__.__name__ == 'Sequential':
-        layers = pyaino_model.layers
-    else:
-        layers = [pyaino_model]
+    # レイヤーリストを取得（ネストされた Sequential も再帰的に平坦化）
+    layers = flatten_layers(pyaino_model)
         
     current_dummy = dummy_input.copy()
     for i, layer in enumerate(layers):
