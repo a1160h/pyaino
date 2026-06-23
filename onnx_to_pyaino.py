@@ -158,6 +158,16 @@ def import_onnx_to_pyaino(onnx_path):
             else:
                 pyaino_layers.append(Activators.Tanh())
                 
+        # --- Softmax 活性化関数の復元 ---
+        elif op_type == 'Softmax':
+            if "embedded" in node.name:
+                if len(pyaino_layers) > 0:
+                    prev_layer = pyaino_layers[-1]
+                    if hasattr(prev_layer, 'postphase'):
+                        prev_layer.postphase.activator = Activators.Softmax()
+            else:
+                pyaino_layers.append(Activators.Softmax())
+                
         else:
             print(f"サポートされていない演算ノード '{node.name}' (型: {op_type}) をスキップします。")
             

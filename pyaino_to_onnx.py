@@ -203,6 +203,17 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
             onnx_nodes.append(tanh_node)
             current_input_name = layer_output_name
             
+        elif class_name in ('Softmax',) or issubclass(layer.__class__, Activators.Softmax):
+            softmax_node = helper.make_node(
+                op_type='Softmax',
+                inputs=[current_input_name],
+                outputs=[layer_output_name],
+                name=f"softmax_{i}",
+                axis=-1
+            )
+            onnx_nodes.append(softmax_node)
+            current_input_name = layer_output_name
+            
         else:
             raise NotImplementedError(f"レイヤークラス '{class_name}' の直接ONNX変換は未実装です。")
             
@@ -247,6 +258,14 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
                         inputs=[current_input_name],
                         outputs=[act_output_name],
                         name=f"embedded_tanh_{i}"
+                    )
+                elif act_class == 'Softmax':
+                    act_node = helper.make_node(
+                        op_type='Softmax',
+                        inputs=[current_input_name],
+                        outputs=[act_output_name],
+                        name=f"embedded_softmax_{i}",
+                        axis=-1
                     )
                 else:
                     raise NotImplementedError(f"内包活性化関数 '{act_class}' の変換はサポートされていません。")
@@ -296,7 +315,7 @@ if __name__ == '__main__':
     test_model = Neuron.Sequential(
         Neuron.LinearLayer(10, 32),               # 10次元から32次元の全結合層
         Activators.ReLU(),                         # 単体のReLU活性化レイヤー
-        Neuron.NeuronLayer(32, 5, activate='LReLU') # 32次元から5次元の、LeakyReLUを内包したニューロン層
+        Neuron.NeuronLayer(32, 5, activate='Softmax') # 32次元から5次元の、Softmaxを内包したニューロン層
     )
     
     # テスト用のダミー入力データ (サイズ: 4x10) を用意
