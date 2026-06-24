@@ -114,12 +114,16 @@ class ConvBlock(nucleus.Function):
         self.out_ch = out_ch
         # Conv 本体（非bottleneck 構造）
         activate = kwargs.pop('activate', 'ReLU')
+        if isinstance(activate, tuple):
+            act0, act1 = activate
+        else:
+            act0 = act1 = activate
         self.convs = [
             nn.Conv2dLayer(out_ch, 3, stride, 1,
-                           activate=activate, pre_activation=pre_activation,
+                           activate=act0, pre_activation=pre_activation,
                            **kwargs),
             nn.Conv2dLayer(out_ch, 3, 1, 1,
-                           activate=activate, pre_activation=pre_activation,
+                           activate=act1, pre_activation=pre_activation,
                            residual=residual, # 残差接続の注入点
                            **kwargs)
             ]
@@ -229,10 +233,13 @@ class ConvBlockBottleneck(ConvBlock):
 
         # Conv 本体（bottleneck 構造）
         activate = kwargs.pop('activate', 'ReLU')
-        if pre_activation:
-            activates = activate, activate, activate
-        else: # 通常は3段目は直出力(残差接続の接続点)
-            activates = activate, activate, None
+        if isinstance(activate, tuple):
+            activates = activate + (None,) * (3 - len(activate))
+        else:
+            if pre_activation:
+                activates = activate, activate, activate
+            else: # 通常は3段目は直出力(残差接続の接続点)
+                activates = activate, activate, None
         self.convs = [
             nn.Conv2dLayer(mid_ch, 1, 1, 0,# 1x1: in_ch  -> mid_ch
                            activate=activates[0], pre_activation=pre_activation,

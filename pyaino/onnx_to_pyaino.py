@@ -121,8 +121,10 @@ def load_weights_to_pyaino_model(model, initializers):
         elif param_name == 'b':
             curr_obj.b = val.copy()
         elif param_name in ('gamma', 'beta', 'mu_ppl', 'sigma_ppl'):
-            target_shape = getattr(curr_obj, param_name).shape
-            setattr(curr_obj, param_name, val.reshape(target_shape))
+            attr_val = getattr(curr_obj, param_name, None)
+            if attr_val is not None:
+                target_shape = attr_val.shape
+                setattr(curr_obj, param_name, val.reshape(target_shape))
 
 def reconstruct_sequential(nodes, initializers, prefix):
     """
