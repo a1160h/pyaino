@@ -1,5 +1,5 @@
 # common_function
-# 20260607 A.Inoue 
+# 20260620 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1598,7 +1598,7 @@ class Measurement:
 
     def forward_and_loss(self, x, t):
         if self.bind:
-            y, loss = self.model.forward(x, t)
+            y, loss = self.model.forward(x, t=t)
         else:
             y = self.model.forward(x)
             loss = self.model.loss_function.forward(y, t)
@@ -2081,6 +2081,21 @@ def _axis_is_right(axis):
 def _axis_is_left(axis):
     return axis in ("left", "l", 0)
 
+def _smooth_series(y, period=1, stride=1):
+    y = _to_list(y)
+
+    if period is None or period <= 1:
+        return y, None
+
+    period = min(int(period), len(y))
+    stride = int(stride)
+
+    yy = moving_average(y, period=period, stride=stride)
+
+    offset = period // 2
+    xx = range(offset, offset + len(yy) * stride, stride)
+
+    return yy, xx
 
 def graph_history(
     data,
@@ -2101,6 +2116,8 @@ def graph_history(
     figsize=None,
     show=True,
     as_series=False,
+    smooth=None,
+    smooth_stride=1,
 ):
     """
     学習履歴などの系列データを汎用的に描画する。
@@ -2179,7 +2196,24 @@ def graph_history(
 
     # --- plot ---
     for i, (y, label, axis, style) in enumerate(zip(ys, labels, axes, styles)):
-        xx = range(len(y)) if x is None else x
+        y_plot = y
+
+        if smooth is not None and smooth > 1:
+            y_plot, xx_auto = _smooth_series(
+                y, period=smooth, stride=smooth_stride
+            )
+
+            if x is None:
+                xx = xx_auto
+            else:
+                #xx = x[smooth // 2 : smooth // 2 + len(y_plot) * smooth_stride : smooth_stride]
+                xx_src = _to_list(x)
+                xx = xx_src[
+                    smooth // 2 : smooth // 2 + len(y_plot) * smooth_stride : smooth_stride
+                ]
+
+        else:
+            xx = range(len(y)) if x is None else x
 
         if _axis_is_right(axis):
             if ax_right is None:
@@ -2191,7 +2225,7 @@ def graph_history(
         style = dict(style)
         style.setdefault("color", colors[i % len(colors)])
 
-        ax.plot(xx, y, label=label, **style)
+        ax.plot(xx, y_plot, label=label, **style)
 
     # --- axis labels ---
     ax_left.set_xlabel(xlabel)

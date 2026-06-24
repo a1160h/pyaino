@@ -1,5 +1,5 @@
 # skeletons
-# 20260619 A.Inoue
+# 20260623 A.Inoue
 
 from pyaino.Config import *
 from pyaino import Neuron as nn
@@ -10,21 +10,18 @@ class PredictionSkeleton:
 
         self.core = core
 
-        mlp_option = {'optimize' : kwargs.pop('optimize', 'SGD'),
-                      'w_decay'  : kwargs.pop('w_decay',   0.0 ),}
-
         if time_embed:
             self.time_mlp = nn.Sequential(
                 nn.PositionalEncoding(dimension=embed_dim),
-                nn.NeuronLayer(embed_dim, activate=None, **mlp_option),
+                nn.NeuronLayer(embed_dim, activate=None, **kwargs),
             )
         else:
             self.time_mlp = None
 
         if num_labels is not None:
             self.label_mlp = nn.Sequential(
-                nn.Embedding(num_labels, embed_dim, **mlp_option),
-                nn.NeuronLayer(embed_dim, activate=None, **mlp_option),
+                nn.Embedding(num_labels, embed_dim, **kwargs),
+                nn.NeuronLayer(embed_dim, activate=None, **kwargs),
             )
         else:
             self.label_mlp = None
