@@ -410,7 +410,7 @@ class Sum(SumMeanVar):
         y = snp.sum(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
-def sum(x, axis=None, keepdims=False):
+def sum(x, axis=None, dtype=None, out=None, keepdims=False):
     return Sum(axis=axis, keepdims=keepdims)(x)
 
 class Mean(SumMeanVar):

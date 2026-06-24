@@ -13,6 +13,9 @@ from pyaino import common_function as cf
 import warnings
 import copy
 
+ConvBlock = sbh.ConvBlock
+ConvBlockBottleneck = sbh.ConvBlockBottleneck
+
 
 def palindrom(n):
     """ 2のべき乗が真ん中を最高にして対称に上り下りして並ぶ """
