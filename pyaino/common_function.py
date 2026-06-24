@@ -1,5 +1,5 @@
 # common_function
-# 20260620 A.Inoue 
+# 20260624 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -584,6 +584,9 @@ def export_parameters_recursive(obj, params=None, name=None,
     if type(obj) in (type(None), int, float, bool, str):
         return params, name, seen
 
+    if isinstance(obj, np.ndarray):
+        return params, name, seen
+
     if obj_id in seen:  # すでに計算済みならスキップ
         return params, name, seen
     seen.add(obj_id)
@@ -660,6 +663,9 @@ def import_parameters_recursive(obj, params=None, done=None, name=None,
     obj_id = id(obj)
 
     if type(obj) in (type(None), int, float, bool, str):
+        return done, name, seen
+
+    if isinstance(obj, np.ndarray):
         return done, name, seen
 
     if obj_id in seen:  # すでに計算済みならスキップ
