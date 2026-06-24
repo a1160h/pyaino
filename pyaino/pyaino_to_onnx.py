@@ -93,6 +93,19 @@ def make_activation_node(act_layer, input_name, output_name, name_prefix, onnx_n
     else:
         raise NotImplementedError(f"活性化関数 '{act_class}' の変換はサポートされていません。")
 
+def flatten_layers(model):
+    """
+    Sequentialなどのコンテナモデルから、含まれるレイヤーのフラットなリストを取得します。
+    """
+    layers = []
+    class_name = model.__class__.__name__
+    if class_name in ('Sequential', 'Sequential2', 'SequentialWithLoss') or hasattr(model, 'layers'):
+        for layer in model.layers:
+            layers.extend(flatten_layers(layer))
+    else:
+        layers.append(model)
+    return layers
+
 def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
     """
     pyainoのモデル（UNet, CifarResNet, Sequentialなど）を直接ONNX形式へエクスポートします。
@@ -385,6 +398,11 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
                 y_name, current_dummy = process_layer(layer.convs[2], y_name, f"{name_prefix}.convs.2", current_dummy)
                 
             return y_name, current_dummy
+
+        elif class_name in ('Sequential', 'Sequential2', 'SequentialWithLoss'):
+            for i, sub_layer in enumerate(layer.layers):
+                current_input_name, current_dummy = process_layer(sub_layer, current_input_name, f"{name_prefix}.{i}", current_dummy)
+            return current_input_name, current_dummy
 
         # 順伝播を走らせて出力を得るとともに、パラメータ初期化を確実に行います
         in_shape = current_dummy.shape
@@ -730,6 +748,55 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
         elif class_name == 'Transpose':
             onnx_nodes.append(helper.make_node('Transpose', [current_input_name], [core_out_name], name=f"{name_prefix}_transpose", perm=list(layer.axes)))
 
+        # --- LatentSampling ---
+        elif class_name == 'LatentSampling':
+            # 1. vectorize = True の場合、(B, -1) に reshape
+            if layer.vectorize:
+                shape_name = f"{name_prefix}_reshape_shape"
+                shape_init = helper.make_tensor(shape_name, TensorProto.INT64, [2], [0, -1])
+                onnx_initializers.append(shape_init)
+                
+                reshape_out = f"{name_prefix}_reshape_out"
+                onnx_nodes.append(helper.make_node(
+                    'Reshape',
+                    inputs=[current_input_name, shape_name],
+                    outputs=[reshape_out],
+                    name=f"{name_prefix}_reshape"
+                ))
+                current_input_name = reshape_out
+                current_dummy_out = current_dummy.reshape(len(current_dummy), -1)
+            else:
+                current_dummy_out = current_dummy.copy()
+                
+            axis = -1 if layer.vectorize else layer.axis
+            
+            # 指定軸で mu と log_var に2分割 (Split)
+            mu_name = f"{name_prefix}_mu"
+            log_var_name = f"{name_prefix}_log_var"
+            
+            split_node = helper.make_node(
+                'Split',
+                inputs=[current_input_name],
+                outputs=[mu_name, log_var_name],
+                axis=axis,
+                num_outputs=2,
+                name=f"{name_prefix}_split"
+            )
+            onnx_nodes.append(split_node)
+            
+            # 決定論的サンプリング: z = mu
+            onnx_nodes.append(helper.make_node(
+                'Identity',
+                inputs=[mu_name],
+                outputs=[core_out_name],
+                name=f"{name_prefix}_z_identity"
+            ))
+            
+            # ダミー側も、検証用にノードと出力を合わせるため、epsilon = 0 で forward を呼ぶ
+            mu_dummy, log_var_dummy = np.split(current_dummy_out, 2, axis=axis)
+            zero_eps_half = np.zeros_like(mu_dummy)
+            current_dummy_out = layer.forward(current_dummy, epsilon=zero_eps_half)
+
         # --- 活性化関数レイヤー単品 ---
         elif class_name in ('ReLU', 'ReLU_bkup', 'LReLU', 'LReLU_bkup', 'Sigmoid', 'SigmoidOut', 'SigmoidWithLoss', 'Tanh', 'Softmax', 'Softmax2', 'SoftmaxWithLoss', 'SoftmaxWithLoss2', 'SoftmaxCrossEntropy', 'Identity', 'ELU', 'Softplus', 'GELU', 'GELUap', 'Swish', 'Mish', 'Step') or issubclass(layer.__class__, (Activators.ReLU, Activators.LReLU, Activators.Sigmoid, Activators.SigmoidOut, Activators.SigmoidWithLoss, Activators.Tanh, Activators.Softmax, Activators.Softmax2, Activators.SoftmaxWithLoss, Activators.SoftmaxWithLoss2, Activators.SoftmaxCrossEntropy, Activators.Identity, Activators.ELU, Activators.Softplus, Activators.GELU, Activators.GELUap, Activators.Swish, Activators.Mish, Activators.Step)):
             act_node = make_activation_node(layer, current_input_name, core_out_name, name_prefix, onnx_nodes, onnx_initializers)
@@ -950,6 +1017,22 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
         core.fix_out_ch(current_dummy.shape)
         current_input_name, current_dummy = process_layer(core.out, current_input_name, "model.core.out", current_dummy)
         
+    # === VAE (MyVAE / VAESkeleton / VAEBase) の処理 ===
+    elif model_class in ('MyVAE', 'VAESkeleton', 'VAEBase') or (hasattr(pyaino_model, 'encoder') and hasattr(pyaino_model, 'sampling') and hasattr(pyaino_model, 'decoder')):
+        current_dummy = dummy_input.copy()
+        
+        # 1. Encoder
+        current_input_name, current_dummy = process_layer(pyaino_model.encoder, current_input_name, "encoder", current_dummy)
+        # 2. Sampling
+        current_input_name, current_dummy = process_layer(pyaino_model.sampling, current_input_name, "sampling", current_dummy)
+        # 3. Decoder
+        current_input_name, current_dummy = process_layer(pyaino_model.decoder, current_input_name, "decoder", current_dummy)
+
+    # === GAN (GANBase / MyGAN など) の処理 ===
+    elif hasattr(pyaino_model, 'gen') and pyaino_model.gen is not None:
+        print(f"[INFO] GANモデルが検出されました。Generator (gen) をONNXにエクスポートします。")
+        return export_pyaino_to_onnx(pyaino_model.gen, dummy_input, output_path)
+
     # === CifarResNet の処理 ===
     elif model_class == 'CifarResNet':
         current_dummy = dummy_input.copy()
