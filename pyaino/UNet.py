@@ -1,5 +1,5 @@
 # UNet
-# 20260627 A.Inoue
+# 20260630 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -607,37 +607,7 @@ class ResStage:
         self.blocks.update(**kwargs)
 
 
-class ClassificationHead:
-    def __init__(self, classes=10, **kwargs):
-        options_for_hidden = {'batchnorm'  : kwargs.pop('batchnorm',  False), 
-                              'layernorm'  : kwargs.pop('layernorm',  False),
-                              'normaffine' : kwargs.pop('normaffine', False),
-                              'optimize'   : kwargs.get('optimize',   'SGD'),
-                              'w_decay'    : kwargs.get('w_decay',      0.0),
-                              'activate'   : kwargs.pop('activate',  'ReLU'),
-                              }
-
-        options_for_output = {'activate'   : kwargs.pop('ol_act', 'Softmax'),
-                              'optimize'   : kwargs.pop('optimize',   'SGD'),
-                              'w_decay'    : kwargs.pop('w_decay',      0.0),
-                              }
         
-        self.net = [nn.GlobalAveragePooling(   **options_for_hidden),
-                    nn.NeuronLayer(classes,    **options_for_output),
-                    ]
-        self.loss_function = lf.CrossEntropyError()
-
-    def forward(self, x, t=None, train=True, dropout=0.0):
-        y = self.net[0](x, train=train, dropout=dropout) 
-        y = self.net[1](y)  
-        if t is None:
-            return y
-        l = self.loss_function(y, t)            
-        return y, l  
-
-    def update(self, **kwargs):
-        self.net[1].update(**kwargs)
-         
 if __name__=='__main__':
     set_derivative(True)
 

@@ -1,7 +1,6 @@
 from pyaino.Config import *
 set_derivative(True)
 from pyaino import Neuron 
-from pyaino import UNet
 from pyaino import stems_blocks_heads as sbh
 from pyaino import common_function as cf
 
@@ -16,7 +15,7 @@ class ResNetStage:
         batchnorm = kwargs.pop('batchnorm',   True)
 
         options = {'residual':residual,
-                   'activate':(activate, activate),
+                   'activate':activate,
                    'optimize':optimize,
                    'w_decay' :w_decay,
                    'batchnorm':batchnorm}
@@ -52,7 +51,7 @@ class CifarResNet:
               for i in range(n_stage)]
             )
 
-        self.head = UNet.ClassificationHead(classes=classes, **kwargs)
+        self.head = sbh.ClassificationHead(classes=classes, **kwargs)
 
     def forward(self, x, t=None, train=True, dropout=0.0):
         y = self.stem.forward(x, train=train)

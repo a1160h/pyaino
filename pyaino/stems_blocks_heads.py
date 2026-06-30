@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260623 A.Inoue
+# 20260630 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -114,16 +114,12 @@ class ConvBlock(nucleus.Function):
         self.out_ch = out_ch
         # Conv 本体（非bottleneck 構造）
         activate = kwargs.pop('activate', 'ReLU')
-        if isinstance(activate, tuple):
-            act0, act1 = activate
-        else:
-            act0 = act1 = activate
         self.convs = [
             nn.Conv2dLayer(out_ch, 3, stride, 1,
-                           activate=act0, pre_activation=pre_activation,
+                           activate=activate, pre_activation=pre_activation,
                            **kwargs),
             nn.Conv2dLayer(out_ch, 3, 1, 1,
-                           activate=act1, pre_activation=pre_activation,
+                           activate=activate, pre_activation=pre_activation,
                            residual=residual, # 残差接続の注入点
                            **kwargs)
             ]
@@ -233,13 +229,10 @@ class ConvBlockBottleneck(ConvBlock):
 
         # Conv 本体（bottleneck 構造）
         activate = kwargs.pop('activate', 'ReLU')
-        if isinstance(activate, tuple):
-            activates = activate + (None,) * (3 - len(activate))
-        else:
-            if pre_activation:
-                activates = activate, activate, activate
-            else: # 通常は3段目は直出力(残差接続の接続点)
-                activates = activate, activate, None
+        if pre_activation:
+            activates = activate, activate, activate
+        else: # 通常は3段目は直出力(残差接続の接続点)
+            activates = activate, activate, None
         self.convs = [
             nn.Conv2dLayer(mid_ch, 1, 1, 0,# 1x1: in_ch  -> mid_ch
                            activate=activates[0], pre_activation=pre_activation,
@@ -428,4 +421,34 @@ class ImageHead:
         if self.alpha != 0:
             self.mlp_refine.update(eta=eta)
 
+class ClassificationHead:
+    def __init__(self, classes=10, **kwargs):
+        options_for_hidden = {'batchnorm'  : kwargs.pop('batchnorm',  False), 
+                              'layernorm'  : kwargs.pop('layernorm',  False),
+                              'normaffine' : kwargs.pop('normaffine', False),
+                              'optimize'   : kwargs.get('optimize',   'SGD'),
+                              'w_decay'    : kwargs.get('w_decay',      0.0),
+                              'activate'   : kwargs.pop('activate',  'ReLU'),
+                              }
+
+        options_for_output = {'activate'   : kwargs.pop('ol_act', 'Softmax'),
+                              'optimize'   : kwargs.pop('optimize',   'SGD'),
+                              'w_decay'    : kwargs.pop('w_decay',      0.0),
+                              }
+        
+        self.net = [nn.GlobalAveragePooling(   **options_for_hidden),
+                    nn.NeuronLayer(classes,    **options_for_output),
+                    ]
+        self.loss_function = lf.CrossEntropyError()
+
+    def forward(self, x, t=None, train=True, dropout=0.0):
+        y = self.net[0](x, train=train, dropout=dropout) 
+        y = self.net[1](y)  
+        if t is None:
+            return y
+        l = self.loss_function(y, t)            
+        return y, l  
+
+    def update(self, **kwargs):
+        self.net[1].update(**kwargs)
 

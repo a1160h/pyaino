@@ -1,5 +1,5 @@
 # common_function
-# 20260624 A.Inoue 
+# 20260630 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1928,6 +1928,7 @@ class Mesurement_for_GAN:
 
 def moving_average(x, period=1, stride=1):
     """ 移動平均 """
+    x = np.array(x)
     period = int(period) 
     y = []
     for i in range(0, len(x) - period + 1, stride):
