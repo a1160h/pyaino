@@ -520,9 +520,15 @@ def import_onnx_to_pyaino(onnx_path):
     is_resnet = False
     is_vae = False
     
+    unet_prefix = None
     for name in initializers.keys():
         if "model.core.down" in name or "model.core.stem" in name:
             is_unet = True
+            unet_prefix = "model.core"
+            break
+        elif name.startswith("core.down.") or name.startswith("core.stem."):
+            is_unet = True
+            unet_prefix = "core"
             break
         elif "stages." in name or "stem." in name:
             is_resnet = True
@@ -538,24 +544,26 @@ def import_onnx_to_pyaino(onnx_path):
         base_ch = 32
         in_ch = None
         bottleneck = False
+        down_idx = 3 if unet_prefix == "model.core" else 2
+        bot_idx = 3 if unet_prefix == "model.core" else 2
         
         for name in initializers.keys():
-            if "model.core.down." in name:
+            if f"{unet_prefix}.down." in name:
                 parts = name.split('.')
-                idx = int(parts[3])
+                idx = int(parts[down_idx])
                 depth = max(depth, idx + 1)
-            if "model.core.bot." in name:
+            if f"{unet_prefix}.bot." in name:
                 parts = name.split('.')
-                idx = int(parts[3])
+                idx = int(parts[bot_idx])
                 n_bottom = max(n_bottom, idx + 1)
-            if "model.core.down.0.convs.2" in name:
+            if f"{unet_prefix}.down.0.convs.2" in name:
                 bottleneck = True
                 
-        stem_w_name = "model.core.stem.parameters.w"
+        stem_w_name = f"{unet_prefix}.stem.parameters.w"
         if stem_w_name in initializers:
             base_ch = initializers[stem_w_name].shape[0]
             
-        out_w_name = "model.core.out.parameters.w"
+        out_w_name = f"{unet_prefix}.out.parameters.w"
         if out_w_name in initializers:
             in_ch = initializers[out_w_name].shape[0]
             

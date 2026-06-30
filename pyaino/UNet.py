@@ -1,5 +1,5 @@
 # UNet
-# 20260623 A.Inoue
+# 20260627 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -12,9 +12,6 @@ from pyaino import Functions as F
 from pyaino import common_function as cf
 import warnings
 import copy
-
-ConvBlock = sbh.ConvBlock
-ConvBlockBottleneck = sbh.ConvBlockBottleneck
 
 
 def palindrom(n):
@@ -248,6 +245,42 @@ class UNetCore:
             self.up[i].update(eta=eta, **kwargs)
         self.out.update(eta=eta, **kwargs)
 
+
+class UNet(skeletons.PredictionSkeleton):
+    def __init__(self, depth=3, n_bottom=1, in_ch=None, base_ch=32,
+                 bottleneck=True, bottleneck_ratio=0.5,
+                 attention=False, **kwargs):
+
+        # ---- MLPの項目 -> projの有無 ----
+        time_embed = kwargs.pop('time_embed', False)
+        num_labels = kwargs.pop('num_labels',  None)
+        embed_dim  = kwargs.pop('embed_dim',    128)
+
+        proj = time_embed or (num_labels is not None)
+
+        core = UNetCore(
+            depth=depth,
+            in_ch=in_ch,
+            base_ch=base_ch,
+            proj=proj,
+            bottleneck=bottleneck,
+            bottleneck_ratio=bottleneck_ratio,
+            n_bottom=n_bottom,
+            attention=attention,
+            **kwargs,
+            )
+
+        kwargs.pop('residual', None) # Skeletonにはresidualは不要
+
+        super().__init__(
+            core=core,
+            time_embed=time_embed,
+            num_labels=num_labels,
+            embed_dim=embed_dim,
+            **kwargs,
+            )
+
+        
 class UNet_bkup:
     def __init__(self, depth=3, n_bottom=1, in_ch=None, base_ch=32,
         bottleneck=True, bottleneck_ratio=0.5, attention=False,
@@ -353,7 +386,7 @@ class UNet_bkup:
 
         return t_arr.astype(np.int32, copy=False)
 
-class UNet:
+class UNet_bkup2:
     def __init__(self, depth=3, n_bottom=1, in_ch=None, base_ch=32,
                  bottleneck=True, bottleneck_ratio=0.5,
                  attention=False, **kwargs):
@@ -398,7 +431,6 @@ class UNet:
     def update(self, eta=0.001, **kwargs):
         self.model.update(eta=eta, **kwargs)
 
-        
 class CNN_MultiStageStack:
     """ UNetを起源とする汎用的なCNN """
 

@@ -914,38 +914,44 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
     
     # === UNet / UNetCore / PredictionSkeleton (UNet) の処理 ===
     if model_class in ('UNet', 'PredictionSkeleton', 'UNetCore'):
-        if model_class == 'UNet':
-            core = pyaino_model.model.core
-        elif model_class == 'PredictionSkeleton':
-            core = pyaino_model.core
-        else:
+        if model_class == 'UNetCore':
             core = pyaino_model
+            core_prefix = ""
+        elif hasattr(pyaino_model, 'model') and hasattr(pyaino_model.model, 'core'):
+            core = pyaino_model.model.core
+            core_prefix = "model.core"
+        else:
+            core = pyaino_model.core
+            core_prefix = "core"
+
+        def core_path(*parts):
+            return '.'.join((core_prefix, *parts)) if core_prefix else '.'.join(parts)
             
         # 順伝播をトレースしながら ONNX ノードを生成する
         current_dummy = dummy_input.copy()
         
         # 1. Stem
-        current_input_name, current_dummy = process_layer(core.stem, current_input_name, "model.core.stem", current_dummy)
+        current_input_name, current_dummy = process_layer(core.stem, current_input_name, core_path("stem"), current_dummy)
         
         # 2. Down Path
         shapes = []
         zs = []
         for i in range(core.depth):
             shapes.append(current_dummy.shape)
-            z_name, z_dummy = process_layer(core.down[i], current_input_name, f"model.core.down.{i}", current_dummy)
+            z_name, z_dummy = process_layer(core.down[i], current_input_name, core_path("down", str(i)), current_dummy)
             zs.append((z_name, z_dummy))
             
-            current_input_name, current_dummy = process_layer(core.pool[i], z_name, f"model.core.pool.{i}", z_dummy)
+            current_input_name, current_dummy = process_layer(core.pool[i], z_name, core_path("pool", str(i)), z_dummy)
             
         # 3. Bottleneck
         for i in range(core.n_bottom):
-            current_input_name, current_dummy = process_layer(core.bot[i], current_input_name, f"model.core.bot.{i}", current_dummy)
+            current_input_name, current_dummy = process_layer(core.bot[i], current_input_name, core_path("bot", str(i)), current_dummy)
             
         # 4. Up Path
         for i in range(core.depth):
             shape = shapes.pop()
             # Upsample
-            current_input_name, current_dummy = process_layer(core.upsample[i], current_input_name, f"model.core.upsample.{i}", current_dummy)
+            current_input_name, current_dummy = process_layer(core.upsample[i], current_input_name, core_path("upsample", str(i)), current_dummy)
             
             # Center crop
             h, w = current_dummy.shape[-2:]
@@ -953,12 +959,12 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
             if (h, w) != (crop_h, crop_w):
                 start_h = (h - crop_h) // 2
                 start_w = (w - crop_w) // 2
-                crop_out = f"model.core.crop.{i}_out"
+                crop_out = f"{core_path('crop', str(i))}_out"
                 
                 # ONNX Slice
-                starts_name = f"model.core.crop.{i}_starts"
-                ends_name = f"model.core.crop.{i}_ends"
-                axes_name = f"model.core.crop.{i}_axes"
+                starts_name = f"{core_path('crop', str(i))}_starts"
+                ends_name = f"{core_path('crop', str(i))}_ends"
+                axes_name = f"{core_path('crop', str(i))}_axes"
                 
                 onnx_initializers.append(helper.make_tensor(starts_name, TensorProto.INT64, [2], [start_h, start_w]))
                 onnx_initializers.append(helper.make_tensor(ends_name, TensorProto.INT64, [2], [start_h + crop_h, start_w + crop_w]))
@@ -968,7 +974,7 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
                     'Slice',
                     inputs=[current_input_name, starts_name, ends_name, axes_name],
                     outputs=[crop_out],
-                    name=f"model.core.crop.{i}_node"
+                    name=f"{core_path('crop', str(i))}_node"
                 )
                 onnx_nodes.append(slice_node)
                 current_input_name = crop_out
@@ -980,13 +986,13 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
             
             # skip_ratio 判定
             if core.skip_ratio is None:
-                concat_out = f"model.core.concat.{i}_out"
+                concat_out = f"{core_path('concat', str(i))}_out"
                 concat_node = helper.make_node(
                     'Concat',
                     inputs=[current_input_name, z_name],
                     outputs=[concat_out],
                     axis=1,
-                    name=f"model.core.concat.{i}_node"
+                    name=f"{core_path('concat', str(i))}_node"
                 )
                 onnx_nodes.append(concat_node)
                 current_input_name = concat_out
@@ -995,27 +1001,27 @@ def export_pyaino_to_onnx(pyaino_model, dummy_input, output_path="model.onnx"):
                 # skip_proj
                 # skip_proj は逆順参照 (depth - 1 - i)
                 proj_idx = core.depth - 1 - i
-                z_proj_name, z_proj_dummy = process_layer(core.skip_proj[proj_idx], z_name, f"model.core.skip_proj.{proj_idx}", z_dummy)
+                z_proj_name, z_proj_dummy = process_layer(core.skip_proj[proj_idx], z_name, core_path("skip_proj", str(proj_idx)), z_dummy)
                 
-                concat_out = f"model.core.concat.{i}_out"
+                concat_out = f"{core_path('concat', str(i))}_out"
                 concat_node = helper.make_node(
                     'Concat',
                     inputs=[current_input_name, z_proj_name],
                     outputs=[concat_out],
                     axis=1,
-                    name=f"model.core.concat.{i}_node"
+                    name=f"{core_path('concat', str(i))}_node"
                 )
                 onnx_nodes.append(concat_node)
                 current_input_name = concat_out
                 current_dummy = np.concatenate([current_dummy, z_proj_dummy], axis=1)
             
             # Up ConvBlock
-            current_input_name, current_dummy = process_layer(core.up[i], current_input_name, f"model.core.up.{i}", current_dummy)
+            current_input_name, current_dummy = process_layer(core.up[i], current_input_name, core_path("up", str(i)), current_dummy)
             
         # 5. Output Conv
         # 出力の出力チャネル数を確定するために fix_out_ch を走らせておく
         core.fix_out_ch(current_dummy.shape)
-        current_input_name, current_dummy = process_layer(core.out, current_input_name, "model.core.out", current_dummy)
+        current_input_name, current_dummy = process_layer(core.out, current_input_name, core_path("out"), current_dummy)
         
     # === VAE (MyVAE / VAESkeleton / VAEBase) の処理 ===
     elif model_class in ('MyVAE', 'VAESkeleton', 'VAEBase') or (hasattr(pyaino_model, 'encoder') and hasattr(pyaino_model, 'sampling') and hasattr(pyaino_model, 'decoder')):

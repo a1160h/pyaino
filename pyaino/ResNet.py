@@ -2,6 +2,7 @@ from pyaino.Config import *
 set_derivative(True)
 from pyaino import Neuron 
 from pyaino import UNet
+from pyaino import stems_blocks_heads as sbh
 from pyaino import common_function as cf
 
 
@@ -26,7 +27,7 @@ class ResNetStage:
             raise ValueError('Invalid stride specified.')
 
         self.blocks = Neuron.Sequential(
-            *[UNet.ConvBlock(chanels, strides[i], **options)
+            *[sbh.ConvBlock(chanels, strides[i], **options)
               for i in range(n_layer)]
             )
         
