@@ -134,8 +134,10 @@ def reconstruct_sequential(nodes, initializers, prefix):
     skip_nodes = set()
     
     for i, node in enumerate(nodes):
-        if not node.name.startswith(prefix):
+        #if not node.name.startswith(prefix): # 20260701AI
+        if not (node.name.startswith(prefix) or node.name.startswith("embedded_" + prefix)):
             continue
+        
         if node.name in skip_nodes:
             continue
             
