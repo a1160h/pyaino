@@ -1,5 +1,5 @@
 # common_function
-# 20260630 A.Inoue 
+# 20260701 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2317,13 +2317,6 @@ def graph_for_error(*data, **kwargs):
     )
 
 
-def _to_float_list(xs):
-    return [float(x) for x in xs]
-
-def _is_pair(x):
-    return isinstance(x, (tuple, list)) and len(x) == 2
-
-
 def graph_for_error2(*data, label=None, axes=None, **kwargs):
     """
     Flexible wrapper for graph_for_error().
@@ -2344,7 +2337,7 @@ def graph_for_error2(*data, label=None, axes=None, **kwargs):
         d = data[0]
 
         # (err, acc)
-        if _is_pair(d):
+        if isinstance(d, (tuple, list)) and len(d) == 2:
             err, acc = d
             series = [
                 (err, "error", "left"),
@@ -2365,14 +2358,15 @@ def graph_for_error2(*data, label=None, axes=None, **kwargs):
         for i, d in enumerate(data):
             n = i + 1
 
-            if _is_pair(d):
+            if isinstance(d, (tuple, list)) and len(d) == 2:
                 err, acc = d
                 series.append((err, f"error{n}", "left"))
                 series.append((acc, f"accuracy{n}", "right"))
             else:
                 series.append((d, f"error{n}", "left"))
 
-    values = [_to_float_list(s[0]) for s in series]
+    values = [[float(x) for x in s[0]] for s in series]
+
     labels = [s[1] for s in series]
     axes_ = [s[2] for s in series]
 
