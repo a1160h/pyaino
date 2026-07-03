@@ -1,5 +1,5 @@
 # common_function
-# 20260701 A.Inoue 
+# 20260703 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -1928,11 +1928,17 @@ class Mesurement_for_GAN:
 
 def moving_average(x, period=1, stride=1):
     """ 移動平均 """
-    x = np.array(x)
+    if isinstance(x, np.ndarray):
+        ndarray = True
+    else:    
+        x = np.array(x)
+        ndarray = False
     period = int(period) 
     y = []
     for i in range(0, len(x) - period + 1, stride):
         y.append(float(np.mean(x[i:i+period])))
+    if ndarray:
+        return np.array(y)
     return y
 
 def moving_average_multi(x, period=1, stride=1, dtype='f4'):
@@ -2068,563 +2074,106 @@ def gradient_check(grad1, grad2):
                             + '△{:.2e} '.format(diff)
     return result
 
-def _to_list(y):
-    if isinstance(y, np.ndarray):
-        y = y.tolist()
-    elif isinstance(y, tuple):
-        y = list(y)
+def align_data_hierarchy(*data, n_series=2):
+    """ 与えられたデータを全て float 形式の2階層のリストにする """
 
-    if isinstance(y, list) and len(y) > 0:
-        if isinstance(y[0], np.ndarray):
-            y = [v.item() if v.size == 1 else v.tolist() for v in y]
+    groups = []
 
-    return y
+    if len(data) > 1 and all(
+        isinstance(item, (tuple, list))
+        and len(item) > 0
+        and not isinstance(item[0], (tuple, list))
+        for item in data
+    ):
+        for i in range(0, len(data), n_series):
+            group = data[i:i+n_series]
+            groups.append([[float(x) for x in item] for item in group])
+        return groups
 
-
-def _axis_is_right(axis):
-    return axis in ("right", "r", 1)
-
-
-def _axis_is_left(axis):
-    return axis in ("left", "l", 0)
-
-def _smooth_series(y, period=1, stride=1):
-    y = _to_list(y)
-
-    if period is None or period <= 1:
-        return y, None
-
-    period = min(int(period), len(y))
-    stride = int(stride)
-
-    yy = moving_average(y, period=period, stride=stride)
-
-    offset = period // 2
-    xx = range(offset, offset + len(yy) * stride, stride)
-
-    return yy, xx
-
-def graph_history(
-    data,
-    x=None,
-    *,
-    labels=None,
-    axes=None,
-    xlabel="Epochs",
-    ylabel=None,
-    ylabel_right=None,
-    title=None,
-    xlim=None,
-    ylim=None,
-    ylim_right=None,
-    styles=None,
-    legend=True,
-    grid=True,
-    figsize=None,
-    show=True,
-    as_series=False,
-    smooth=None,
-    smooth_stride=1,
-):
-    """
-    学習履歴などの系列データを汎用的に描画する。
-
-    data:
-        - 1系列: [0.5, 0.4, 0.3]
-        - 複数系列: [error, accuracy]
-        - dict: {"error": error, "accuracy": accuracy}
-
-    axes:
-        各系列を左軸/右軸のどちらに描くか。
-        例: ["left", "right"]
-
-    styles:
-        各系列ごとの plt.plot 用オプション。
-        例: [{"linestyle": "-"}, {"linestyle": "--"}]
-    """
-
-    # --- dataを標準形に整える ---
-    if isinstance(data, dict):
-        keys = list(data.keys())
-        ys = [_to_list(v) for v in data.values()]
-
-        if labels is None:
-            labels = keys
-
-    else:
-        if isinstance(data, np.ndarray):
-            data = data.tolist()
-        elif isinstance(data, tuple):
-            data = list(data)
-
-        if as_series:
-            ys = [_to_list(v) for v in data]
+    for item in data:
+        if isinstance(item, (tuple, list)) and len(item) > 0 \
+                and isinstance(item[0], (tuple, list)):
+            groups.append([[float(x) for x in i] for i in item])
         else:
-            # dataが単一系列か、系列の集合かを簡易判定
-            if len(data) > 0 and not isinstance(data[0], (list, tuple, np.ndarray)):
-                ys = [_to_list(data)]
+            groups.append([[float(x) for x in item]])
+
+    return groups
+
+
+def graph_for_error(*data,
+                    axes=('left','right'),
+                    ylabels=('Error','Accuracy'),
+                    series_names=('train', 'test'),
+                    linestyles=('-', '--'),
+                    n_series=2,
+                    show=True,
+                    smooth=None,
+                    ):
+
+    palette=('cool','warm')
+    color_pools = {'cool' : ['tab:blue', 'tab:cyan', 'tab:green', 'tab:purple'],
+                   'warm' : ['tab:red', 'tab:orange', 'tab:pink', 'tab:brown'],}
+
+    groups = align_data_hierarchy(*data, n_series=n_series)
+
+    fig, ax_left = plt.subplots()
+    ax_right = ax_left.twinx()
+
+    axis_map = {
+        'left': ax_left,
+        'right': ax_right,
+    }
+
+    def pickup(seq, index, default=None):
+        return seq[index] if index < len(seq) else default
+
+    lines = []
+
+    for group_index, group in enumerate(groups):
+        for series_index, series in enumerate(group):
+            axis = pickup(axes, series_index, 'left')
+            series_name = pickup(series_names, group_index, ' ')
+            ylabel = pickup(ylabels, series_index, f'other{series_index}')
+            color_group = pickup(palette, series_index, None)
+            linestyle = pickup(linestyles, series_index, ':')
+
+            if color_group is None:
+                color = None      # matplotlib に任せる
             else:
-                ys = [_to_list(v) for v in data]
+                colors = color_pools[color_group]
+                color = colors[group_index % len(colors)]
 
-        if labels is None:
-            labels = [None] * len(ys)
+            ax = axis_map[axis]
 
-    n = len(ys)
+            if smooth is not None:
+                series = moving_average(series, period=smooth)
 
-    if len(labels) != n:
-        raise ValueError("length of data and labels mismatch.")
+            x = range(len(series))
+            label = f'{ylabel} ({series_name})'
 
-    # --- axes ---
-    if axes is None:
-        axes = ["left"] * n
-    elif isinstance(axes, str):
-        axes = [axes] * n
-    else:
-        axes = list(axes)
-
-    if len(axes) != n:
-        raise ValueError("length of data and axes mismatch.")
-
-    # --- styles ---
-    if styles is None:
-        styles = [{} for _ in range(n)]
-    else:
-        styles = list(styles)
-
-    if len(styles) != n:
-        raise ValueError("length of data and styles mismatch.")
-
-    # --- figure / axes ---
-    fig, ax_left = plt.subplots(figsize=figsize)
-    ax_right = None
-
-    # 左右軸で色サイクルがリセットされないよう、系列ごとに色を固定する
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-
-    # --- plot ---
-    for i, (y, label, axis, style) in enumerate(zip(ys, labels, axes, styles)):
-        y_plot = y
-
-        if smooth is not None and smooth > 1:
-            y_plot, xx_auto = _smooth_series(
-                y, period=smooth, stride=smooth_stride
+            line, = ax.plot(
+                x,
+                series,
+                label=label,
+                color=color,
+                linestyle=linestyle,
             )
+            lines.append(line)
 
-            if x is None:
-                xx = xx_auto
-            else:
-                #xx = x[smooth // 2 : smooth // 2 + len(y_plot) * smooth_stride : smooth_stride]
-                xx_src = _to_list(x)
-                xx = xx_src[
-                    smooth // 2 : smooth // 2 + len(y_plot) * smooth_stride : smooth_stride
-                ]
+    ax_left.set_ylabel(ylabels[0])
 
-        else:
-            xx = range(len(y)) if x is None else x
+    if 'right' in axes:
+        ax_right.set_ylabel(ylabels[1])
 
-        if _axis_is_right(axis):
-            if ax_right is None:
-                ax_right = ax_left.twinx()
-            ax = ax_right
-        else:
-            ax = ax_left
-
-        style = dict(style)
-        style.setdefault("color", colors[i % len(colors)])
-
-        ax.plot(xx, y_plot, label=label, **style)
-
-    # --- axis labels ---
-    ax_left.set_xlabel(xlabel)
-
-    left_labels = [
-        l for l, a in zip(labels, axes)
-        if l is not None and _axis_is_left(a)
-    ]
-    right_labels = [
-        l for l, a in zip(labels, axes)
-        if l is not None and _axis_is_right(a)
-    ]
-
-    if ylabel is None:
-        ylabel = " / ".join(left_labels) if left_labels else "Value"
-
-    if ax_right is not None and ylabel_right is None:
-        ylabel_right = " / ".join(right_labels) if right_labels else "Value"
-
-    ax_left.set_ylabel(ylabel)
-
-    if ax_right is not None:
-        ax_right.set_ylabel(ylabel_right)
-
-    # --- limits / title ---
-    if title is not None:
-        ax_left.set_title(title)
-
-    if xlim is not None:
-        ax_left.set_xlim(xlim)
-
-    if ylim is not None:
-        ax_left.set_ylim(ylim)
-
-    if ax_right is not None and ylim_right is not None:
-        ax_right.set_ylim(ylim_right)
-
-    if grid:
-        ax_left.grid(True)
-
-    # --- legend ---
-    if legend:
-        handles, texts = ax_left.get_legend_handles_labels()
-
-        if ax_right is not None:
-            h2, t2 = ax_right.get_legend_handles_labels()
-            handles += h2
-            texts += t2
-
-        if any(texts):
-            ax_left.legend(
-                handles,
-                texts,
-                bbox_to_anchor=(0.5, 1.15),
-                loc="upper center",
-            )
-
-    fig.tight_layout()
-
+    ax_left.grid()
+    ax_left.legend(lines, [line.get_label() for line in lines], loc='center right')
     if show:
         plt.show()
-
     return fig
 
-
-def graph_for_error(*data, **kwargs):
-    """
-    旧 graph_for_error 互換用ラッパー。
-
-    例:
-        graph_for_error(error, accuracy,
-                        label=("error", "accuracy"),
-                        axes=("left", "right"))
-    """
-    labels = kwargs.pop("label", None)
-
-    return graph_history(
-        list(data),
-        labels=labels,
-        as_series=True,
-        **kwargs
-    )
-
-
-def graph_for_error2(*data, label=None, axes=None, **kwargs):
-    """
-    Flexible wrapper for graph_for_error().
-
-    Supported forms:
-        graph_for_error2(err)
-        graph_for_error2((err, acc))
-        graph_for_error2(err1, err2, ...)
-        graph_for_error2((err1, acc1), (err2, acc2), ...)
-
-    Default axes:
-        error-like series    -> left
-        accuracy-like series -> right
-    """
-
-    # graph_for_error2((err, acc)) や graph_for_error2((err1, err2, ...)) 対応
-    if len(data) == 1:
-        d = data[0]
-
-        # (err, acc)
-        if isinstance(d, (tuple, list)) and len(d) == 2:
-            err, acc = d
-            series = [
-                (err, "error", "left"),
-                (acc, "accuracy", "right"),
-            ]
-
-        # err 単独
-        else:
-            series = [
-                (d, "error", "left"),
-            ]
-
-    # graph_for_error2(err1, err2, ...)
-    # graph_for_error2((err1, acc1), (err2, acc2), ...)
-    else:
-        series = []
-
-        for i, d in enumerate(data):
-            n = i + 1
-
-            if isinstance(d, (tuple, list)) and len(d) == 2:
-                err, acc = d
-                series.append((err, f"error{n}", "left"))
-                series.append((acc, f"accuracy{n}", "right"))
-            else:
-                series.append((d, f"error{n}", "left"))
-
-    values = [[float(x) for x in s[0]] for s in series]
-
-    labels = [s[1] for s in series]
-    axes_ = [s[2] for s in series]
-
-    if label is not None:
-        labels = label
-
-    if axes is not None:
-        axes_ = axes
-
-    return graph_history(
-        tuple(values),
-        labels=tuple(labels),
-        axes=tuple(axes_),
-        **kwargs
-    )
-
-def graph_for_error2_bkup(data1, data2=None, labels=None):
-    """
-    旧 graph_for_error2 互換用ラッパー。
-
-    data2 is None:
-        data1 を y_data として描画する。
-
-    data2 is not None:
-        data1 を x_data、data2 を y_data として描画する。
-
-    系列数 4:
-        error/error は左軸、accuracy/accuracy は右軸
-
-    系列数 3:
-        全て左軸
-
-    系列数 2:
-        全て左軸
-
-    系列数 1:
-        全て左軸
-    """
-
-    if isinstance(data1, tuple):
-        data1 = [np.array(d).tolist() for d in data1]
-
-    if isinstance(data2, tuple):
-        data2 = [np.array(d).tolist() for d in data2]
-
-    if data2 is not None:
-        x_data = data1
-        y_data = data2
-    else:
-        x_data = None
-        y_data = data1
-
-    default_labels = [
-        "Train error",
-        "Train accuracy",
-        "Test error",
-        "Test accuracy",
-    ]
-
-    if labels is not None:
-        for i, l in enumerate(labels):
-            default_labels[i] = l
-
-    # y_data が単一系列の場合
-    if len(y_data) > 0 and not isinstance(y_data[0], (list, tuple, np.ndarray)):
-        return graph_history(
-            y_data,
-            x=x_data,
-            labels=[default_labels[0]],
-            xlabel="Epochs",
-            ylabel="Error",
-        )
-
-    n = len(y_data)
-
-    if n == 4:
-        return graph_history(
-            y_data,
-            x=x_data,
-            labels=[
-                default_labels[0],
-                default_labels[1],
-                default_labels[2],
-                default_labels[3],
-            ],
-            axes=["left", "right", "left", "right"],
-            xlabel="Epochs",
-            ylabel="Error",
-            ylabel_right="Accuracy",
-            styles=[
-                {"linestyle": "-"},
-                {"linestyle": "--"},
-                {"linestyle": "-"},
-                {"linestyle": "--"},
-            ],
-            as_series=True,
-        )
-
-    elif n == 3:
-        return graph_history(
-            y_data,
-            x=x_data,
-            labels=[
-                default_labels[0],
-                default_labels[2],
-                default_labels[1],
-            ],
-            axes=["left", "left", "left"],
-            xlabel="Epochs",
-            ylabel="Error",
-            styles=[
-                {"linestyle": "-"},
-                {"linestyle": "-"},
-                {"linestyle": "--"},
-            ],
-            as_series=True,
-        )
-
-
-    elif n == 2:
-
-        # 2系列の場合:
-        # error + accuracy を想定し、
-        # 左右軸に自動振り分け
-
-        return graph_history(
-            y_data,
-            x=x_data,
-            labels=[
-                default_labels[0],   # Train error
-                default_labels[1],   # Train accuracy
-            ],
-            axes=["left", "right"],
-            xlabel="Epochs",
-            ylabel="Error",
-            ylabel_right="Accuracy",
-            styles=[
-                {"linestyle": "-"},
-                {"linestyle": "--"},
-            ],
-            as_series=True,
-        )
-
-    else:
-        return graph_history(
-            y_data,
-            x=x_data,
-            labels=[default_labels[0]],
-            xlabel="Epochs",
-            ylabel="Error",
-        )
-
-# -- 誤差の記録をグラフ表示 --
-def graph_for_error_bkup(*data, **kwargs):
-    labels = kwargs.pop('label',  None)
-    xlabel = kwargs.pop('xlabel', None)
-    ylabel = kwargs.pop('ylabel', None)
-    xlim   = kwargs.pop('xlim',   None)
-    ylim   = kwargs.pop('ylim',   None)
-    legend = True
-    
-    if labels is None: # labelsがない場合はNoneをdata分並べる
-        labels = (None,) * len(data)
-        legend = False
-
-    elif len(data)==1 and type(labels) is str:
-        labels = labels,
-
-    elif type(labels) in(list, tuple) and len(data)==len(labels):
-        pass
-    
-    else:
-        raise Exception('length of data and label mismatch.')
-
-    for d, l in zip(data, labels):
-        # リストにndarrayが入った形式の場合にはndarrayを外す
-        if isinstance(d, (list, tuple)) and isinstance(d[0], np.ndarray):
-            d = [x.item() for x in d]
-        plt.plot(d, label=l)
-    if legend:
-        plt.legend()
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.xlim(xlim)
-    plt.ylim(ylim)
-    fig = plt.gcf()
-    plt.show()
-    return fig
-
-# -- 誤差の記録をグラフ表示 --
-def graph_for_error2_bkup(data1, data2=None, labels=None):
-    if type(data1)==tuple:
-        data = []
-        for d in data1:
-            data.append(np.array(d).tolist()) 
-        data1 = data    
-
-    if type(data2)==tuple:
-        data = []
-        for d in data2:
-            data.append(np.array(d).tolist()) 
-        data2 = data    
-
-    if data2 is not None:
-        x_data = data1
-        y_data = data2
-    else:
-        x_data = None  
-        y_data = data1
-
-    label = ['Train error', 'Train accuracy', 'Test error', 'Test accuracy']
-    if labels is not None:
-        for i , l in enumerate(labels):
-            label[i] = l
-    
-    fig = plt.figure()
-    ax1 = fig.add_subplot(1, 1, 1) #fig.add_subplot(行,列,場所)
-
-    if len(y_data) == 4:
-        x_data = range(len(y_data[0])) if x_data is None else x_data
-        ax2 = ax1.twinx()
-        ax1.plot(x_data, y_data[0], color='blue',  linestyle = 'solid',  label=label[0])
-        ax1.plot(x_data, y_data[2], color='teal',  linestyle = 'solid',  label=label[2])
-        ax2.plot(x_data, y_data[1], color='red',   linestyle = 'dashed', label=label[1])
-        ax2.plot(x_data, y_data[3], color='coral', linestyle = 'dashed', label=label[3])
-        ax1.legend(bbox_to_anchor=(0.5, 1.15))
-        ax2.legend(bbox_to_anchor=(1.0, 1.15))
-        ax1.set_xlabel('Epochs')
-        ax1.set_ylabel('Error')
-        ax2.set_ylabel('Accuracy')
-        plt.show()
-
-    elif len(y_data) == 3:
-        x_data = range(len(y_data[0])) if x_data is None else x_data
-        ax1.plot(x_data, y_data[0], color='blue',  linestyle = 'solid',  label=label[0])
-        ax1.plot(x_data, y_data[1], color='coral', linestyle = 'solid',  label=label[2])
-        ax1.plot(x_data, y_data[2], color='teal',  linestyle = 'dashed', label=label[1])
-        ax1.legend(bbox_to_anchor=(0.5, 1.15))
-        ax1.set_xlabel('Epochs')
-        ax1.set_ylabel('Error')
-        plt.show()
-
-    elif len(y_data) == 2:
-        x_data = range(len(y_data[0])) if x_data is None else x_data
-        ax1.plot(x_data, y_data[0], color='blue',  linestyle = 'solid',  label=label[0])
-        ax1.plot(x_data, y_data[1], color='teal',  linestyle = 'solid',  label=label[2])
-        ax1.legend(bbox_to_anchor=(0.5, 1.15))
-        ax1.set_xlabel('Epochs')
-        ax1.set_ylabel('Error')
-        plt.show()
-
-    else:
-        x_data = range(len(y_data))    if x_data is None else x_data
-        ax1.plot(x_data, y_data,   color='blue',   linestyle = 'solid',  label=label[0])
-        ax1.legend(bbox_to_anchor=(0.5, 1.15))
-        ax1.set_xlabel('Epochs')
-        ax1.set_ylabel('Error')
-        plt.show()
+def graph_for_error2(*data, **kwargs):
+    print('Use graph_for_error() instead.')
+    return graph_for_error(*data, **kwargs)
 
 # -- 数値 n について、区間 c の間連続する並びを作り、残りの端数は末尾につける
 def intermittent_random(n, c):
