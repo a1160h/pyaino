@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 2026.06.20 A.Inoue
+# 20260706 A.Inoue
 
 import copy
 import warnings
@@ -84,10 +84,23 @@ class SequentialWithLoss:
         self.outputshape = {}
         print(self.layers)
 
-    def forward(self, *x, t=None, **kwargs):
+    def forward(self, *x, **kwargs):
+        # x には通常入力・res接続・正解値が位置引数として渡されることがある。
+        # 本来は layer.n_inputs(未実装)で判定すべきだが、
+        # 現状は res接続の有無を「2入力層」の暫定的な指標とする => TODO
         layer = self.layers[0]
         self.error_layer = layer
+        t = kwargs.pop('t', None)
+
+        # res接続の有無=>layer.n_inputs の代用
+        use_residual = getattr(layer, 'use_residual', False) 
+
+        if not use_residual and len(x) >= 2:
+            # 通常層では最後の位置引数を教師値とみなして切り出す
+            x, t = x[:-1], x[-1]
+
         y = layer.forward(*x, **kwargs)
+        
         self.outputshape['0'+layer.__class__.__name__] = y.shape
         # 最終層以前まで
         for i, layer in enumerate(self.layers[1:-1], start=1): 
@@ -104,7 +117,9 @@ class SequentialWithLoss:
             return y, l
         if self.type==1:  # LLCE
             if t is None:
-                return self.layers[-1].forward(y)
+                y = self.layers[-1].forward(y)
+                self.error_layer = None
+                return y
             y, l = self.layers[-1](y, t)
             self.error_layer = None 
             return y, l
@@ -762,7 +777,7 @@ class BaseLayer(Function):
                 raise ValueError("use_residual=True, but residual is None.")
         else:
             if residual is not None:
-                raise ValueError("use_residual=False, but residual is given.")
+                raise ValueError(f"use_residual=False, but residual={residual.shape} is given.")
 
         # 前処理
         x = self.align_config_and_input(x)
