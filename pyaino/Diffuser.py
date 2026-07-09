@@ -1,5 +1,5 @@
 # Diffuser
-# 20260614 A.Inoue
+# 20260709 A.Inoue
 
 from pyaino.Config import *
 from pyaino import Functions as F
@@ -318,7 +318,8 @@ class Diffuser:
 
         """ step2 """
         # x0 推定
-        x0_hat = (x - np.sqrt(1 - alpha_bar) * eps) / np.sqrt(alpha_bar)
+        #x0_hat = (x - np.sqrt(1 - alpha_bar) * eps) / np.sqrt(alpha_bar)
+        x0_hat = self.pred_x0_from_eps(x, alpha_bar, eps)
         
         if debug:
             x0_pre = x0_hat.copy() # 差分ログ用
@@ -348,7 +349,8 @@ class Diffuser:
             x0_hat -= beta * x0_hat.mean(axis=dc_axis, keepdims=True)
 
         denom = np.sqrt(np.maximum(1.0 - alpha_bar, denom_floor))
-        eps_recon = (x - np.sqrt(alpha_bar) * x0_hat) / denom
+        #eps_recon = (x - np.sqrt(alpha_bar) * x0_hat) / denom
+        eps_recon = self.pred_eps_from_x0(x, alpha_bar, x0_hat)
 
         if eps_recon_dc_beta > 0:
             eps_recon -= eps_recon_dc_beta * eps_recon.mean(axis=dc_axis, keepdims=True)
@@ -465,8 +467,9 @@ class Diffuser:
 
         """ step2: x0 reconstruction """
         #x0_hat = (x - np.sqrt(1.0 - alpha_bar) * eps) / np.sqrt(alpha_bar)
-        alpha_bar_safe = np.maximum(alpha_bar, 1e-4)
-        x0_hat = (x - np.sqrt(1.0 - alpha_bar) * eps) / np.sqrt(alpha_bar_safe)
+        #alpha_bar_safe = np.maximum(alpha_bar, 1e-4)
+        #x0_hat = (x - np.sqrt(1.0 - alpha_bar) * eps) / np.sqrt(alpha_bar_safe)
+        x0_hat = self.pred_x0_from_eps(x, alpha_bar, eps)
 
         if preserve_x0_hat_energy_beta > 0:
             # x0_hat の低周波エネルギーが前ステップより低下した場合のみ持ち上げる
@@ -507,8 +510,9 @@ class Diffuser:
             x0_hat -= beta * x0_hat.mean(axis=dc_axis, keepdims=True)
 
         """ step3: eps consistency """
-        denom = np.sqrt(np.maximum(1.0 - alpha_bar, denom_floor))
-        eps_recon = (x - np.sqrt(alpha_bar) * x0_hat) / denom
+        #denom = np.sqrt(np.maximum(1.0 - alpha_bar, denom_floor))
+        #eps_recon = (x - np.sqrt(alpha_bar) * x0_hat) / denom
+        eps_recon = self.pred_eps_from_x0(x, alpha_bar, x0_hat)
 
         if eps_recon_dc_beta > 0:
             eps_recon -= eps_recon_dc_beta * eps_recon.mean(axis=dc_axis, keepdims=True)
@@ -581,6 +585,15 @@ class Diffuser:
             )
  
         return x_prev
+
+    def pred_x0_from_eps(self, x, alpha_bar, eps):
+        alpha_bar = np.maximum(alpha_bar, 1e-8)
+        return (x - np.sqrt(1.0 - alpha_bar) * eps) / np.sqrt(alpha_bar)
+
+    def pred_eps_from_x0(self, x, alpha_bar, x0):
+        eps = (x - np.sqrt(alpha_bar) * x0) \
+              / np.sqrt(np.maximum(1.0 - alpha_bar, 1e-8))
+        return eps
 
     def sample(self, model, x_shape=(20, 1, 28, 28), x=None, labels=None,
                sampler=None, steps=None, start=None, halt=None, debug=False,

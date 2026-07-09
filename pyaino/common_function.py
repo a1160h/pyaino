@@ -1,5 +1,5 @@
 # common_function
-# 20260703 A.Inoue 
+# 20260709 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -19,7 +19,7 @@ import inspect, types
 import copy
 import numpy
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import glob
 
 
@@ -1220,6 +1220,33 @@ def resize_keep_aspect(img, size, fit='crop'):
 
     return img
 
+def adjust_image_pil(
+        img,
+        sharpness=None,
+        contrast=None,
+        color=None,
+        unsharp=False,
+        unsharp_radius=1.0,
+        unsharp_percent=120,
+        unsharp_threshold=2):
+
+    if unsharp:
+        img = img.filter(ImageFilter.UnsharpMask(
+            radius=unsharp_radius,
+            percent=unsharp_percent,
+            threshold=unsharp_threshold
+        ))
+
+    if sharpness is not None:
+        img = ImageEnhance.Sharpness(img).enhance(sharpness)
+
+    if contrast is not None:
+        img = ImageEnhance.Contrast(img).enhance(contrast)
+
+    if color is not None:
+        img = ImageEnhance.Color(img).enhance(color)
+
+    return img
 
 def load_images_as_dataset(
         path,
@@ -1227,7 +1254,8 @@ def load_images_as_dataset(
         fit='crop',
         target_order='CHW',
         dtype=np.float32,
-        normalize=True):
+        normalize=True,
+        pil_adjust=None):
 
     """
     jpg/png画像を読み込み、
@@ -1262,6 +1290,9 @@ def load_images_as_dataset(
             image_size,
             fit=fit
         )
+
+        if pil_adjust is not None:
+            img = adjust_image_pil(img, **pil_adjust)
 
         x = np.array(img, dtype=dtype)
 
@@ -3148,15 +3179,13 @@ def show_multi_samples(data, target=None, label_list=None,
                        n=(10,5), figsize=(18, 10), maxis=(1,2,3),
                        save=False, file=None, title=None,
                        ):
-    # リストはarrayに
+    # リストはarrayに リスト内にバッチデータがある場合の対処を仮実装20260709AI
     if isinstance(data, (tuple, list)):
-        dd = None
-        for d in data:
-            if dd is None:
-                dd = d.copy()
-            else:
-                dd = np.concatenate([dd, d])
-        data = dd        
+        if isinstance(data[0], np.ndarray) and data[0].ndim >= 3:
+            data = np.concatenate(data)
+        else: # リスト内に1枚の画像のデータが複数枚
+            data = np.stack(data)
+
     # 画素データを0～1に補正
     if maxis is not None: # 補正軸
         max_picel = np.max(data, axis=maxis, keepdims=True)
