@@ -1,5 +1,5 @@
 # Diffuser
-# 20260709 A.Inoue
+# 20260713 A.Inoue
 
 from pyaino.Config import *
 from pyaino import Functions as F
@@ -11,81 +11,114 @@ import re
 
 from scipy.fftpack import dct, idct
 
+"""
+Diffusionの時刻体系:
+
+    x_0 : clean image
+    x_t : diffusion state, t = 1, ..., T
+
+num_timesteps = T とし、係数配列はすべて長さ T+1 とする。
+
+    betas[0]      = 0
+    alphas[0]     = 1
+    alpha_bars[0] = 1
+
+    betas[1:T+1]      = beta_1, ..., beta_T
+    alphas[1:T+1]     = alpha_1, ..., alpha_T
+    alpha_bars[1:T+1] = alpha_bar_1, ..., alpha_bar_T
+"""
 
 class BetaSchedule:
     def __init__(self, num_timesteps=1000, schedule_type=None,
                  beta_start=0.0001, beta_end=0.02,
                  s=0.008, eps_final=1e-4):
-        self.num_timesteps = num_timesteps
+        self.num_timesteps = int(num_timesteps)
         self.schedule_type = schedule_type
-        if schedule_type == 'cosine':
+        if schedule_type == "cosine":
             self.schedule = self.cosine_schedule
-        elif schedule_type == 'linear':
+        elif schedule_type == "linear":
             self.schedule = self.linear_schedule
         else:
             self.schedule = self.legacy_schedule
-        self.beta_start = beta_start # linear/legacy 線形形状の下限
-        self.beta_end = beta_end     # linear/legacy 線形形状の上限
-        self.s = s                   # cosine 端点調整パラメータ（通常 0.008）
-        self.eps_final = eps_final   # linear 最終ステップでの alpha_bar_T の目標値
+        self.beta_start = beta_start
+        self.beta_end = beta_end
+        self.s = s
+        self.eps_final = eps_final
+        if self.num_timesteps <= 0:
+            raise ValueError("num_timesteps must be positive")
 
     def __call__(self):
-        return self.schedule() 
-       
+        return self.schedule()
+
     def legacy_schedule(self):
         """ DDPMの論文記載の古典的方法(β線形だがnum_timestepsが小さい場合に不完全) """
-        betas = np.zeros(self.num_timesteps, dtype=Config.dtype)
-        betas[1:] = np.linspace(self.beta_start, self.beta_end, self.num_timesteps-1)
+        betas = np.zeros(self.num_timesteps+1, dtype=Config.dtype)
+        betas[1:] = np.linspace(self.beta_start, self.beta_end, self.num_timesteps)
         alphas = 1 - betas
         alpha_bars = np.cumprod(alphas, axis=0)
         return betas, alphas, alpha_bars
-    
+
     def cosine_schedule(self):
-        """ alpha_barを余弦スケジュールに基づきを計算 """
-        t = np.linspace(0, self.num_timesteps, self.num_timesteps+1, dtype=Config.dtype) \
-            / self.num_timesteps  # 0～Tを0〜1 の連続時間に正規化
-        alpha_bars = np.cos((t + self.s) / (1 + self.s) * np.pi / 2) ** 2
-        alpha_bars = alpha_bars / alpha_bars[0]  
-        betas = 1.0 - alpha_bars[1:] / alpha_bars[:-1]
-        betas = np.clip(betas, 1e-8, 0.999) # 数値安定化
-        alphas = 1.0 - betas                # β→α再計算
-        alpha_bars = np.cumprod(alphas)     # 一貫性を保証するため再計算
+        """ alpha_barをcosineに形状設計し、それを離散alphaに変換 """
+        u = np.linspace(0.0, 1.0, self.num_timesteps + 1, dtype=Config.dtype)
+        alpha_bars_cont = np.cos((u + self.s) / (1.0 + self.s) * np.pi / 2.0) ** 2
+        alpha_bars_cont /= alpha_bars_cont[0]
+        alphas = np.ones(self.num_timesteps + 1, dtype=Config.dtype)
+        alphas[1:] = alpha_bars_cont[1:] / alpha_bars_cont[:-1]
+        betas = 1.0 - alphas
+        betas[1:] = np.clip(betas[1:], 1e-8, 0.999)
+        alphas = 1.0 - betas            # clipしたbetaに辻褄合わせ
+        alpha_bars = np.cumprod(alphas) # 再構成
         return betas, alphas, alpha_bars
 
     def linear_schedule(self):
-        """ βの線形を保ちつつスケール調整しalpha_bar_T≈eps_finalを作る　"""
-        # 1. まず「形」だけ線形に作る（0〜1の区間での線形）
-        t = np.arange(self.num_timesteps, dtype=Config.dtype)
-        beta_shape = (self.beta_start + (self.beta_end - self.beta_start) * t
-                   / max(self.num_timesteps - 1, 1))
-        # 2. スケール係数 k を決める
-        #    log alpha_bar_num_timesteps ≈ -k * sum(beta_shape) を使った近似
+        """ betaを線形に設定して、その線形形状を保ちながら全体をスケーリング """
+        T = self.num_timesteps
+        beta_shape = np.linspace(self.beta_start, self.beta_end, T, dtype=Config.dtype)
         sum_beta_shape = np.sum(beta_shape)
-        # eps_final = exp(-k * sum_beta_shape) → k ≈ -log(eps_final) / sum_beta_shape
-        k_approx = -np.log(self.eps_final) / (sum_beta_shape + 1e-12)
+        k_approx = -np.log(self.eps_final) / sum_beta_shape
+        k_max = (1.0 / (np.max(beta_shape) + 1e-12))
+        k = min(k_approx, k_max * 0.999)
+        beta_steps = k * beta_shape
+        beta_steps = np.clip(beta_steps, 1e-8, 0.999)
 
-        # 3. β_t = k * beta_shape としたときに、β_t < 1 を保証するためのクリップ
-        k_max = 1.0 / (np.max(beta_shape) + 1e-12)
-        k = min(k_approx, k_max * 0.999)  # ちょっとだけ余裕を持たせる
-
-        betas = k * beta_shape
+        betas = np.zeros(self.num_timesteps+1, dtype=Config.dtype)
+        betas[1:] = beta_steps
         alphas = 1.0 - betas
-        alpha_bars = np.cumprod(alphas)
+        alpha_bars = np.cumprod(alphas, axis=0)
         return betas, alphas, alpha_bars
 
     def show_schedule(self):
-        import matplotlib.pyplot as plt
         betas, alphas, alpha_bars = self.schedule()
         plt.figure(figsize=(8, 4))
-        plt.plot(betas.tolist(), label='beta')
-        plt.plot(alphas.tolist(), label='alpha')
-        plt.plot(alpha_bars.tolist(), label='alpha_bar')
-        plt.title(f"Schedule type: {self.schedule_type} alpha_bar(t)")
-        plt.xlabel("t")
-        plt.ylabel("alpha_bar")
+        plt.plot(betas.tolist(), label="beta")
+        plt.plot(alphas.tolist(), label="alpha")
+        plt.plot(alpha_bars.tolist(), label="alpha_bar")
+        plt.title(f"Schedule type: {self.schedule_type}")
+        plt.xlabel("t  (0: clean, 1...T: diffusion)")
+        plt.ylabel("coefficient")
         plt.grid(True)
         plt.legend()
         plt.show()
+
+    def show_snr_and_w(self, gamma=1):
+        betas, alphas, alpha_bars = self.schedule()
+        snrs = alpha_bars / (1 - alpha_bars)
+        w = (snrs + 1)**(-gamma)
+        fig, ax1 = plt.subplots(figsize=(8, 4))
+        ax2 = ax1.twinx()
+        ax1.plot(snrs.tolist(), 'C0', label='snr')
+        ax2.plot(w.tolist(), 'C1', label='w')
+        ax1.set_ylabel('snr')
+        ax2.set_ylabel('w')
+        ax1.set_title(f"snr and w: {self.schedule_type} gamma={gamma}")
+        h1, l1 = ax1.get_legend_handles_labels()
+        h2, l2 = ax2.get_legend_handles_labels()
+        ax1.legend(h1+h2, l1+l2, loc='center right')
+        ax1.set_xlabel("t  (0: clean → T: noise)")
+        ax1.grid()
+        plt.show()
+
 
 class Diffuser:
     def __init__(self, num_timesteps=1000, beta_schedule=None,
@@ -96,8 +129,8 @@ class Diffuser:
         self.step_log = step_log
         self.weighting = weighting
         if step_log: # 時刻毎のエラー記録
-            self.stat_sum = np.zeros(num_timesteps, dtype=float)
-            self.stat_cnt = np.zeros(num_timesteps, dtype=np.int32)
+            self.stat_sum = np.zeros(num_timesteps+1, dtype=float)
+            self.stat_cnt = np.zeros(num_timesteps+1, dtype=np.int32)
         self.kwargs = None # denoise時のオプションを覚えておく
         self.analizer = Analizer(self)
         self.jacobian_analizer = JacobianAnalizer(self)
@@ -108,45 +141,44 @@ class Diffuser:
         """
         T = self.num_timesteps
         t_arr = np.asarray(t, dtype=np.int32)
-        assert (t_arr >= min_t).all() and (t_arr < T).all()
+        assert (t_arr >= min_t).all() and (t_arr <= T).all()
         if ndim is None:
             return t_arr
         return t_arr.reshape((-1,) + (1,) * (ndim - 1))
 
     def schedule_time_steps(self, steps=None):
         """
-        逆拡散反復に用いる時刻遷移列 (ts, t_prevs) を返す
+        ddim逆拡散反復に用いる時刻遷移列(ts, t_prevs)
 
-        ts, t_prevs はともに長さ steps の整数配列であり、
-        時刻インデックス区間 [T-1 → 0] を整数上で「ほぼ」等間隔に分割した遷移列
- 
+        完全ステップ　: T -> T-1 -> ... -> 1 -> 0
+        間引きステップ: Tから1までをほぼ等間隔に選び、最後に0へ遷移する
         """
         T = self.num_timesteps
-        if steps is None or steps >= (T - 1):
-            ts = np.arange(T - 1, 0, -1, dtype=np.int32)  # T-1, ..., 1
+        steps = None if steps is None else int(steps)
+        if steps is None or steps >= T:
+            ts = np.arange(T, 0, -1, dtype=np.int32)
         else:
-            idx = np.linspace(1, T - 1, int(steps))
-            ts = np.rint(idx).astype(np.int32)
-            ts = np.unique(ts)[::-1]
+            assert steps > 0
+            ts = np.rint(np.linspace(T, 1, steps)).astype(np.int32)
+            # 丸めで重複した時刻を除去する。
+            ts = np.unique(ts)[::-1] # np.uniqueは昇順に並べるため降順へ戻す
+        t_prevs = np.concatenate([ts[1:], np.array([0], dtype=np.int32)])
+        return ts, t_prevs
 
-        t_prev = np.concatenate([ts[1:], np.array([0], dtype=np.int32)])
-        return ts, t_prev
-
-    def add_noise(self, x_0, t, noise=None, dc_removal=False):
-        t = self.fix_t(t, 0, x_0.ndim) # x_0 に次元を合わせる
+    def add_noise(self, x0, t, noise=None, dc_removal=False):
+        t = self.fix_t(t, 0, x0.ndim) # x0 に次元を合わせる
         alpha_bar = self.alpha_bars[t]
         if noise is None:
-            noise = np.random.randn(*x_0.shape).astype(x_0.dtype)
+            noise = np.random.randn(*x0.shape).astype(x0.dtype)
         if dc_removal:    
             noise = noise - noise.mean(axis=(2,3), keepdims=True) # DC抑止 20260131AI　
-        x_t = np.sqrt(alpha_bar) * x_0 + np.sqrt(1 - alpha_bar) * noise
+        x_t = np.sqrt(alpha_bar) * x0 + np.sqrt(1 - alpha_bar) * noise
         return x_t, noise
 
     def denoise(self, model, x, t, t_prev, labels=None, **kwargs):
-        """ 基本のDDPM """
+        """ eps予測モデルを用いる基本のDDPM """
         eta           = kwargs.pop('eta', 1.0) # eta=1が基本　
         gamma         = kwargs.pop('gamma', None)
-        debug         = kwargs.pop('debug', False)
         
         t = self.fix_t(t, 1)
         t_prev = self.fix_t(t_prev, 0)
@@ -162,12 +194,48 @@ class Diffuser:
         else:
             eps = model(x, t, labels)
 
-        mu  = (x - ((1 - alpha) / np.sqrt(1 - alpha_bar)) * eps) / np.sqrt(alpha)
         std = np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
+        coef1 = 1 / np.sqrt(alpha)
+        coef2 = - (1 - alpha) / np.sqrt(alpha * (1 - alpha_bar))
+        #mu  = (x - ((1 - alpha) / np.sqrt(1 - alpha_bar)) * eps) / np.sqrt(alpha)
+        mu = coef1 * x + coef2 * eps
          
         if int(t_prev) == 0:
             x_prev = mu
         else:    
+            noise = np.random.randn(*x.shape).astype(x.dtype)
+            x_prev = mu + eta * noise * std
+        return x_prev
+
+
+    def denoise_x0(self, model, x, t, t_prev, labels=None, **kwargs):
+        """x0 予測モデルを用いる基本のDDPM """
+        eta   = kwargs.pop('eta', 1.0)   # eta=1 が基本
+        gamma = kwargs.pop('gamma', None)
+
+        t      = self.fix_t(t, 1)
+        t_prev = self.fix_t(t_prev, 0)
+
+        alpha          = self.alphas[t]
+        alpha_bar      = self.alpha_bars[t]
+        alpha_bar_prev = self.alpha_bars[t_prev]
+
+        if gamma is not None:
+            x0_cond   = model(x, t, labels)
+            x0_uncond = model(x, t)
+            x0_hat = x0_uncond + gamma * (x0_cond - x0_uncond)
+        else:
+            x0_hat = model(x, t, labels)
+
+        # q(x_{t-1} | x_t, x0) の平均とposterior variance
+        std = np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
+        coef1 = (np.sqrt(alpha) * (1 - alpha_bar_prev)) / (1 - alpha_bar)
+        coef2 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
+        mu = coef1 * x + coef2 * x0_hat 
+
+        if int(t_prev) == 0:
+            x_prev = mu
+        else:
             noise = np.random.randn(*x.shape).astype(x.dtype)
             x_prev = mu + eta * noise * std
         return x_prev
@@ -336,19 +404,21 @@ class Diffuser:
             # ガイド後は eps と整合させ直すと安定
 
         """ step3 """
-        # q(x_prev | x_t, x_0) のガウス事後分布のパラメータ(平均と分散)
-        # std : q(x_prev | x_t, x_0) の標準偏差（モデルには依存しない）
-        # coef1, coef2 : 事後平均muを x0_hat, x から計算するための係数
-        # mu = E[x_prev | x_t, x_0]
+        # q(x_prev | x_t, x0) のガウス事後分布のパラメータ(平均と分散)
+        # std : q(x_prev | x_t, x0) の標準偏差（モデルには依存しない）
+        # coef2, coef1 : 事後平均muを x0_hat, x から計算するための係数
+        # mu = E[x_prev | x_t, x0]
         std = np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
-        coef1 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
-        coef2 = (np.sqrt(alpha) * (1 - alpha_bar_prev)) / (1 - alpha_bar)
+        coef1 = (np.sqrt(alpha) * (1 - alpha_bar_prev)) / (1 - alpha_bar)
+        coef2 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
+        coef3 = 1 / np.sqrt(alpha)
+        coef4 = - (1 - alpha) / np.sqrt(alpha * (1 - alpha_bar))
 
         if x0_dc_beta > 0:
             beta = x0_dc_beta * np.sqrt(1 - alpha_bar_prev)
             x0_hat -= beta * x0_hat.mean(axis=dc_axis, keepdims=True)
 
-        denom = np.sqrt(np.maximum(1.0 - alpha_bar, denom_floor))
+        #denom = np.sqrt(np.maximum(1.0 - alpha_bar, denom_floor))
         #eps_recon = (x - np.sqrt(alpha_bar) * x0_hat) / denom
         eps_recon = self.pred_eps_from_x0(x, alpha_bar, x0_hat)
 
@@ -358,18 +428,18 @@ class Diffuser:
         """ step4 """
         # mu 算出
         if mu_mode == 'x0':         # x0とxから算出
-            mu = coef1 * x0_hat + coef2 * x
+            mu = coef1 * x + coef2 * x0_hat 
         elif mu_mode == 'eps':      # x0_hatと整合する eps_recon を使ってを算出
-            mu = (x - ((1 - alpha) / denom) * eps_recon) / np.sqrt(alpha)
+            mu = coef3 * x + coef4 * eps_recon
         elif mu_mode == 'eps_raw':  # モデル生の eps 出力から直接 mu を算出（x0_hat とは整合させない）
-            mu = (x - ((1 - alpha) / denom) * eps) / np.sqrt(alpha)
+            mu = coef3 * x + coef4 * eps
         elif mu_mode == 'blend':    # 両者を混ぜる（安全に様子見したいとき)
-            mu_x0 = coef1 * x0_hat + coef2 * x
-            mu_eps = (x - ((1 - alpha) / denom) * eps_recon) / np.sqrt(alpha)
+            mu_x0  = coef1 * x + coef2 * x0_hat 
+            mu_eps = coef3 * x + coef4 * eps_recon
             mu = (1 - mu_blend) * mu_x0 + mu_blend * mu_eps
         elif mu_mode == 'blend_raw':# 両者を混ぜるがeps_rawを使う
-            mu_x0 = coef1 * x0_hat + coef2 * x
-            mu_raw = (x - ((1 - alpha) / denom) * eps) / np.sqrt(alpha) # eps_raw式
+            mu_x0  = coef1 * x + coef2 * x0_hat 
+            mu_raw = coef3 * x + coef4 * eps
             mu = (1 - mu_blend) * mu_x0 + mu_blend * mu_raw
         else:
             raise ValueError(f"Unknown mu_mode: {mu_mode}")
@@ -380,7 +450,7 @@ class Diffuser:
         """ step5 """
         # muとstdからx_prev 算出        　
         if int(t_prev) == 0:
-            # 最終ステップではノイズを加えず、事後平均 mu をそのまま x_0 とみなす
+            # 最終ステップではノイズを加えず、事後平均 mu をそのまま x0 とみなす
             x_prev = mu 
             stdz = np.zeros_like(x_prev, dtype=Config.dtype) # ログに使うのみ 
         else:
@@ -599,17 +669,27 @@ class Diffuser:
                sampler=None, steps=None, start=None, halt=None, debug=False,
                jacobian_debug=False, batch_size=10, **kwargs):
 
+        if start is not None and x is None:
+            raise ValueError("x must be supplied when start is specified")
+
         if x is None:
             x = np.random.randn(*x_shape).astype(Config.dtype)
 
         ts, t_prevs = self.schedule_time_steps(steps=steps)
 
-        if sampler in (None, 'default'):
+        sampler = "default" if sampler is None else sampler
+        if sampler != "ddim" and steps is not None:
+            raise ValueError("steps can be specified only when sampler='ddim'")
+
+        if sampler == "default":
             denoise_fn = self.denoise
         elif sampler == "ddpm":
             denoise_fn = self.denoise_ddpm
         elif sampler == "ddim":
             denoise_fn = self.denoise_ddim
+        elif sampler == "ddpm_x0":
+            # model が x0 を直接予測する、単純 x0 予測用DDPM
+            denoise_fn = self.denoise_x0
         else:
             raise ValueError(f"Unknown sampler: {sampler}")
 
@@ -651,35 +731,48 @@ class Diffuser:
     def loss(self, eps_hat, eps, t=None, gamma=1.0, dc_reg=False, lam=1e-3):
         """ 与えたノイズと予測したノイズの隔たりで、
           　時刻に応じたエラー集計と時刻に応じた重み付け可能な平均2乗誤差 """
-        l = lf.MeanSquaredError(reduction='sample')(eps_hat, eps) # 20260426AI
-        #(eps_hat - eps)**2
+        l = lf.MeanSquaredError(reduction=None)(eps_hat, eps) 
+        l = l.mean(axis=(1,2,3)) 
         # 時刻tはstep_log,weightingの両方に使う
         if self.step_log and t is not None: # 時刻毎のエラー集計
-            t = self.fix_t(t, 0, None)
-            np.add.at(self.stat_sum, t, ((eps_hat-eps)**2).mean(axis=(1,2,3))) 
+            t = self.fix_t(t, 1, None)
+            #print(t, l)
+            np.add.at(self.stat_sum, t, l) 
             np.add.at(self.stat_cnt, t, 1)
         if self.weighting and t is not None:     # 時刻に応じた重付け
             # gammaが小さい：減衰はゆるい。高 SNR もそこそこ学習させたいとき。
             # gammaが大きい：高 SNR の損失が一気に軽くなる。終盤の復元（低 SNR）を重視
-            t = self.fix_t(t, 0, eps.ndim)
+            t = self.fix_t(t, 1, eps.ndim)
             alpha_bar = self.alpha_bars[t]
             snr = alpha_bar / (1 - alpha_bar) # 信号雑音比
             w = (snr + 1)**(-gamma)
             l = l * w
-            #print(l.shape, w.shape)
         if dc_reg:    
             dc = F.Mean(axis=(2,3), keepdims=True)(eps_hat) # B,Cごと
             dc_l = F.Mean()(dc**2)  
             l = l + lam * dc_l
-        return l
+        return l.mean() 
+
+    def loss_x0(self, x0_hat, x0, t=None):
+        """予測画像 x0_hat と正解画像 x0 の単純な平均2乗誤差。
+
+        純粋な x0 予測を観察するため、SNR重み付けなどは行わない。
+        step_log=True の場合のみ、時刻別MSEを記録する。
+        """
+        l = lf.MeanSquaredError(reduction=None)(x0_hat, x0)
+        l = l.mean(axis=(1,2,3)) 
+        if self.step_log and t is not None:
+            t = self.fix_t(t, 1, None)
+            np.add.at(self.stat_sum, t, l)
+            np.add.at(self.stat_cnt, t, 1)
+        return l.mean()
+
 
     def ddim_inversion(self, model, x0,
                        tend=500,
                        steps=None,
-                       clip_denoised=False,
-                       dynamic_thresholding=False,
                        use_true_x0_for_test=False, 
-                       dt_p=0.995):
+                       ):
         """DDIM inversion: x0 (t=0) から x_tend を生成（eta=0前提）"""
 
         # schedule_time_steps は降順の遷移列 (t -> t_prev) を返すので、
@@ -704,9 +797,6 @@ class Diffuser:
             # DDIM の決定的更新は x_{t_prev}, eps_hat, x0_hat の関係で定まるため、
             # 各ステップでは eps_hat から x0_hat を再推定し、それを用いて次の x_t を構成する。
             x0_hat = (x - np.sqrt(1.0 - alpha_bar_from) * eps_hat) / np.sqrt(alpha_bar_from)
-            if clip_denoised:
-                x0_hat = self.dynamic_thresholding(x0_hat, p=dt_p, clip_val=1.0)
-
             x0_used = x0 if use_true_x0_for_test else x0_hat # 検証用: 真の x0 を固定
 
             # 決定的 DDIM forward: x_{t_to}
