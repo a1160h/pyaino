@@ -1,5 +1,5 @@
 # HDFunctions 
-# 20250817 A.Inoue
+# 20260714 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import HDArray, HDFunction
@@ -330,7 +330,7 @@ class BroadcastTo(HDFunction):
         self.shape = shape
 
     def __forward__(self, x):
-        y = np.broadcast_to(x, self.shape)
+        y = np.broadcast_to(x, self.shape).copy() # copy()で結果をwriteableにする
         return y
 
     def __backward__(self, gy):
@@ -454,7 +454,7 @@ class Sum(SumMeanVar):
         y = np.sum(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
-def sum(x, axis=None, dtype=None, out=None, keepdims=False):
+def sum(x, axis=None, keepdims=False):
     return Sum(axis, keepdims)(x)
 
 class Mean(SumMeanVar):

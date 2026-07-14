@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260616 A.Inoue
+# 20260714 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -287,9 +287,9 @@ class Function:
             if not isinstance(x, HDArray):
                 warnings.warn(self.__class__.__name__+'non HDArray variable for backward.')
                 x = self.fix_inconsistent_variable(x, seen_var) # xは別物になるため返り値で反映必要20250506AI                　
+
             if id(x) in seen_var:
                 debug_print('<bw1>', self.__class__.__name__, 'input is in seen_var', id(x))
-
                 x.grad += gx  # x.gradのidを変えない(この操作で関数の定義次第ではgysが影響を受けるので要注意)
 
                 if Config.create_graph:#Config.higher_derivative:# + Config.create_graph: # 仮処置20241001
@@ -305,7 +305,7 @@ class Function:
 
             else:
                 debug_print('<bw1>', self.__class__.__name__, 'input is new', id(x))
-                x.grad = gx   # gxのidをx.gradが引継ぐ              
+                x.grad = gx
                 seen_var.add(id(x))
 
             debug_print('<bw2>',  self.__class__.__name__, 'x.grad', id(x.grad), 'gx', id(gx))    
@@ -377,7 +377,7 @@ class Function:
     def get_grads(self, default=1.0): # 仮処置20240927
         """ 勾配が設定されていればそれを、さもなくばdefault値を返す """
         gys = []
-        for y in self.outputs:
+        for y, y_shape in zip(self.outputs, self.y_shapes):
             if isinstance(y, weakref.ReferenceType): # weakrefの判別
                 y = y()
             if y is None:
@@ -385,10 +385,8 @@ class Function:
                 warnings.warn(msg)
             if hasattr(y, 'grad') and y.grad is not None:
                 gy = y.grad
-            elif isinstance(y, np.ndarray):
-                gy = np.broadcast_to(np.array(default, dtype=Config.dtype), y.shape)
-            else: 
-                gy = default # 仮処置20250712
+            else: # 与えられない場合には一括してdefaultをy形状に展開 20260714　
+                gy = np.broadcast_to(np.array(default, dtype=Config.dtype), y_shape)
             gys.append(gy)     
         return gys
     
