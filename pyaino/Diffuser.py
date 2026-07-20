@@ -279,34 +279,38 @@ class Diffuser:
         eps = (x - np.sqrt(alpha_bar) * x0) / np.sqrt(np.maximum(1.0 - alpha_bar, 1e-8))
         return eps
 
-    def sample_step(self, x, mu, std, t_prev, preserve_mean_beta=0.0, dc_axis=(0, 2, 3)):
-        """平均muと標準偏差stdから次状態x_prevを生成する。"""
-        if int(t_prev) == 0:
-            x_prev = mu
-            noise_term = np.zeros_like(x_prev, dtype=Config.dtype)
-        else:
-            noise = np.random.randn(*x.shape).astype(x.dtype)
-            noise_term = std * noise
-            x_prev = mu + noise_term
-        if preserve_mean_beta > 0:
-            x_prev += (preserve_mean_beta
-                       * ((x.mean(axis=dc_axis, keepdims=True)
-                           - x_prev.mean(axis=dc_axis, keepdims=True))))
-        return x_prev, noise_term
-
-    def denoise_ddpm(self, model, x, t, t_prev, labels=None, debug=False, **kwargs):
-        """ DDPM posterior mean/var """
+    def preserve_mean(self, x, x_prev, preserve_mean_beta=0.0, axis=(0,2,3)):
+        """ x -> x_prev で起きる平均の変化を抑止する """
+        if preserve_mean_beta == 0:
+            return x_prev
+        delta_mean = x.mean(axis=axis, keepdims=True) \
+                   - x_prev.mean(axis=axis, keepdims=True)
+        x_prev += preserve_mean_beta * delta_mean
+        return x_prev
+    
+    def denoise_unified(self, model, x, t, t_prev,
+                        method='ddpm', eta=None, mu_mode=None,
+                        labels=None, debug=False, **kwargs):
+        
+        valid_methods = ('ddpm', 'ddim', 'ddpm_x0', 'ddim_x0')
+        if method not in valid_methods:
+            raise ValueError(f'Unknown method: {method}')
+        if eta is None:
+            eta = 1.0 if method in ('ddpm', 'ddpm_x0') else 0.0
+        if mu_mode is None and method in ('ddpm', 'ddpm_x0'):
+            mu_mode = 'eps' if method == 'ddpm' else 'x0'
+        
         self.kwargs    = kwargs.copy() # 何を指定したかを覚えておく
-        eta            = kwargs.pop('eta', 1.0) # サンプリング時のノイズスケール
-        #   eta = 1.0 -> DDPM と同じノイズ量
-        #   eta = 0.0 -> 事後平均のみを辿る（ノイズなしの deterministic ステップ）
+        self.kwargs['method']  = method
+        self.kwargs['eta']     = eta
+        self.kwargs['mu_mode'] = mu_mode
+
         clip_denoised  = kwargs.pop('clip_denoised', False)
         dt_p           = kwargs.pop('dt_p', 0.995) # clipオプション
         preserve_mean_beta = kwargs.pop('preserve_mean_beta', 0.0)
+        eps_stdz_beta  = kwargs.pop('eps_stdz_beta', 0.0)
         dc_axis        = kwargs.pop('dc_axis', (0, 2, 3)) # 補正軸
         gamma          = kwargs.pop('gamma', None) # 誘導オプション
-        mu_mode        = kwargs.pop('mu_mode', 'eps') # μ計算オプション
-
         sample_state   = kwargs.pop('sample_state', None)  # API互換のため保持（現在は未使用）
 
         t = self.fix_t(t, 1)
@@ -317,11 +321,18 @@ class Diffuser:
         alpha_bar_prev = self.alpha_bars[t_prev]
 
         """ step1 : model -> eps -> x0_hat """
-        # モデルによるeps予測、x0_hat推定
-        eps = self.predict(model, x, t, labels, gamma)
-        x0_hat = self.pred_x0_from_eps(x, alpha_bar, eps)
+        if method in ('ddpm', 'ddim'): # モデルによるeps予測、x0_hat推定
+            eps = self.predict(model, x, t, labels, gamma)
+            x0_hat = self.pred_x0_from_eps(x, alpha_bar, eps)
+        else:     # 'ddpm_x0', 'ddim_x0' モデルによるx0予測、eps推定
+            x0_hat = self.predict(model, x, t, labels, gamma)
+            eps = self.pred_eps_from_x0(x, alpha_bar, x0_hat)
         
-        """ step2 : clip等 """
+        """ step2 : 正則化、clip等 """
+        # epsを正則化するとともにx0_hatをそれに合わせて再計算
+        if eps_stdz_beta > 0:
+            eps = self.regularize_eps(eps, eps_stdz_beta, dc_axis)
+            x0_hat = self.pred_x0_from_eps(x, alpha_bar, eps)
         # x0_hatをクリップするとともにepsをそれに合わせて再計算
         if clip_denoised:
             x0_hat, s, clip_rate \
@@ -332,137 +343,44 @@ class Diffuser:
             clip_rate = np.zeros(x0_hat.shape[:2], dtype=Config.dtype) # ログ用
 
         """ step3 : eps, x0_hat -> std, mu """
-        # q(x_prev | x_t, x0) のガウス事後分布のパラメータ(平均と分散)
-        std = eta * np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
-        coef1 = (np.sqrt(alpha) * (1 - alpha_bar_prev)) / (1 - alpha_bar)
-        coef2 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
-        coef3 = 1 / np.sqrt(alpha)
-        coef4 = - (1 - alpha) / np.sqrt(alpha * (1 - alpha_bar))
+        if method in ('ddpm', 'ddpm_x0'):
+            # q(x_prev | x_t, x0) のガウス事後分布のパラメータ(平均と分散)
+            std = eta * np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
+            coef1 = (np.sqrt(alpha) * (1 - alpha_bar_prev)) / (1 - alpha_bar)
+            coef2 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
+            coef3 = 1 / np.sqrt(alpha)
+            coef4 = - (1 - alpha) / np.sqrt(alpha * (1 - alpha_bar))
 
-        if   mu_mode == 'x0':       # x0とxから算出
-            mu = coef1 * x + coef2 * x0_hat 
-        elif mu_mode == 'eps':      # x0_hatと整合するepsを使って算出
-            mu = coef3 * x + coef4 * eps
-        else:
-            raise ValueError(f"Unknown mu_mode: {mu_mode}")
-
-        """ step4 : mu, std -> x_prev """
-        x_prev, noise_term = self.sample_step(
-            x, mu, std, t_prev, preserve_mean_beta, dc_axis)
-
-        """ logging """
-        if debug:
-            self.analizer.append_log(
-                t, x, x_prev, x0_hat, eps, mu, noise_term, clip_rate
-                )
-        return x_prev
-
-
-    def denoise_ddim(self, model, x, t, t_prev, labels=None, debug=False, **kwargs):
-        """ DDIM (Denoising Diffusion Implicit Models) """
-        self.kwargs    = kwargs.copy() # 何を指定したかを覚えておく
-        eta            = kwargs.pop('eta', 0.0) # サンプリング時のノイズスケール
-        #   eta = 1.0 -> DDPM と同じノイズ量
-        #   eta = 0.0 -> 事後平均のみを辿る（ノイズなしの deterministic ステップ）
-        clip_denoised  = kwargs.pop('clip_denoised', False)
-        dt_p           = kwargs.pop('dt_p', 0.995) # clipオプション
-        preserve_mean_beta = kwargs.pop('preserve_mean_beta', 0.0)
-        dc_axis        = kwargs.pop('dc_axis', (0, 2, 3)) # 補正軸
-        gamma          = kwargs.pop('gamma', None) # 誘導オプション
-
-        sample_state   = kwargs.pop('sample_state', None)  # API互換のため保持（現在は未使用）
-
-        t = self.fix_t(t, 1)
-        t_prev = self.fix_t(t_prev, 0)
-        
-        alpha_bar      = self.alpha_bars[t]
-        alpha_bar_prev = self.alpha_bars[t_prev]
-
-        """ step1 : model -> eps -> x0_hat """
-        eps = self.predict(model, x, t, labels, gamma)
-        x0_hat = self.pred_x0_from_eps(x, alpha_bar, eps)
-
-        """ step2 : clip等 """
-        if clip_denoised:
-            x0_hat, s, clip_rate \
-                = self.dynamic_thresholding(x0_hat, p=dt_p, clip_val=1.0)
-            eps = self.pred_eps_from_x0(x, alpha_bar, x0_hat)
-        else:
-            s = 0
-            clip_rate = np.zeros(x0_hat.shape[:2], dtype=Config.dtype)
-
-        """ step3 : x0_hat, eps -> std, mu """
-        if eta == 0.0:
-            std = np.zeros_like(alpha_bar, dtype=Config.dtype)
-            dir_coef = np.sqrt(np.maximum(1.0 - alpha_bar_prev, 0.0))
-        else:
-            std = (np.sqrt((1.0 - alpha_bar_prev) / (1.0 - alpha_bar))
-                 * np.sqrt(1.0 - alpha_bar / alpha_bar_prev))
-            std *= eta # noise_std
-            dir_coef = np.sqrt(np.maximum(1.0 - alpha_bar_prev - std * std, 0.0))
-
-        mu = np.sqrt(alpha_bar_prev) * x0_hat + dir_coef * eps
-
-        """ step4 : mu, std -> x_prev """
-        x_prev, noise_term = self.sample_step(
-            x, mu, std, t_prev, preserve_mean_beta, dc_axis)
-    
-        """ logging """
-        if debug:
-            self.analizer.append_log(
-                t, x, x_prev, x0_hat, eps, mu, noise_term, clip_rate
-            )
-        return x_prev
-
-    def denoise_ddpm_x0(self, model, x, t, t_prev, labels=None, debug=False, **kwargs):
-        """ x0 予測モデルを用いるDDPM posterior mean/var """
-        self.kwargs    = kwargs.copy() # 何を指定したかを覚えておく
-        eta            = kwargs.pop('eta', 1.0) # サンプリング時のノイズスケール
-        #   eta = 1.0 -> DDPM と同じノイズ量
-        #   eta = 0.0 -> 事後平均のみを辿る（ノイズなしの deterministic ステップ）
-        clip_denoised  = kwargs.pop('clip_denoised', False)
-        dt_p           = kwargs.pop('dt_p', 0.995) # clipオプション
-        preserve_mean_beta = kwargs.pop('preserve_mean_beta', 0.0)
-        eps_stdz_beta  = kwargs.pop('eps_stdz_beta', 0.0)
-        dc_axis        = kwargs.pop('dc_axis', (0, 2, 3)) # 補正軸
-        gamma          = kwargs.pop('gamma', None) # 誘導オプション
-
-        sample_state   = kwargs.pop('sample_state', None)  # API互換のため保持（現在は未使用）
-
-        t      = self.fix_t(t, 1)
-        t_prev = self.fix_t(t_prev, 0)
-
-        alpha          = self.alphas[t]
-        alpha_bar      = self.alpha_bars[t]
-        alpha_bar_prev = self.alpha_bars[t_prev]
-
-        """ step1 : model -> x0 -> eps """
-        # モデルによるx0予測、eps推定
-        x0_hat = self.predict(model, x, t, labels, gamma)
-        eps = self.pred_eps_from_x0(x, alpha_bar, x0_hat)
-
-        """ step2 : 正則化、clip等 """
-        if eps_stdz_beta > 0:
-            eps = self.regularize_eps(eps, eps_stdz_beta, dc_axis)
-            x0_hat = self.pred_x0_from_eps(x, alpha_bar, eps)
+            if   mu_mode == 'x0':       # x0とxから算出
+                mu = coef1 * x + coef2 * x0_hat 
+            elif mu_mode == 'eps':      # x0_hatと整合するepsを使って算出
+                mu = coef3 * x + coef4 * eps
+            else:
+                raise ValueError(f"Unknown mu_mode: {mu_mode}")
             
-        if clip_denoised:
-            x0_hat, s, clip_rate \
-                = self.dynamic_thresholding(x0_hat, p=dt_p, clip_val=1.0)
-            eps = self.pred_eps_from_x0(x, alpha_bar, x0_hat)
-        else:
-            s =0
-            clip_rate = np.zeros(x0_hat.shape[:2], dtype=Config.dtype) # ログ用
+        else: # method in ('ddim', 'ddim_x0')
+            if eta == 0.0:
+                std = np.zeros_like(alpha_bar, dtype=Config.dtype)
+                dir_coef = np.sqrt(np.maximum(1.0 - alpha_bar_prev, 0.0))
+            else:
+                std = (np.sqrt((1.0 - alpha_bar_prev) / (1.0 - alpha_bar))
+                     * np.sqrt(1.0 - alpha_bar / alpha_bar_prev))
+                std *= eta # noise_std
+                dir_coef = np.sqrt(np.maximum(1.0 - alpha_bar_prev - std * std, 0.0))
 
-        """ step3 : x0_hat -> std, mu """
-        std = eta * np.sqrt((1 - alpha) * (1 - alpha_bar_prev) / (1 - alpha_bar))
-        coef1 = (np.sqrt(alpha) * (1 - alpha_bar_prev)) / (1 - alpha_bar)
-        coef2 = (np.sqrt(alpha_bar_prev) * (1 - alpha)) / (1 - alpha_bar)
-        mu = coef1 * x + coef2 * x0_hat 
+            mu = np.sqrt(alpha_bar_prev) * x0_hat + dir_coef * eps
 
         """ step4 : mu, std -> x_prev """
-        x_prev, noise_term = self.sample_step(
-            x, mu, std, t_prev, preserve_mean_beta, dc_axis)
+        if int(t_prev) == 0:
+            x_prev = mu
+            noise_term = np.zeros_like(x_prev, dtype=Config.dtype)
+        else:
+            noise = np.random.randn(*x.shape).astype(x.dtype)
+            noise_term = std * noise
+            x_prev = mu + noise_term
+
+        if preserve_mean_beta > 0:
+            x_prev = self.preserve_mean(x, x_prev, preserve_mean_beta, dc_axis)
 
         """ logging """
         if debug:
@@ -481,23 +399,25 @@ class Diffuser:
         if x is None:
             x = np.random.randn(*x_shape).astype(Config.dtype)
 
-        ts, t_prevs = self.schedule_time_steps(steps=steps)
+        valid_samplers = ('legacy', 'legacy_x0', 'ddpm', 'ddim', 'ddpm_x0', 'ddim_x0')
+        if sampler not in valid_samplers:
+            raise ValueError(f"Unknown sampler: {sampler}")
 
-        if sampler != "ddim" and steps is not None:
-            raise ValueError("steps can be specified only when sampler='ddim'")
+        if steps is not None and sampler not in ('ddim', 'ddim_x0'):
+            raise ValueError("steps can be specified only when sampler is"
+                             "'ddim' or 'ddim_x0'")
+
+        ts, t_prevs = self.schedule_time_steps(steps=steps)
 
         if sampler == "legacy":
             denoise_fn = self.denoise
+            denoise_kwargs = {}
         elif sampler == "legacy_x0":
             denoise_fn = self.denoise_x0
-        elif sampler == "ddpm":
-            denoise_fn = self.denoise_ddpm
-        elif sampler == "ddim":
-            denoise_fn = self.denoise_ddim
-        elif sampler == "ddpm_x0":
-            denoise_fn = self.denoise_ddpm_x0
+            denoise_kwargs = {}
         else:
-            raise ValueError(f"Unknown sampler: {sampler}")
+            denoise_fn = self.denoise_unified
+            denoise_kwargs = {'method': sampler}
 
         kwargs.setdefault("sample_state", {})
 
@@ -513,7 +433,8 @@ class Diffuser:
                 if start is not None and t > start:
                     continue
                 
-                xb = denoise_fn(model, xb, t, t_prev, labels=lb, debug=debug, **kwargs)
+                xb = denoise_fn(model, xb, t, t_prev, labels=lb, debug=debug,
+                                **denoise_kwargs, **kwargs)
 
                 if halt is not None and t<=(self.num_timesteps-halt):
                     print(f'halt={halt} t={t}')
