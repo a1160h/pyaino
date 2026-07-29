@@ -1,5 +1,5 @@
 # Diffuser
-# 20260720 A.Inoue
+# 20260729 A.Inoue
 #
 # Base version
 # - Experimental options removed
@@ -452,10 +452,13 @@ class Diffuser:
         x = x.astype(numpy.uint8).transpose(1,2,0)
         return x
 
-    def loss(self, eps_hat, eps, t=None, gamma=1.0, dc_reg=False, lam=1e-3):
-        """ 与えたノイズと予測したノイズの隔たりで、
-          　時刻に応じたエラー集計と時刻に応じた重み付け可能な平均2乗誤差 """
-        l = lf.MeanSquaredError(reduction=None)(eps_hat, eps) 
+    def loss(self, pred, target, t=None, gamma=1.0):
+        """
+        予測値pred(eps_hat/x0_hat)と正解値target(eps/x0)の隔たり
+        eps予測の場合とx0予測の場合がある 
+        時刻に応じたエラー集計と時刻に応じた重み付け可能な平均2乗誤差
+        """
+        l = lf.MeanSquaredError(reduction=None)(pred, target) 
         l = l.mean(axis=(1,2,3)) 
         # 時刻tはstep_log,weightingの両方に使う
         if t is not None:
@@ -471,25 +474,6 @@ class Diffuser:
             snr = alpha_bar / (1 - alpha_bar) # 信号雑音比
             w = (snr + 1)**(-gamma)
             l = l * w
-        loss = l.mean()    
-        if dc_reg:    
-            dc = F.Mean(axis=(2,3), keepdims=True)(eps_hat) # B,Cごと
-            dc_l = F.Mean()(dc**2)  
-            loss += lam * dc_l
-        return loss 
-
-    def loss_x0(self, x0_hat, x0, t=None):
-        """予測画像 x0_hat と正解画像 x0 の単純な平均2乗誤差。
-
-        純粋な x0 予測を観察するため、SNR重み付けなどは行わない。
-        step_log=True の場合のみ、時刻別MSEを記録する。
-        """
-        l = lf.MeanSquaredError(reduction=None)(x0_hat, x0)
-        l = l.mean(axis=(1,2,3)) 
-        if self.step_log and t is not None:
-            t = self.fix_t(t, 1, None)
-            np.add.at(self.stat_sum, t, l)
-            np.add.at(self.stat_cnt, t, 1)
         return l.mean()
 
 
