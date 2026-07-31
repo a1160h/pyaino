@@ -1,12 +1,13 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20260421 A.Inoue
+# 20260731 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
+from pyaino import safe_np as snp
 import copy
 from functools import reduce
 import itertools
-from pyaino import safe_np as snp
+import operator
 
 class Assign(Function):
     def __forward__(self, x):
@@ -410,7 +411,7 @@ class Sum(SumMeanVar):
         y = snp.sum(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
-def sum(x, axis=None, dtype=None, out=None, keepdims=False):
+def sum(x, axis=None, keepdims=False):
     return Sum(axis=axis, keepdims=keepdims)(x)
 
 class Mean(SumMeanVar):
@@ -646,6 +647,120 @@ class GetItem(Function):
 def getitem(x, slices):
     f = GetItem(slices)
     return f(x)
+
+def _along_axis_index(indices, axis, input_shape, output_shape):
+    """
+    AlongAxis操作のScatterAdd用index tupleを作る。
+
+    indicesは出力形状へbroadcastする。
+    input側でbroadcastされた軸の座標は0とする。
+    """
+    indices = snp.broadcast_to(indices, output_shape)
+    ndim = len(input_shape)
+    index = []
+
+    for i, size in enumerate(output_shape):
+        if i == axis:
+            index.append(indices)
+
+        elif input_shape[i] == 1:
+            index.append(0)
+
+        else:
+            shape = [1] * ndim
+            shape[i] = size
+
+            index.append(np.arange(size).reshape(shape))
+
+    return tuple(index)
+
+
+class TakeAlongAxis(Function):
+    """
+    指定軸に沿ってindicesで指定された要素を取り出す
+    
+    順伝播はnp.take_along_axisそのもの．indicesとaxisは微分対象外
+    要注意：axis=Noneの場合、xを一次元化して処理
+    """
+    def __init__(self, indices, axis=-1):
+        super().__init__()
+        self.indices = np.asarray(indices)
+        self.axis = axis
+
+    def __forward__(self, x):
+        y = np.take_along_axis(x, self.indices, axis=self.axis)
+        if self.axis is not None and self.axis < 0:
+            self.axis += x.ndim
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        gx = np.zeros_like(x, dtype=Config.dtype)
+
+        if self.axis is None: # axis=Noneではxを一次元に展開して処理
+            gx_flat = snp.reshape(gx, -1)
+            snp.add_at(gx_flat, self.indices, gy)
+        else:
+            index = _along_axis_index(self.indices, self.axis, x.shape, gy.shape)
+            snp.add_at(gx, index, gy)
+        return gx
+
+def take_along_axis(x, indices, axis=-1):
+    return TakeAlongAxis(indices, axis)(x)
+
+class ScatterAddAlongAxis(Function):
+    """
+    xをindicesで指定されたaxis上の位置へ加算配置する
+
+    重複するindexには値を累積、TakeAlongAxisの随伴演算
+    要注意：整数axisのみを扱う
+    """
+    def __init__(self, indices, output_shape, axis=-1):
+        super().__init__()
+        self.indices = np.asarray(indices)
+        self.output_shape = tuple(output_shape)
+        self.axis = operator.index(axis)
+
+    def __forward__(self, x):
+        y = np.zeros(self.output_shape, dtype=Config.dtype)
+
+        if x.ndim != y.ndim:
+            raise ValueError(
+                "x and output must have the same number of dimensions"
+            )
+
+        axis = self.axis
+        if axis < 0:
+            axis += x.ndim
+        if axis < 0 or axis >= x.ndim:
+            raise ValueError(
+                f"axis {self.axis} is out of bounds for array "
+                f"of dimension {x.ndim}"
+            )
+
+        for i, size in enumerate(x.shape):
+            if i != axis and y.shape[i] not in (1, size):
+                raise ValueError(
+                    "x and output shapes must match outside axis, "
+                    "except where the output size is 1"
+                )
+
+        index = _along_axis_index(self.indices, axis, y.shape, x.shape)
+        snp.add_at(y, index, x)
+
+        self.axis = axis
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        indices = snp.broadcast_to(self.indices, x.shape)
+        gx = np.take_along_axis(gy, indices, axis=self.axis)
+        return gx
+
+
+def scatter_add_along_axis(x, indices, output_shape, axis=-1):
+    return ScatterAddAlongAxis(indices, output_shape, axis)(x)
+
 
 class Transpose_bkup(Function):
     def __init__(self, axes=(1, 0)): # numpyのおかしな挙動に対応20241122
