@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260706 A.Inoue
+# 20260803 A.Inoue
 
 import copy
 import warnings
@@ -480,7 +480,6 @@ class LinearLayerCrossEntropy(LinearLayer):
     def __init__(self, *configuration, **kwargs):
         super().__init__(*configuration, **kwargs)
         self.tile_size = kwargs.pop('tile_size', None) #
-        self.selector = TileTargetScanner()
        
     def __forward__(self, x, t=None, **kwargs):       # kwargsは使わない
         if None in self.config:
@@ -529,7 +528,12 @@ class LinearLayerCrossEntropy(LinearLayer):
                     + np.sum(np.exp(tile_z - max_logit[..., None]), axis=-1)) # 更新値
             # tがtileに含まれる場合だけztを更新(zt:正解値tの指すlogit)
             if t is not None:
-                zt = self.selector.gather(zt, t, tile_z, (start, end))
+                t_in_tile = (start <= t) & (t < end)
+                if t_in_tile.any():
+                    tile_t = np.where(t_in_tile, t - start, 0).astype(np.int32)
+                    tile_zt = F.take_along_axis(
+                        tile_z, tile_t[..., None], axis=-1).squeeze(-1)
+                    zt = np.where(t_in_tile, tile_zt, zt)
 
         # 予測だけ欲しい（推論）場合
         if t is None:
@@ -566,7 +570,15 @@ class LinearLayerCrossEntropy(LinearLayer):
             # Softmaxでlogit->確率 
             tile_y = np.exp(tile_z - self.max_logit[...,None]) / self.sum_exp[...,None]
 
-            tile_gz = self.selector.scatter_add(tile_y.copy(), (start, end))   
+            # targetがtileに含まれる位置へ-1を加える
+            t_in_tile = (start <= t) & (t < end)
+            tile_gz = tile_y
+            if t_in_tile.any():
+                tile_t = np.where(t_in_tile, t - start, 0).astype(np.int32)
+                correction = -t_in_tile.astype(Config.dtype)[..., None]
+                tile_gz = F.scatter_add_along_axis(
+                    correction, tile_t[..., None], tile_y.shape, axis=-1)
+                tile_gz += tile_y
             tile_gz /= self.leading_size    # 順伝播のloss/leading_sizeに合わせる
               
             # dot_linearの逆伝播
@@ -581,65 +593,6 @@ class LinearLayerCrossEntropy(LinearLayer):
         self.parameters.set_gradient(grad_w, grad_b, ggamma)        
         grad_x = self.prephase.backward(grad_x)
         return grad_x
-
-class TileTargetScanner:
-    """ LinearLayerCrossEntropyのtile処理用の選択器 """
-    def gather(self, zt, t, tile_z, window):
-        """ tが処理窓内の時、tile_zからtに対応するlogitを選んでztにセットする """
-        start, end = window
-        t_in_tile = (start <= t) & (t < end)
-        self.t = t
-        if not t_in_tile.any():
-            return zt
-        coords = np.where(t_in_tile)                # 先行軸の座標タプル
-        idx_in_tile = (t[coords] - start).astype(np.int32)
-        zt[coords] = tile_z[coords + (idx_in_tile,)] # 多次元インデクスとして結合
-        return zt
-
-    def scatter_add(self, tile_gz, window, value=-1):
-        """ tが処理窓内の時、tile_gzのtに対応する場所に値を加える """
-        t = self.t
-        start, end = window
-        t_in_tile = (start <= t) & (t < end)
-        if not t_in_tile.any():
-            return tile_gz
-        coords = np.where(t_in_tile)
-        idx_in_tile = (t[coords] - start).astype(np.int32)
-        tile_gz[coords + (idx_in_tile,)] += value
-        return tile_gz
-
-    def gather2(self, zt, t, tile_z, window):
-        """ tが処理窓内の時、tile_zからtに対応するlogitを選んでztにセットする """
-        start, end = window
-        t_in_tile = (start <= t) & (t < end) # バッチごとの該当非該当
-        self.t = t  
-        if not t_in_tile.any():
-            return zt
-        coords = np.where(t_in_tile)         # 対象バッチ番号
-        idx_in_tile = (t[coords] - start).astype(np.int32)
-
-        #print(start, '->', end, 'zt =', zt, 't =', t,
-        #      'coords =', coords, '\ntile_z\n', tile_z, '\n', tile_z[coords])
-        
-        zt[coords] = (
-            np.take_along_axis(tile_z[coords], idx_in_tile[..., None], axis=-1)
-            .squeeze(-1))
-        self.t = t
-        return zt
-
-    def scatter_add2(self, tile_gz, window, value=-1):
-        """ tが処理窓内の時、tile_gzのtに対応する場所に値を加える """
-        t = self.t
-        start, end = window
-        t_in_tile = (start <= t) & (t < end)
-        if not t_in_tile.any():
-            return tile_gz
-        coords = np.where(t_in_tile)
-        idx_in_tile = (t[coords] - start).astype(np.int32)
-        index_tuple = coords + (idx_in_tile,)
-        snp.add_at(tile_gz, index_tuple, value)
-        return tile_gz
-
 
 
 #### ニューロン関連共通部分 ##############################################
