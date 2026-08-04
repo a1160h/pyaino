@@ -1329,8 +1329,8 @@ class ECat(Concatenate):
         super().__init__(axis=axis)
         print('Retain for the time being for compatibility. Use Concatenate.')
     
-def ecat(*args, **kwargs):
-    return ECat()(*args, **kwargs)
+def ecat(*xs, axis=0):
+    return ECat(axis)(*xs)
 
 class Split(Function):
     """ 同一形状への分割 """
