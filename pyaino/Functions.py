@@ -1299,43 +1299,36 @@ class L2Normalize_bkup(Function):
         return gx
 
 
-############################################ 
-# 仮実装　0240731
-# seq2seq_with_attentionでbacktraceできるようにするために
-# RNN_With_Attention_Baseのforward中に配列の結合があるから、
-# その仮対処
-############################################
 class Concatenate(Function):
-    def __forward__(self, x0, x1, axis=0):
-        self.shapes = x0.shape, x1.shape
+    """ 複数の入力を、既存の指定軸に沿って結合する """
+    def __init__(self, axis=0):
+        super().__init__()
         self.axis = axis
-        return snp.concatenate((x0, x1), axis=axis)
 
-    def __backward__(self, gy=1):
-        shapes = self.shapes
-        axis= self.axis
-        splits = snp.cumsum(np.array([shape[axis] for shape in shapes[:-1]]))
-        splits = splits.tolist()
-        gx0, gx1 = snp.split(gy, splits, axis=axis)
-        return gx0, gx1
-        
-
-def concatenate(*args, **kwargs):
-    return Concatenate()(*args, **kwargs)
-
-############################################ 
-# 新規実装　20260408
-############################################
-class ECat(Function):
-    """ 同一形状どうしの結合 """
-    def __forward__(self, *xs, axis=0):
-        self.n = len(xs)
-        self.axis = axis
-        return snp.concatenate(xs, axis=axis)
+    def __forward__(self, *xs):
+        return snp.concatenate(xs, axis=self.axis)
 
     def __backward__(self, gy):
-        return snp.split(gy, self.n, axis=self.axis)
+        if self.axis < 0:
+            self.axis += len(self.y_shapes[0])
 
+        sections = []
+        stop = 0
+
+        for x in self.inputs[:-1]:
+            stop += x.shape[self.axis]
+            sections.append(stop)
+
+        return tuple(snp.split(gy, sections, axis=self.axis))
+
+def concatenate(xs, axis=0):
+    return Concatenate(axis)(*xs)
+
+class ECat(Concatenate):
+    def __init__(self, axis=0):
+        super().__init__(axis=axis)
+        print('Retain for the time being for compatibility. Use Concatenate.')
+    
 def ecat(*args, **kwargs):
     return ECat()(*args, **kwargs)
 
