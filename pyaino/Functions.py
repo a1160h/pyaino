@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20260731 A.Inoue
+# 20260804 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -760,6 +760,70 @@ class ScatterAddAlongAxis(Function):
 
 def scatter_add_along_axis(x, indices, output_shape, axis=-1):
     return ScatterAddAlongAxis(indices, output_shape, axis)(x)
+
+
+class TopKprimitive(Function):
+    """
+    指定軸axisに沿って、大きい順に上位k個の値を返す
+
+
+    TopKの順伝播は、逆伝播の対象外であるindicesも返すため、
+    primitiveではindicesを返り値から除外し、valuesのみを返す
+
+    """
+    def __init__(self, k, axis=-1):
+        super().__init__()
+        if k < 1:
+            raise ValueError(f"k must be at least 1, but got {k}")
+        self.k = operator.index(k)
+        self.axis = operator.index(axis)
+        self.indices = None
+
+    def __forward__(self, x):
+        axis = self.axis
+
+        # 軸axisに沿って降順でxのインデクスを並べ先頭のk個を選ぶ
+        indices = snp.argsort(x, axis=axis)
+        indices = np.flip(indices, axis=axis)
+        indices = np.take(indices, np.arange(self.k), axis=axis)
+
+        # indicesとaxisに従って値を選ぶ
+        values = np.take_along_axis(x, indices, axis=axis)
+        self.indices = indices
+        return values
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        gx = scatter_add_along_axis(
+            gy, self.indices, output_shape=x.shape, axis=self.axis,
+        )
+        return gx
+
+class TopK:
+    """
+    指定軸axisに沿って、大きい順に上位k個の値とindicesを返す
+
+    逆伝播の対象となるvaluesのみを返すprimitiveをラッパーで包み、
+    逆伝播の対象外であるindicesを加えて提供する
+
+    """
+    def __init__(self, k, axis=-1):
+        super().__init__()
+        self.primitive = TopKprimitive(k, axis)
+
+    def forward(self, x):
+        y = self.primitive(x)
+        indices = self.primitive.indices # indicesは逆伝播非対象
+        return y, indices
+
+    def __call__(self, x):
+        return self.forward(x)
+
+    def backward(self, gy=1):
+        return self.primitive.backward(gy)
+
+def top_k(x, k, axis=-1):
+    return TopK(k, axis)(x)
 
 
 class Transpose_bkup(Function):
