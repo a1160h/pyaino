@@ -1104,6 +1104,184 @@ class Unstack(HDFunction):
 def unstack(x, axis=0):
     return Unstack(axis)(x)
 
+
+def _along_axis_index(indices, axis, input_shape, output_shape):
+    """
+    AlongAxis操作のScatterAdd用index tupleを作る。
+
+    indicesは出力形状へbroadcastする。
+    input側でbroadcastされた軸の座標は0とする。
+    """
+    indices = snp.broadcast_to(indices, output_shape)
+    ndim = len(input_shape)
+    index = []
+
+    for i, size in enumerate(output_shape):
+        if i == axis:
+            index.append(indices)
+
+        elif input_shape[i] == 1:
+            index.append(0)
+
+        else:
+            shape = [1] * ndim
+            shape[i] = size
+
+            index.append(np.arange(size).reshape(shape))
+
+    return tuple(index)
+
+
+class TakeAlongAxisPrimitive(HDFunction):
+    """
+    指定軸に沿ってindicesで指定された要素を取り出すPrimitive
+
+    indicesとaxisは微分対象外。
+    整数axisのみを扱う。
+    """
+    def __init__(self, indices, axis=-1):
+        super().__init__()
+        self.indices = np.asarray(indices)
+        self.axis = axis
+
+    def __forward__(self, x):
+        y = np.take_along_axis(x, self.indices, axis=self.axis)
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        axis = self.axis
+        if axis < 0:
+            axis += x.ndim
+        gx = ScatterAddAlongAxisPrimitive(self.indices, x.shape, axis=axis)(gy)
+        return gx
+
+class ScatterAddAlongAxisPrimitive(HDFunction):
+    """
+    xをindicesで指定されたaxis上の位置へ加算配置するPrimitive
+
+    重複するindexには値を累積する。
+    TakeAlongAxisPrimitiveの随伴演算。
+    整数axisのみを扱う。
+    """
+    def __init__(self, indices, output_shape, axis=-1):
+        super().__init__()
+        self.indices = np.asarray(indices)
+        self.output_shape = tuple(output_shape)
+        self.axis = axis
+
+    def __forward__(self, x):
+        y = np.zeros(self.output_shape, dtype=Config.dtype)
+
+        if x.ndim != y.ndim:
+            raise ValueError(
+                "x and output must have the same number of dimensions"
+            )
+
+        axis = self.axis
+        if axis < 0:
+            axis += x.ndim
+
+        if axis < 0 or axis >= x.ndim:
+            raise ValueError(
+                f"axis {self.axis} is out of bounds for array "
+                f"of dimension {x.ndim}"
+            )
+
+        for i, size in enumerate(x.shape):
+            if i != axis and y.shape[i] not in (1, size):
+                raise ValueError(
+                    "x and output shapes must match outside axis, "
+                    "except where the output size is 1"
+                )
+        index = _along_axis_index(self.indices, axis, y.shape, x.shape)
+        snp.add_at(y, index, x)
+        self.axis = axis
+        return y
+
+    def __backward__(self, gy):
+        x, = self.inputs
+        indices = snp.broadcast_to(self.indices, x.shape)
+        gx = TakeAlongAxisPrimitive(indices, axis=self.axis)(gy)
+        return gx
+
+
+class TakeAlongAxis:
+    """
+    指定軸に沿ってindicesで指定された要素を取り出す。
+
+    axis=Noneの場合は、入力を1次元化したうえで
+    TakeAlongAxisprimitive(axis=0)を適用する。
+    """
+    def __init__(self, indices, axis=-1):
+        self.indices = np.asarray(indices)
+        self.axis = axis
+
+        if axis is None:
+            self.reshape = Reshape((-1,))
+            self.primitive = TakeAlongAxisPrimitive(self.indices, axis=0)
+        else:
+            self.primitive = TakeAlongAxisPrimitive(self.indices, axis=axis)
+
+    def forward(self, x):
+        if self.axis is None:
+            x = self.reshape.forward(x)
+        return self.primitive.forward(x)
+
+    def backward(self, gy):
+        gx = self.primitive.backward(gy)
+        if self.axis is None:
+            gx = self.reshape.backward(gx)
+        return gx
+
+    def __call__(self, x):
+        return self.forward(x)
+
+
+def take_along_axis(x, indices, axis=-1):
+    return TakeAlongAxis(indices, axis)(x)
+
+class ScatterAddAlongAxis:
+    """
+    xをindicesで指定されたaxis上の位置へ加算配置する。
+
+    axis=Noneの場合は、1次元の出力へ加算配置したうえで
+    output_shapeへreshapeする。
+    """
+    def __init__(self, indices, output_shape, axis=-1):
+        self.indices = np.asarray(indices)
+        self.output_shape = tuple(output_shape)
+        self.axis = axis
+
+        if axis is None:
+            size = 1
+            for s in self.output_shape:
+                size *= s
+            flat_shape = (size,)
+            self.primitive = ScatterAddAlongAxisPrimitive(self.indices, flat_shape, axis=0)
+            self.reshape = Reshape(self.output_shape)
+        else:
+            self.primitive = ScatterAddAlongAxisPrimitive(self.indices, self.output_shape, axis=axis)
+
+    def forward(self, x):
+        y = self.primitive.forward(x)
+        if self.axis is None:
+            y = self.reshape.forward(y)
+        return y
+
+    def backward(self, gy):
+        if self.axis is None:
+            gy = self.reshape.backward(gy)
+        return self.primitive.backward(gy)
+
+    def __call__(self, x):
+        return self.forward(x)
+
+
+def scatter_add_along_axis(x, indices, output_shape, axis=-1):
+    return ScatterAddAlongAxis(indices, output_shape, axis)(x)
+
+
 ##########################################################################
 # 以下、数学的に不正確で制約があるが、デバグ用に簡略化した定義 : 20230303 A.I.
 ##########################################################################
