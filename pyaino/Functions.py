@@ -1349,6 +1349,38 @@ def split(x, indices_or_sections, axis=0):
     return Split(indices_or_sections, axis)(x)
 
 
+class Stack(Function):
+    """ 複数の同形状入力を、新しい指定軸に沿って積み重ねる """
+    def __init__(self, axis=0):
+        super().__init__()
+        self.axis = axis
+
+    def __forward__(self, *xs):
+        return snp.stack(xs, axis=self.axis)
+
+    def __backward__(self, gy):
+        return tuple(snp.moveaxis(gy, self.axis, 0))
+
+def stack(xs, axis=0):
+    return Stack(axis)(*xs)
+
+
+class Unstack(Function):
+    """ 入力を指定軸に沿って分解し、その軸を除いた複数の出力を返す """
+    def __init__(self, axis=0):
+        super().__init__()
+        self.axis = axis
+
+    def __forward__(self, x):
+        return tuple(snp.moveaxis(x, self.axis, 0))
+
+    def __backward__(self, *gys):
+        return snp.stack(gys, axis=self.axis)
+
+def unstack(x, axis=0):
+    return Unstack(axis)(x)
+
+
 
 ############################################ 
 # 仮実装　0240812
