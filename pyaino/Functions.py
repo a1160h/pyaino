@@ -626,7 +626,7 @@ class Min(MaxMin):
 
      
 class GetItem(Function):
-    """ 要素をスライスにより部分取り出しする """
+    """ 要素を添字指定により部分取り出しする """
     def __init__(self, slices):
         super().__init__()
         self.slices = slices
@@ -1305,17 +1305,18 @@ class Concatenate(Function):
         return snp.concatenate(xs, axis=self.axis)
 
     def __backward__(self, gy):
-        if self.axis < 0:
-            self.axis += len(self.y_shapes[0])
+        axis = self.axis
+        if axis < 0:
+            axis += len(self.y_shapes[0])
 
         sections = []
         stop = 0
 
         for x in self.inputs[:-1]:
-            stop += x.shape[self.axis]
+            stop += x.shape[axis]
             sections.append(stop)
 
-        return tuple(snp.split(gy, sections, axis=self.axis))
+        return tuple(snp.split(gy, sections, axis=axis))
 
 def concatenate(xs, axis=0):
     return Concatenate(axis)(*xs)

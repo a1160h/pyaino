@@ -630,6 +630,7 @@ def min(x, axis=None, keepdims=False):
     return Min(axis, keepdims)(x)
 
 class GetItem(HDFunction):
+    """ 要素を添字指定により部分取り出しする """
     def __init__(self, slices):
         super().__init__()
         self.slices = slices
@@ -1022,6 +1023,86 @@ class Normalize_bkup(HDFunction):
         gz_sum = np.sum(gz, axis=self.axis, keepdims=True)
         gx = gz - (gz_sum * iN)
         return gx
+
+
+class Concatenate(HDFunction):
+    """ 複数の入力を、既存の指定軸に沿って結合する """
+    def __init__(self, axis=0):
+        super().__init__()
+        self.axis = axis
+
+    def __forward__(self, *xs):
+        return snp.concatenate(xs, axis=self.axis)
+
+    def __backward__(self, gy):
+        axis = self.axis
+        if axis < 0:
+            axis += len(self.y_shapes[0])
+
+        sections = []
+        stop = 0
+
+        for x in self.inputs[:-1]:
+            stop += x.shape[axis]
+            sections.append(stop)
+
+        return tuple(split(gy, sections, axis=axis))
+
+
+def concatenate(xs, axis=0):
+    return Concatenate(axis)(*xs)
+
+
+class Split(HDFunction):
+    """ 入力を、指定軸に沿って複数に分割する """
+    def __init__(self, indices_or_sections, axis=0):
+        super().__init__()
+        self.indices_or_sections = indices_or_sections
+        self.axis = axis
+
+    def __forward__(self, x):
+        return snp.split(x, self.indices_or_sections, axis=self.axis)
+
+    def __backward__(self, *gys):
+        return concatenate(gys, axis=self.axis)
+
+
+def split(x, indices_or_sections, axis=0):
+    return Split(indices_or_sections, axis)(x)
+
+
+class Stack(HDFunction):
+    """ 複数の同形状入力を、新しい指定軸に沿って積み重ねる """
+    def __init__(self, axis=0):
+        super().__init__()
+        self.axis = axis
+
+    def __forward__(self, *xs):
+        return snp.stack(xs, axis=self.axis)
+
+    def __backward__(self, gy):
+        return tuple(unstack(gy, axis=self.axis))
+
+
+def stack(xs, axis=0):
+    return Stack(axis)(*xs)
+
+
+class Unstack(HDFunction):
+    """ 入力を指定軸に沿って分解し、その軸を除いた複数の出力を返す """
+    def __init__(self, axis=0):
+        super().__init__()
+        self.axis = axis
+
+    def __forward__(self, x):
+        return tuple(snp.moveaxis(x, self.axis, 0))
+
+    def __backward__(self, *gys):
+        return stack(gys, axis=self.axis)
+
+
+def unstack(x, axis=0):
+    return Unstack(axis)(x)
 
 ##########################################################################
 # 以下、数学的に不正確で制約があるが、デバグ用に簡略化した定義 : 20230303 A.I.
@@ -1720,4 +1801,24 @@ if __name__=='__main__':
     print(gx0)
     print(gx1)
     
+    print('そのほかの関数のテスト4')
+    func1 = Split(3)
+    print('test ', func1.__class__.__name__)
+    x = np.arange(3*2*4, dtype=np.float32).reshape(3,2,4)
+    ys = func1(x)
+    print(ys)
+    gx = func1.backward()
+    print(gx)
+    func2 = Concatenate()
+    print('test ', func2.__class__.__name__)
+    z = func2(*ys)
+    print(z)
+    gys = func2.backward()
+    print(gys)
+
+
+    print("reshape   =", snp.reshape, getattr(snp.reshape, "__module__", None))
+    print("transpose =", snp.transpose, getattr(snp.transpose, "__module__", None))
+    print("broadcast_to =", snp.broadcast_to, getattr(snp.broadcast_to, "__module__", None))
+    print("expand_dims  =", snp.expand_dims, getattr(snp.expand_dims, "__module__", None))
     
