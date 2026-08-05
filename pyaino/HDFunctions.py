@@ -1,8 +1,9 @@
 # HDFunctions 
-# 20260714 A.Inoue
+# 20260805 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import HDArray, HDFunction
+from pyaino import safe_np as snp
 import copy
 
 
@@ -647,34 +648,17 @@ class GetItemGrad(HDFunction):
         super().__init__()
         self.slices = slices
         self.in_shape = in_shape
-        # 関数の設定 
-        try:
-            self.func = np.add.at
-        except:
-            try:
-                self.func = np.scatter_add
-            except:
-                try:
-                    self.func = np._cupyx.scatter_add
-                except:
-                    def f(x, y, z): # xのyの位置にzを加算する
-                        for i, idx in enumerate(y):
-                            x[idx] += z[i]
-                    self.func = f        
 
     def __forward__(self, gy):
         gx = np.zeros(self.in_shape, dtype=gy.dtype)
-        # gyをgxのslices位置に埋める
-        self.func(gx, self.slices, gy)
-
+        snp.add_at(gx, self.slices, gy) # gyをgxのslices位置に埋める
         return gx
 
     def __backward__(self, ggx):
         return getitem(ggx, self.slices)
 
 def getitem(x, slices):
-    f = GetItem(slices)
-    return f(x)
+    return GetItem(slices)(x)
 
 class Reshape(HDFunction):
     def __init__(self, *shape):

@@ -632,15 +632,11 @@ class GetItem(Function):
         self.slices = slices
 
     def __forward__(self, x):
-        self.x_shape = x.shape
-        y = x[self.slices]
-        self.y_shape = y.shape
-        return y
+        return x[self.slices]
 
     def __backward__(self, gy):
-        gy = gy if isinstance(gy, np.ndarray) else np.array(gy, dtype=Config.dtype) 
-        gy = snp.broadcast_to(gy, self.y_shape)   # 先ずはyの形状に合わせる
-        gx = np.zeros(self.x_shape, dtype=Config.dtype)
+        x, = self.inputs
+        gx = np.zeros_like(x, dtype=Config.dtype)
         snp.add_at(gx, self.slices, gy)
         return gx
 
