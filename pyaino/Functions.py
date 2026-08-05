@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20260804 A.Inoue
+# 20260805 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -1333,17 +1333,20 @@ def ecat(*xs, axis=0):
     return ECat(axis)(*xs)
 
 class Split(Function):
-    """ 同一形状への分割 """
-    def __forward__(self, x, n, axis=0):
-        self.n = n
+    """入力を、指定軸に沿って複数に分割する"""
+    def __init__(self, indices_or_sections, axis=0):
+        super().__init__()
+        self.indices_or_sections = indices_or_sections
         self.axis = axis
-        return snp.split(x, n, axis=axis)
+
+    def __forward__(self, x):
+        return snp.split(x, self.indices_or_sections, axis=self.axis)
 
     def __backward__(self, *gys):
         return snp.concatenate(gys, axis=self.axis)
 
-def split(*args, **kwargs):
-    return Split()(*args, **kwargs)
+def split(x, indices_or_sections, axis=0):
+    return Split(indices_or_sections, axis)(x)
 
 
 
@@ -2299,14 +2302,14 @@ if __name__=='__main__':
     #"""#
     
     print('そのほかの関数のテスト4')
-    func1 = Split()
+    func1 = Split(3)
     print('test ', func1.__class__.__name__)
     x = np.arange(3*2*4, dtype=np.float32).reshape(3,2,4)
-    ys = func1(x, 3)
+    ys = func1(x)
     print(ys)
     gx = func1.backward()
     print(gx)
-    func2 = ECat()
+    func2 = Concatenate()
     print('test ', func2.__class__.__name__)
     z = func2(*ys)
     print(z)
