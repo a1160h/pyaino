@@ -1,5 +1,5 @@
 # UNet
-# 20260630 A.Inoue
+# 20260806 A.Inoue
 
 from pyaino.Config import *
 #set_derivative(True)
@@ -84,7 +84,7 @@ class UNetCore:
         for i in range(self.depth):
             self.upsample.append(nn.Interpolate2d(scale_factor=2,
                                           mode='bilinear', align='center'))
-            self.concat.append(F.Concatenate())
+            self.concat.append(F.Concatenate(axis=1))
             self.up.append(Conv(c_up[i], **block_options, **kwargs))
 
         # 出力 1x1 Conv（チャネルだけin_chに戻す。forwardまで確定しない場合もある）
@@ -170,10 +170,10 @@ class UNetCore:
 
             z = zs.pop()           # Downパスの中間結果を逆順FILOで取出す
             if self.skip_ratio is None:
-                x = self.concat[i](x, z, axis=1)      # C4 + C3
+                x = self.concat[i](x, z)              # C4 + C3
             elif self.skip_ratio > 0:
                 z = self.skip_proj[self.depth - 1 - i](z) # skip_projは逆順参照
-                x = self.concat[i](x, z, axis=1)
+                x = self.concat[i](x, z)
             elif self.skip_ratio == 0:
                 pass                                  # skip connection を使わない
             else:
