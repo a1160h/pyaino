@@ -1,5 +1,5 @@
 # common_function
-# 20260709 A.Inoue 
+# 20260807 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2997,22 +2997,21 @@ class CutOutBatch:
                整数で指定したら、長さは固定、切出し間隔は1
                タプルで指定したら、最短長さと最長長さと切出し間隔
     shuffle:切り出す部分をシャッフルするかどうか
-    
     """
     def __init__(self, data, block_size=500, batch_size=16, shuffle=True):
         self.data = data if isinstance(data, np.ndarray) else np.array(data)
         if type(block_size) in (tuple, list):
             if len(block_size)==1:
                 cutout_length = block_size[0]
-                self.block_size=block_size[0]
+                self.block_size = block_size[0]
                 self.step = 1
             elif len(block_size)==2:
                 cutout_length = block_size[1]
-                self.block_size=block_size
+                self.block_size = block_size
                 self.step = 1
             elif len(block_size)==3:
                 cutout_length = block_size[1]
-                self.block_size=block_size[:2]
+                self.block_size = block_size[:2]
                 self.step = block_size[2]
             else:
                 raise Exception('block_size is not applicable')
@@ -3020,16 +3019,24 @@ class CutOutBatch:
             cutout_length = block_size
             self.block_size = block_size
             self.step = 1
+
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.start_ix = np.arange(0, len(data)-cutout_length+1, self.step)
-        self.n_batch = len(self.start_ix) // batch_size
+        self.cutout_length = cutout_length
         self.reset()
+        if self.shuffle:
+            self.shuffle_ix()
+
+    def set_start_ix(self):
+        self.start_ix = np.arange(
+            self.offset, len(self.data)-self.cutout_length+1, self.step)
+        self.n_batch = len(self.start_ix) // self.batch_size
 
     def reset(self):
-        self.start_ix.sort()
         self.iters = 0
         self.epoch = 0
+        self.offset = 0
+        self.set_start_ix()
 
     def shuffle_ix(self):
         np.random.shuffle(self.start_ix)
@@ -3039,21 +3046,24 @@ class CutOutBatch:
             various_length = np.random.randint(self.block_size[0], self.block_size[-1]+1)
         else:
             various_length = self.block_size
+
         idx = self.start_ix[self.iters:self.iters+self.batch_size]
         y = np.stack([self.data[int(i):int(i)+various_length] for i in idx])
         self.iters += self.batch_size
-        if self.iters >= len(self.start_ix):
+
+        if self.iters >= self.n_batch * self.batch_size:
+            self.epoch += 1
+            self.offset = self.epoch % self.step
+            self.set_start_ix()
             if self.shuffle:
                 np.random.shuffle(self.start_ix)
-            self.epoch += 1
             self.iters = 0
-        return y    
 
-def cut_out_batch(data, block_size=500, batch_size=16):
-    func = CutOutBatch(data, block_size+1, batch_size)
-    np.random.shuffle(func.start_ix)
-    bd = func()
-    return bd
+        return y
+    
+    def info(self):
+        print('epoch', self.epoch, 'offset', self.offset, 'start', self.start_ix[:5])
+
 
 class CutOutBatchIx:
     """
@@ -3064,20 +3074,19 @@ class CutOutBatchIx:
                整数で指定したら、長さは固定、切出し間隔は1
                タプルで指定したら、最短長さと最長長さと切出し間隔
     shuffle:切り出す部分をシャッフルするかどうか
-    
     """
     def __init__(self, length, block_size=500, batch_size=16, shuffle=True):
         if type(block_size) in (tuple, list):
             if len(block_size)==1:
-                cutout_length   = block_size[0]
+                cutout_length = block_size[0]
                 self.block_size = block_size[0]
                 self.step = 1
             elif len(block_size)==2:
-                cutout_length   = block_size[1]
+                cutout_length = block_size[1]
                 self.block_size = block_size
                 self.step = 1
             elif len(block_size)==3:
-                cutout_length   = block_size[1]
+                cutout_length = block_size[1]
                 self.block_size = block_size[:2]
                 self.step = block_size[2]
             else:
@@ -3086,16 +3095,24 @@ class CutOutBatchIx:
             cutout_length = block_size
             self.block_size = block_size
             self.step = 1
+        self.length = length
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.start_ix = np.arange(0, length-cutout_length+1, self.step)
-        self.n_batch = len(self.start_ix) // batch_size
+        self.cutout_length = cutout_length
         self.reset()
+        if self.shuffle:
+            self.shuffle_ix()
+
+    def set_start_ix(self):
+        self.start_ix = np.arange(
+            self.offset, self.length-self.cutout_length+1, self.step)
+        self.n_batch = len(self.start_ix) // self.batch_size
 
     def reset(self):
-        self.start_ix.sort()
         self.iters = 0
         self.epoch = 0
+        self.offset = 0
+        self.set_start_ix()
 
     def shuffle_ix(self):
         np.random.shuffle(self.start_ix)
@@ -3106,15 +3123,22 @@ class CutOutBatchIx:
         else:
             various_length = self.block_size
         idx = self.start_ix[self.iters:self.iters+self.batch_size]
-        y = np.stack([np.arange(int(i),int(i)+various_length, 1) for i in idx])
+        y = np.stack([np.arange(int(i), int(i)+various_length, 1) for i in idx])
         self.iters += self.batch_size
-        if self.iters >= len(self.start_ix):
-            if self.shuffle:
-                np.random.shuffle(self.start_ix)
+        if self.iters >= self.n_batch * self.batch_size:
             self.epoch += 1
+            self.offset = self.epoch % self.step
+            self.set_start_ix()
+            if self.shuffle:
+                self.shuffle_ix()
             self.iters = 0
-        return y    
+        return y
 
+    def info(self):
+        print('epoch', self.epoch, 'offset', self.offset, 'start', self.start_ix[:5])
+
+
+    
 # -- 複数画像を表示 --
 def display_images(image):
     n = len(image)
