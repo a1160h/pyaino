@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260803 A.Inoue
+# 20260809 A.Inoue
 
 import copy
 import warnings
@@ -377,12 +377,13 @@ class WeightsAndBiases:
         if self.scale:
             self.gamma[...] = self.gamma_bkup
 
+
     def accommodate(self):
-        if self.config[1] <= self.w.shape[1]:
+        m, n = self.layer.get_parameter_size()
+        if n <= self.w.shape[1]:
             return
         print(self.__class__.__name__,
               'expand the size of w to accommodate new vocabulary.')
-        m, n = self.config
         xpcn = n - self.w.shape[1] # 拡張する列数
         center_w = np.mean(self.w, axis=1, keepdims=True)
         new_colums = center_w \
