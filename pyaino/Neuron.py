@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260809 A.Inoue
+# 20260811 A.Inoue
 
 import copy
 import warnings
@@ -3363,6 +3363,14 @@ class PositionalEmbedding:
     def update(self, **kwargs):
         self.token_embedding.update(**kwargs)
         self.position_embedding.update(**kwargs)
+
+    def accommodate(self, mode='token'):
+        if mode in ('token', 'both'):
+            self.token_embedding.accommodate() 
+        if mode in ('position', 'both'):
+            self.position_embedding.accommodate()
+        else:
+            ValueError(f'Invalid mode {mode}')
 
 class PositionalEncoding:
     def __init__(self, sequence_length=10000, dimension=2):

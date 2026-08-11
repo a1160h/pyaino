@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20260616 A.Inoue
+# 20260811 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -132,6 +132,9 @@ class LmHead:
         self.ln_f.update(**kwargs)
         self.linear_layer.update(**kwargs)
 
+    def accommodate(self):
+        self.linear_layer.accommodate()
+
 class ModelBase:
     """ 共通ベース """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
@@ -224,6 +227,11 @@ class ModelBase:
         if flatten:
             sa_result2 = sa_result2.reshape(-1)
         return sa_result2
+
+    def accommodate(self):
+        """モデルのEmbeddingと出力層を現在の語彙数へ拡張する。"""
+        self.embed.accommodate()
+        self.lm_head.accommodate()
     
 class BigramLanguageModel(ModelBase):
     """ GPT：基本の構成（Embedding → Blocks → lm_head） """
