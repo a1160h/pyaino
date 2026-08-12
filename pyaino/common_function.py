@@ -1,5 +1,5 @@
 # common_function
-# 20260808 A.Inoue 
+# 20260812 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2593,55 +2593,55 @@ class Tokenizer:
                         tokens.append(t)
         return tokens                
         
+    def add_token(self, token, used_ids):
+        """ 使用されていないidを探して登録する """
+        new_id = 0
+        while new_id in used_ids:
+            new_id += 1
+        self.token2id[token] = new_id
+        used_ids.add(new_id)
+        return new_id
+
     def create_vocab(self, text=None, base_vocab=None, clear=False, drop_empty=False):
         """ tokenとidの間の双方向の変換の辞書を作る """
 
         tokens = self.split_text_into_tokens(text, drop_empty)
 
         if clear: 
-            self.token2id = {}
+            self.token2id, self.id2token = {}, {}
             
         # defaultでtoken2idの初期化
-        self.token2id.update(self.default)
+        if self.default is not None:
+            self.token2id.update(self.default)
+        used_ids = set(self.token2id.values())
 
         # base_vocabに応じたtoken2idの初期化
         if base_vocab is None:
             pass
         elif type(base_vocab)==dict:
-            if self.id2token is not None:  # 既存の辞書のチェック
-                for k, v in base_vocab.items():
-                    if v in self.id2token: # 登録済みのidに遭遇したら
-                        raise Exception('Duplication of id detected.')
+            intersection = used_ids & set(base_vocab.values())
+            if intersection:
+                raise Exception(f'Duplication of id {intersection} detected.')
             self.token2id.update(base_vocab)
+            used_ids.update(base_vocab.values())
+
         else:
             raise TypeError('base_vocab should be a dictionary.')
 
-        # id2tokenの初期化(一旦既存の分で更新)
-        self.id2token = {v: k for k, v in self.token2id.items()}
-        used_ids = set(i for i in self.id2token) # 使用idの集合
-
         # token2idの生成
         if tokens is not None: # tokensから辞書を作る
-            new_id = 0 # forループの中では0に初期化する必要はなく続きから探せば良い
             for token in tokens:
                 if token in self.token2id:
                     continue
-                # 使用されていないidを順に探す
-                #new_id = 0
-                while new_id in used_ids:
-                    new_id += 1
-                # 見つかった欠番のidで変換辞書を登録し、使用idの集合に追加    
-                self.token2id[token]  = new_id
-                self.id2token[new_id] = token
-                used_ids.add(new_id)
+                self.add_token(token, used_ids)
             
         # <unk>が無い場合に加える
         if '<unk>' in self.token2id:
             pass
         else:
-            last_id = len(self.token2id) 
-            self.token2id["<unk>"] = last_id
-            self.id2token[last_id] = "<unk>"
+            self.add_token("<unk>", used_ids)
+
+        self.id2token = {token_id: token for token, token_id in self.token2id.items()}    
         return
 
     def encode(self, text, ndarray=True):
@@ -2683,138 +2683,6 @@ class Tokenizer:
         print(self.__class__.__name__, '辞書をファイルから取得しました<=', file_name)
         
        
-class Tokenizer_bkup:
-    """ 日本語、英語の両方に対応するTokenizer """
-
-    def __init__(self, text=None, splitter=None, joiner=None, default=None, 
-                 language='Japanese', unit=None, delimiter=None, end=None):
-        print(self.__class__.__name__, splitter, joiner, language, unit, delimiter, end)
-
-        # splitterを定義
-        if splitter is not None and isinstance(splitter, types.FunctionType):
-            self.splitter = splitter
-            print('splitter is', splitter.__name__)
-            btwo = '' if language.startswith(('J', 'j')) else ' '
-        elif delimiter is not None: # 区切り文字を指定
-            self.splitter = lambda text : text.split(delimiter)
-            print('splitter is according to specified delimiter.')
-            btwo = delimiter
-        elif unit in ('語', 'W', 'w', 'word') and language.startswith(('J', 'j')): # 日本語語分割　
-            self.splitter = split_japanese
-            print('splitter is a simple one based on regular expressions')
-            btwo = ''
-        elif unit in ('語', 'W', 'w', 'word'): # 英語など語分割
-            self.splitter = lambda text : text.split()
-            print('splitter is the built-in split() function in Python.')
-            btwo = ' '
-        else: # 文字分割
-            self.splitter = lambda text : list(text)
-            print('splitter is character based.')
-            btwo = ''
-        self.end = btwo if end is None else end
-
-        # joinerを定義
-        if joiner is not None and isinstance(joiner, types.FunctionType):
-            self.joiner = joiner
-            print('joiner is', joiner.__name__)
-        else:
-            self.joiner = lambda data : self.end.join(data)
-            print('joiner is built-in join() function in Python.')
-
-        self.token2id = None
-        self.id2token = None      
-        self.create_vocab(text, default)
-
-    def vocab_size(self):
-        return len(self.token2id)
-     
-    def create_vocab(self, text=None, default=None, clear=False):
-        """ textを分割しdataを得て、tokenとidの間の双方向の変換の辞書を作る """
-
-        if text is None:
-            data = None
-        elif isinstance(text, (list, tuple)): # 分割済みと想定
-            data = text
-        else:
-            data = self.splitter(text)
-
-        # defaultに応じたtoken2idの初期化
-        if clear or self.token2id is None: 
-            self.token2id = {}
-            
-        if default is None:
-            pass
-        elif type(default)==dict:
-            if self.id2token is not None:  # 既存の辞書のチェック
-                for k, v in default.items():
-                    if v in self.id2token: # 登録済みのidに遭遇したら
-                        raise Exception('Duplication of id detected.')
-            self.token2id.update(default)
-        else:
-            raise TypeError('Default should be a dictionary.')
-
-        # id2tokenの初期化(一旦既存の分で更新)
-        self.id2token = {v: k for k, v in self.token2id.items()}
-        used_ids = set(i for i in self.id2token) # 使用idの集合
-              
-        # token2idの生成
-        if data is not None: # dataから辞書を作る
-            new_id = 0 # forループの中では0に初期化する必要はなく続きから探せば良い
-            for token in data:
-                if token in self.token2id:
-                    continue
-                # 使用されていないidを順に探す
-                #new_id = 0
-                while new_id in used_ids:
-                    new_id += 1
-                # 見つかった欠番のidで変換辞書を登録し、使用idの集合に追加    
-                self.token2id[token]  = new_id
-                self.id2token[new_id] = token
-                used_ids.add(new_id)
-            
-        # <unk>が無い場合に加える
-        if '<unk>' in self.token2id:
-            pass
-        else:
-            last_id = len(self.token2id) 
-            self.token2id["<unk>"] = last_id
-            self.id2token[last_id] = "<unk>"
-        return
-
-    def encode(self, text, ndarray=True):
-        """ textを分割してidに変換し、それをindicesで返す """
-        data = self.splitter(text)
-        unk_id = self.token2id["<unk>"]
-        indices = [self.token2id.get(d, unk_id) for d in data]
-        if ndarray:
-            indices = np.array(indices)
-        return indices
-
-    def decode(self, indices):
-        """ indicesからtokenに変換して結合し文章textを返す """
-        if isinstance(indices, np.ndarray):  
-            indices = indices.tolist()
-        elif type(indices)==int:
-            indices = [indices]    
-        data = [self.id2token.get(idx, "<unk>") for idx in indices]
-        text = self.joiner(data)
-        return text
-
-    # -- 学習結果の保存(辞書形式) --
-    def save(self, file_name):
-        params = self.token2id
-        with open(file_name, 'wb') as f:
-            pickle.dump(params, f)
-        print(self.__class__.__name__, '辞書をファイルに記録しました=>', file_name)    
-
-    # -- 学習結果の継承(辞書形式) --
-    def load(self, file_name):
-        with open(file_name, 'rb') as f:
-            params = pickle.load(f)
-        self.create_vocab(default=params)
-        print(self.__class__.__name__, '辞書をファイルから取得しました<=', file_name)
-        
-
 def arrange_mini_batch(data, batch_size=100, time_size=35, step=None, CPT=None):
     """ ひと続きの時系列データをミニバッチ処理に適した形に加工する """
     step = time_size if step is None else step
