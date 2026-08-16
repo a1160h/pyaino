@@ -1,5 +1,5 @@
 # common_function
-# 20260812 A.Inoue 
+# 20260816 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2887,7 +2887,7 @@ class CutOutBatch:
 
         if isinstance(block_size, (tuple, list)) and len(block_size) == 2:
             self.block_size = block_size
-        elif is_scalar_int(block_size):
+        elif isinstance(block_size, int):
             self.block_size = block_size, block_size
         else:
             raise TypeError(
@@ -2988,7 +2988,7 @@ class CutOutBatchIx:
         """ CutOutBatchIxを初期化する """
         if isinstance(block_size, (tuple, list)) and len(block_size) == 2:
             self.block_size = block_size
-        elif is_scalar_int(block_size):
+        elif isinstance(block_size, int):
             self.block_size = block_size, block_size
         else:
             raise TypeError(
