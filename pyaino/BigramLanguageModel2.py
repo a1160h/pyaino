@@ -86,7 +86,7 @@ class TransformerBlock: # 使わなくなった20260616AI
         self.ln1.update(**kwargs)
         self.ln2.update(**kwargs)
 
-class LmHead:
+class LmHead: # 使わなくなった20260822AI
     """ 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築 """
     def __init__(self, emb_dim, vocab_size, matmul=True, unify=True, rms=False, 
                        tile_size=200, ignore=-1, **kwargs):
@@ -154,7 +154,7 @@ class ModelBase:
             )
         matmul = True                   
         tile_size = 1000 if vocab_size > 1000 else None 
-        self.lm_head = LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)#optimize)
+        self.lm_head = sbh.LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)#optimize)
 
         if not unify: # 以下2項は明示的に見せる必要がある
             self.softmax = Activators.Softmax()
@@ -431,11 +431,11 @@ if __name__=='__main__':
             print(created_data.tolist())
             
     entropy_record = np.array(entropy_record)
-    cf.graph_for_error(entropy_record.tolist())
-    cf.graph_for_error(error_record)
+    cf.graph(entropy_record.tolist())
+    cf.graph(error_record)
     error_record = np.array(error_record)
     record = np.concatenate([error_record.reshape(-1,1), entropy_record], axis=1)
-    cf.graph_for_error(record.tolist())
+    cf.graph(record.tolist())
     print('結果を確認')
     created_data = model.generate(np.arange(10), 101)
     print(created_data.tolist())

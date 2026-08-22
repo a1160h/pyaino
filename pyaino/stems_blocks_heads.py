@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260630 A.Inoue
+# 20260822 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -452,3 +452,51 @@ class ClassificationHead:
     def update(self, **kwargs):
         self.net[1].update(**kwargs)
 
+class LmHead:
+    """ 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築 """
+    def __init__(self, emb_dim, vocab_size, matmul=True, unify=True, rms=False, 
+                       tile_size=200, ignore=-1, **kwargs):
+        optimize = kwargs.get('optimize', 'AdamT')
+        if rms:
+            self.ln_f = nn.RMSNormalization(optimize=optimize)
+        else:    
+            self.ln_f = nn.LayerNormalization(optimize=optimize) #mask_enable=True) 
+        if unify: # 損失関数までの一体処理
+            self.linear_layer = nn.LinearLayerCrossEntropy(
+                emb_dim, vocab_size, matmul=matmul, tile_size=tile_size, **kwargs)
+        else:     # 機能別処理
+            self.linear_layer = nn.LinearLayer(
+                emb_dim, vocab_size, matmul=matmul, **kwargs)
+            self.loss_function = lf.CrossEntropyErrorForLogits(ignore=ignore)
+        self.unify = unify
+
+    def forward(self, x, targets=None):
+        x = self.ln_f(x)
+        if self.unify:
+            y = self.linear_layer(x, targets) # logits.shape=(B,T,vocab_size)
+            return y # (max_index, max_logit) if targets is None else (max_index, loss) 
+        logits = self.linear_layer(x) # logits.shape=(B,T,vocab_size)
+        if targets is None:
+            return logits
+        loss = self.loss_function(logits, targets)
+        return logits, loss
+        
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def backward(self, gy=None):
+        if self.unify:
+            gx = self.linear_layer.backward()
+        else:
+            if gy is None: # gyが指定されない場合は損失関数から得る
+                gy = self.loss_function.backward()
+            gx = self.linear_layer.backward(gy)
+        gx = self.ln_f.backward(gx)
+        return gx     
+
+    def update(self, **kwargs):
+        self.ln_f.update(**kwargs)
+        self.linear_layer.update(**kwargs)
+
+    def accommodate(self):
+        self.linear_layer.accommodate()
