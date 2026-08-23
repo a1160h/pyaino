@@ -1,5 +1,5 @@
 # common_function
-# 20260822 A.Inoue 
+# 20260823 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2105,57 +2105,26 @@ def gradient_check(grad1, grad2):
                             + '△{:.2e} '.format(diff)
     return result
 
-def align_data_hierarchy_bkup(*data, n_series=2):
-    """ 与えられたデータを全て float 形式の2階層のリストにする """
-
-    groups = []
-
-    if len(data) > 1 and all(
-        isinstance(item, (tuple, list))
-        and len(item) > 0
-        and not isinstance(item[0], (tuple, list))
-        for item in data
-    ):
-        for i in range(0, len(data), n_series):
-            group = data[i:i+n_series]
-            groups.append([[float(x) for x in item] for item in group])
-        return groups
-
-    for item in data:
-        if isinstance(item, (tuple, list)) and len(item) > 0 \
-                and isinstance(item[0], (tuple, list)):
-            groups.append([[float(x) for x in i] for i in item])
-        else:
-            groups.append([[float(x) for x in item]])
-
-    return groups
-
 def align_data_hierarchy(*data, n_series=2):
     """ 第0軸を時系列として、与えられたデータを全て float 形式の2階層のリストにする """
 
     groups = []
-    array_types = (tuple, list, np.ndarray)
 
-    if len(data) > 1 and \
-        all(isinstance(item, array_types)
-            and len(item) > 0
-            and not isinstance(item[0], array_types)
-            for item in data):
-        
-        for i in range(0, len(data), n_series):
-            group = data[i:i+n_series]
-            groups.append([[float(x) for x in item] for item in group])
-        return groups
-
+    # dataから一つずつ取り出し、その中身がさらに系列を持つかを見る
     for item in data:
-        if isinstance(item, array_types) and len(item) > 0 \
-                and isinstance(item[0], array_types):
+        if isinstance(item[0], (tuple, list, np.ndarray)):
             item = np.array(item).reshape(len(item), -1).T
             groups.append([[float(x) for x in series] for series in item])
         else:
             groups.append([[float(x) for x in item]])
 
+    # 複数のgroupがあり、それが全部1系列だけなら、n_series本ずつまとめ直す
+    if len(groups) > 1 and all(len(group) == 1 for group in groups):
+        series = [group[0] for group in groups]
+        groups = [series[i:i+n_series] for i in range(0, len(series), n_series)]
+
     return groups
+
 
 def graph(*data):
     groups = align_data_hierarchy(*data)

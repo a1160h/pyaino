@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260822 A.Inoue
+# 20260824 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -453,7 +453,8 @@ class ClassificationHead:
         self.net[1].update(**kwargs)
 
 class LmHead:
-    """ 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築 """
+    """ 言語モデル用のHead """
+    # 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築
     def __init__(self, emb_dim, vocab_size, matmul=True, unify=True, rms=False, 
                        tile_size=200, ignore=-1, **kwargs):
         optimize = kwargs.get('optimize', 'AdamT')
@@ -463,7 +464,9 @@ class LmHead:
             self.ln_f = nn.LayerNormalization(optimize=optimize) #mask_enable=True) 
         if unify: # 損失関数までの一体処理
             self.linear_layer = nn.LinearLayerCrossEntropy(
-                emb_dim, vocab_size, matmul=matmul, tile_size=tile_size, **kwargs)
+                emb_dim, vocab_size, matmul=matmul, tile_size=tile_size,
+                reduction='mean', # 1token 当たりの平均 negative log likelihood
+                **kwargs)
         else:     # 機能別処理
             self.linear_layer = nn.LinearLayer(
                 emb_dim, vocab_size, matmul=matmul, **kwargs)
