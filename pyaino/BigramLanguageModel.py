@@ -26,12 +26,12 @@ class ModelBase:
         self.embed = Neuron.PositionalEmbedding(
             vocab_size, block_size, emb_dim, **kwargs)
         self.blocks = Neuron.Sequential(
-            *[sbh.TransformerBlock(emb_dim, n_head, block_size, rms, 'tri', **kwargs)
+            *[sbh.TransformerBlock(emb_dim, n_head, 'tri', False, rms, **kwargs)
               for _ in range(n_layer)]
             )
         matmul = True                   
         tile_size = 1000 if vocab_size > 1000 else None 
-        self.lm_head = sbh.LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)#optimize)
+        self.lm_head = sbh.LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)
 
         if not unify: # 以下2項は明示的に見せる必要がある
             self.softmax = Activators.Softmax()
@@ -131,12 +131,15 @@ class BigramLanguageModel(ModelBase):
 
 class BigramLanguageModel2(ModelBase):
     """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=False, rms=False,
-                 optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, **kwargs):
+
+        rms      = kwargs.pop('rms',        False)
+        optimize = kwargs.pop('optimize', 'AdamT')
+        w_decay  = kwargs.pop('w_decay',     0.01)
 
         super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, rms, optimize, w_decay, ignore, **kwargs)
+                         rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        
         if rms:
             self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
         else:    
@@ -169,11 +172,15 @@ class BigramLanguageModel2(ModelBase):
 
 class BigramLanguageModel3(BigramLanguageModel2):
     """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=False, rms=False, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, **kwargs):
+
+        rms      = kwargs.pop('rms',        False)
+        optimize = kwargs.pop('optimize', 'AdamT')
+        w_decay  = kwargs.pop('w_decay',     0.01)
 
         ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, rms, optimize, w_decay, ignore, **kwargs)
+                         rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        
         if rms:
             self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
         else:    
@@ -183,11 +190,14 @@ class BigramLanguageModel3(BigramLanguageModel2):
    
 class BigramLanguageModel4(BigramLanguageModel2):
     """ GPT4：Embedding と最初の Block の間に 簡易LN + 単層LinearLayer を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=False, rms=False, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, **kwargs):
+
+        rms      = kwargs.pop('rms',        False)
+        optimize = kwargs.pop('optimize', 'AdamT')
+        w_decay  = kwargs.pop('w_decay',     0.01)
 
         ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, rms, optimize, w_decay, ignore, **kwargs)
+                         rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
         
         self.ln_pf = Neuron.Normalization(axis=-1)
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
@@ -195,12 +205,15 @@ class BigramLanguageModel4(BigramLanguageModel2):
 
 class BigramLanguageModel5(ModelBase):
     """ GPT5：Embedding と最初の Block の間に単層LinearLayer を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 unify=False, rms=False, optimize='AdamT', w_decay=0.01, ignore=-1, **kwargs):
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, **kwargs):
+
+        rms      = kwargs.pop('rms',        False)
+        optimize = kwargs.pop('optimize', 'AdamT')
+        w_decay  = kwargs.pop('w_decay',     0.01)
 
         super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                     unify, rms, optimize, w_decay, ignore, **kwargs)
-
+                         rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
                                         matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
 
@@ -282,6 +295,7 @@ if __name__=='__main__':
     # -- 各層の初期化 --
     model = BigramLanguageModel2(vocab_size, block_size, emb_dim, n_layer, n_head,
                                 #unify=True,
+                                rms=True,
                                 optimize='AdamT',
                                 regularizer='AttentionRegularizer()',
                                 w_decay=0.01,

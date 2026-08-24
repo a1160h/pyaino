@@ -1,3 +1,3 @@
 import warnings
 warnings.warn('Just to keep compatibility. Use BigramLanguageModel instead.')
-from BigramLanguageModel import *
+from pyaino.BigramLanguageModel import *
