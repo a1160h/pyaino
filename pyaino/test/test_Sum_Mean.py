@@ -1,5 +1,6 @@
 from pyaino.Config import *
 from pyaino import Functions as F
+import math
 
 functions = (
              F.Sum,
@@ -36,5 +37,11 @@ for func in functions:
         print('backward result\n', c)
         print('-'*50)
     
-        
-
+       
+print('\n##### shape change test #####')
+model = F.Mean(axis=0)
+for shape in ((5, 4), (3, 4), (3, 4)):
+    a = np.arange(1, math.prod(shape)+1).reshape(shape)
+    b = model.forward(a)
+    c = model.backward()
+    print(shape, '->', b.shape, 'backward ->', c.shape)
