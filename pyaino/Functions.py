@@ -1,5 +1,5 @@
 # Functions 順伝播逆伝播双方に対応した関数
-# 20260805 A.Inoue
+# 20260825 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -50,10 +50,7 @@ def neg(x):
 class Pow(Function):
     def __init__(self, c=1):
         super().__init__()
-        self.c = HDArray(c)     # 20241019 nucleusでdtypeを指定しないならば元の型を継承　
-        #if isinstance(c, int):  # 20241030 不要
-        #    self.c = self.c.astype(int)
-        #self.c.name = 'exponent' # 数値が出ればそれで良い
+        self.c = c
         
     def __forward__(self, x):
         y = np.power(x, self.c) # 20241019 x**c
@@ -102,8 +99,7 @@ class Exp(Function):
             log_of_base = 1          
         else:                  # 底が指定された場合　
             log_of_base = np.log(a) # 底がeの対数,これを用いて底の交換
-        self.log_of_base = HDArray(log_of_base) # 20241019   
-        self.log_of_base.name = None if a is None else 'log'+str(a) 
+        self.log_of_base = log_of_base   
    
     def __forward__(self, x):
         y = np.exp(self.log_of_base * x)
@@ -128,8 +124,7 @@ class Log(Function):
             log_of_base = np.log(a) 
         else:
             raise Exception("Bad base is given for log")
-        self.log_of_base = HDArray(log_of_base) # 20241019
-        self.log_of_base.name = None if a is None else 'log'+str(a)   
+        self.log_of_base = log_of_base   
        
     def __forward__(self, x):
         y = np.log(x)/self.log_of_base
@@ -361,6 +356,7 @@ class SumMeanVar(Function):
         self.gy_shape = None
         self.dtype = dtype # 仮処置20260127AI
         self.out = out     # 仮処置20260127AI
+        self.last_x_shape = None
     
     def set_axis_and_shape(self, shape):
         """ 畳まれる軸と残る軸を明らかにする """
@@ -386,27 +382,21 @@ class SumMeanVar(Function):
         #print('畳まれる軸', axis)
         #print('畳まれる軸を1、他はそのままの形状', self.gy_shape)
         #print('畳まれる軸の形状の積=大きさ', n)
-        self.n = HDArray(n) # VCG対応20241018
-        self.n.name = 'n'   #  
-
-    def __forward__(self, x):
-        last_x = self.inputs[0] if self.inputs else None
-        if last_x is not None and last_x.shape == x.shape: # 前回と同じ形状
-            return
-        self.set_axis_and_shape(x.shape)
+        self.n = n
         
     def __backward__(self, gy):
-        """ 逆伝播:形状のややこしい操作があるので親クラスのbackwardを上書き """
         x, = self.inputs
-        #gy = gy.reshape(self.gy_shape)          # gyは次元を合わせる
-        gy = snp.reshape(gy, self.gy_shape)          # gyは次元を合わせる
+        if self.last_x_shape != x.shape:
+            self.set_axis_and_shape(x.shape)
+            self.last_x_shape = x.shape
+        gy = snp.reshape(gy, self.gy_shape)         # gyは次元を合わせる
         gy = snp.broadcast_to(gy, x.shape)          # 畳まれた分をbroadcastして元に戻す
         return gy
+
 
 class Sum(SumMeanVar):
     """ 和 """
     def __forward__(self, x):
-        super().__forward__(x)
         y = snp.sum(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
@@ -416,7 +406,6 @@ def sum(x, axis=None, keepdims=False):
 class Mean(SumMeanVar):
     """ 平均 """
     def __forward__(self, x):
-        super().__forward__(x)
         y = snp.mean(x, axis=self.axis, keepdims=self.keepdims)
         return y
     
@@ -431,7 +420,6 @@ def mean(x, axis=None, dtype=None, out=None, keepdims=False):
 class Var(SumMeanVar):
     """ 分散 """
     def __forward__(self, x):
-        super().__forward__(x)
         y = snp.var(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
@@ -448,7 +436,6 @@ def var(x, axis=None, keepdims=False):
 class Std(SumMeanVar):
     """ 標準偏差 """
     def __forward__(self, x):
-        super().__forward__(x)
         y = snp.std(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
@@ -469,7 +456,6 @@ def std(x, axis=None, keepdims=False):
 class SquareSum(SumMeanVar):
     """ 二乗和 """
     def __forward__(self, x):
-        super().__forward__(x)
         y = snp.sum(x**2, axis=self.axis, keepdims=self.keepdims)
         return y
 
@@ -482,7 +468,6 @@ class SquareSum(SumMeanVar):
 class SquareMean(SumMeanVar):
     """ 二乗平均 """
     def __forward__(self, x):
-        super().__forward__(x)
         y = snp.mean(x**2, axis=self.axis, keepdims=self.keepdims)
         return y
 
@@ -495,7 +480,6 @@ class SquareMean(SumMeanVar):
 class RootSumSquare(SumMeanVar):
     """ 二乗和平方根 """
     def __forward__(self, x):
-        super().__forward__(x)
         sqsm = snp.sum(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqsm)
         return y
@@ -512,7 +496,6 @@ class RootSumSquare(SumMeanVar):
 class RootMeanSquare(SumMeanVar):
     """ 二乗平均平方根(RootMeanSquare) """
     def __forward__(self, x):
-        super().__forward__(x)
         sqmu = snp.mean(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqmu)
         return y
@@ -561,7 +544,7 @@ class VariadicBase:
     
 class SumVariadicCore(Function):
     def __forward__(self, *xs):
-        debug_print('->', self.__class__.__name__, type(xs), len(xs), '\n', xs)
+        #print('->', self.__class__.__name__, type(xs), len(xs), '\n', xs)
         y = reduce(lambda a, b : a + b, xs)
         self.reduction = len(xs)
         return y
@@ -1026,12 +1009,9 @@ class Normalize(Function):
         sigma = snp.std(x, axis=self.axis, keepdims=True)
         z = x - mu
         y = z / (sigma + self.eps)
-        self.sigma = HDArray(sigma)
-        self.mask = HDArray(sigma < self.eps) # sigmaが極小値の場合には正規化しない
-        self.n = HDArray(x.size//sigma.size)  # 畳んだ大きさ 
-        self.sigma.name = 'sigma'
-        self.mask.name ='mask'
-        self.n.name = 'n'
+        self.sigma = sigma
+        self.mask = sigma < self.eps # sigmaが極小値の場合には正規化しない
+        self.n = x.size//sigma.size  # 畳んだ大きさ 
         return y * (1 - self.mask) + x * self.mask
    
     def __backward__(self, gy):
