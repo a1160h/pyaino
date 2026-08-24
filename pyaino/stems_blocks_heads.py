@@ -465,12 +465,14 @@ class LmHead:
         if unify: # 損失関数までの一体処理
             self.linear_layer = nn.LinearLayerCrossEntropy(
                 emb_dim, vocab_size, matmul=matmul, tile_size=tile_size,
-                reduction='mean', # 1token 当たりの平均 negative log likelihood
                 **kwargs)
         else:     # 機能別処理
             self.linear_layer = nn.LinearLayer(
                 emb_dim, vocab_size, matmul=matmul, **kwargs)
-            self.loss_function = lf.CrossEntropyErrorForLogits(ignore=ignore)
+            self.loss_function = lf.CrossEntropyErrorForLogits(
+                ignore=ignore,
+                reduction='mean', # 1token 当たりの平均 negative log likelihood
+                )
         self.unify = unify
 
     def forward(self, x, targets=None):
@@ -503,3 +505,80 @@ class LmHead:
 
     def accommodate(self):
         self.linear_layer.accommodate()
+
+
+class FeedForward: 
+    """ a simple linear layer followed bu a non-linearity """
+
+    def __init__(self, emb_dim=64, n_head=4, **kwargs):
+        self.net = nn.Sequential(
+              nn.LinearLayer(emb_dim, emb_dim*n_head, matmul=True, **kwargs),
+              A.Mish(), # オリジナルはReLU
+              nn.LinearLayer(emb_dim*n_head, emb_dim, matmul=True, **kwargs),
+              nn.Dropout(),
+              )
+
+    def forward(self, x, dropout=0.0):
+        y = self.net.forward(x, dropout=dropout)
+        return y
+
+    def backward(self, gy=None):
+        if gy is None:
+            gy = np.ones_like(self.y)
+        gx = self.net.backward(gy)    
+        return gx
+
+    def update(self, **kwargs):
+        self.net.update(**kwargs)
+
+class TransformerBlock_bkup: # 使わなくなった20260616AI
+    """ Transformer block: communication followed by computation """
+
+    def __init__(self, emb_dim=64, n_head=4, block_size=500, rms=False,
+                  causality=None, activate='Mish', **kwargs):
+        # emb_dim: embedding dimension, n_head: the number of heads we'd like
+        self.sa = nn.MultiHeadSelfAttention(
+            emb_dim, emb_dim//n_head, n_head, causality=causality, **kwargs) # entropy制御はkwargsで指定
+        #self.ffwd = FeedForward(emb_dim, n_head, **kwargs)
+        #self.ln1 = nn.Normalization(axis=-1, mask_enable=True) # layer normalization
+        #self.ln2 = nn.Normalization(axis=-1, mask_enable=True) # layer normalization
+        self.ffwd = nn.Sequential(
+            nn.NeuronLayer(emb_dim, emb_dim*n_head, matmul=True, activate=activate, **kwargs),
+            nn.NeuronLayer(emb_dim*n_head, emb_dim, matmul=True, dropout=True, **kwargs),
+            )
+        if rms:
+            self.ln1 = nn.RMSNormalization(**kwargs)
+            self.ln2 = nn.RMSNormalization(**kwargs)
+        else:    
+            self.ln1 = nn.LayerNormalization(**kwargs) # 20250515AI
+            self.ln2 = nn.LayerNormalization(**kwargs) # 20250515AI
+            
+    def forward(self, x, mask=None, dropout=0.0):
+        z = self.ln1.forward(x)
+        z = self.sa.forward(z, mask=mask, dropout=dropout)
+        #z += x # 自動微分で問題 20250528AI
+        z = z + x
+        y = self.ln2.forward(z)
+        y = self.ffwd.forward(y, dropout=dropout)
+        #y += z # 自動微分で問題 20250528AI
+        y = y + z
+        self.y = y
+        return y
+
+    def backward(self, gy=None):
+        if gy is None:
+            gy = np.ones_like(self.y)
+        gz = self.ffwd.backward(gy)
+        gz = self.ln2.backward(gz)
+        gz += gy
+        gx = self.sa.backward(gz)
+        gx = self.ln1.backward(gx)
+        gx += gz
+        return gx
+
+    def update(self, **kwargs):
+        self.sa.update(**kwargs)
+        self.ffwd.update(**kwargs)
+        self.ln1.update(**kwargs)
+        self.ln2.update(**kwargs)
+
