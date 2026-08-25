@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260824 A.Inoue
+# 20260825 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -9,18 +9,40 @@ from pyaino import Activators as A
 from pyaino import LossFunctions as lf
 from pyaino import common_function as cf
 
+class FeedForward: 
+    """ a simple linear layer followed bu a non-linearity """
+
+    def __init__(self, emb_dim=64, expansion=4, activate='Mish', **kwargs):
+        activator = cf.eval_in_module(activate, A)
+        self.net = nn.Sequential(
+              nn.LinearLayer(emb_dim, emb_dim*expansion, matmul=True, **kwargs),
+              activator, # オリジナルはReLU
+              nn.LinearLayer(emb_dim*expansion, emb_dim, matmul=True, **kwargs),
+              nn.Dropout(),
+              )
+
+    def forward(self, x, dropout=0.0):
+        y = self.net.forward(x, dropout=dropout)
+        return y
+
+    def backward(self, gy=None):
+        if gy is None:
+            gy = np.ones_like(self.y)
+        gx = self.net.backward(gy)    
+        return gx
+
+    def update(self, **kwargs):
+        self.net.update(**kwargs)
+
 class TransformerBlock(nucleus.Function):
     """ Transformer block: communication followed by computation """
 
     def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False, 
-                 rms=False, activate='Mish', **kwargs):
+                 expansion=4, rms=False, activate='Mish', **kwargs):
         super().__init__()
         self.sa = nn.MultiHeadSelfAttention(
             emb_dim, emb_dim//n_head, n_head, causality=causality, **kwargs) # entropy制御はkwargsで指定
-        self.ffwd = nn.Sequential(
-            nn.NeuronLayer(emb_dim, emb_dim*n_head, matmul=True, activate=activate, **kwargs),
-            nn.NeuronLayer(emb_dim*n_head, emb_dim, matmul=True, dropout=True, **kwargs),
-            )
+        self.ffwd = FeedForward(emb_dim, expansion, activate=activate, **kwargs)
         Norm = nn.RMSNormalization if rms else nn.LayerNormalization
         self.ln1 = Norm(**kwargs)
         self.ln2 = Norm(**kwargs)
@@ -507,29 +529,6 @@ class LmHead:
         self.linear_layer.accommodate()
 
 
-class FeedForward: 
-    """ a simple linear layer followed bu a non-linearity """
-
-    def __init__(self, emb_dim=64, n_head=4, **kwargs):
-        self.net = nn.Sequential(
-              nn.LinearLayer(emb_dim, emb_dim*n_head, matmul=True, **kwargs),
-              A.Mish(), # オリジナルはReLU
-              nn.LinearLayer(emb_dim*n_head, emb_dim, matmul=True, **kwargs),
-              nn.Dropout(),
-              )
-
-    def forward(self, x, dropout=0.0):
-        y = self.net.forward(x, dropout=dropout)
-        return y
-
-    def backward(self, gy=None):
-        if gy is None:
-            gy = np.ones_like(self.y)
-        gx = self.net.backward(gy)    
-        return gx
-
-    def update(self, **kwargs):
-        self.net.update(**kwargs)
 
 class TransformerBlock_bkup: # 使わなくなった20260616AI
     """ Transformer block: communication followed by computation """
