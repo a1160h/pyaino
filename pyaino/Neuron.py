@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260811 A.Inoue
+# 20260825 A.Inoue
 
 import copy
 import warnings
@@ -2184,7 +2184,7 @@ class Interpolate2dNearest(Interpolate2d):
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
-        prefix, Ih, Iw, Oh, Ow, mode, align = self.config
+        Ih, Iw, Oh, Ow, mode, align = self.config
 
         # 出力座標 0..Oh-1, 0..Ow-1
         # 入力側の連続座標 → 最近傍の整数インデックス
@@ -2210,7 +2210,8 @@ class Interpolate2dNearest(Interpolate2d):
     def __backward__(self, gy):
         x, = self.inputs
         B = x.shape[0]
-        prefix, Ih, Iw, Oh, Ow, mode, align = self.config
+        prefix = x.shape[1:-2] # バッチ軸 B と末尾の空間軸 (H, W) の間にある軸
+        Ih, Iw, Oh, Ow, mode, align = self.config
 
         # gx をゼロ初期化
         gx = np.zeros_like(x) # xの形と型を継承
@@ -2851,7 +2852,8 @@ class RnnBaseLayer(Function):
         self.mask = None    
         
     def fix_configuration(self, shape):
-        self.config[0] = shape[-1]
+        m, n, stateful = self.config
+        self.config = shape[-1], n, stateful
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def get_parameter_size(self):
