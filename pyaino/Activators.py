@@ -1,5 +1,5 @@
 # Activators
-# 2026.06.06 A.Inoue
+# 2026.08.25 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -171,7 +171,7 @@ class ELU(ActivatorBase):
         gx = gy * np.where(x<=0, (y + self.c), 1)
         return gx #.astype(Config.dtype)
 
-def elu(x):
+def elu(x, c=1.0):
     return ELU(c=c)(x)
 
 class Swish(ActivatorBase):
