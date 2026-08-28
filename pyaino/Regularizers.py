@@ -1,5 +1,5 @@
 # Regularizers
-# 202510.21 A.Inoue
+# 20260828 A.Inoue
 from pyaino.Config import *
 from pyaino.nucleus import Function
 from pyaino import common_function as cf
@@ -80,7 +80,6 @@ class JSDivergenceUnit(Function):
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
         m = 0.5 * (p + q)
-        self.m = m
         klp = p * self.log(p / m)
         klq = q * self.log(q / m)
         return 0.5 * (klp + klq)
@@ -90,7 +89,7 @@ class JSDivergenceUnit(Function):
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
-        m = self.m  
+        m = 0.5 * (p + q) 
         gp = 0.5 * gy * self.log(p / m)
         gq = 0.5 * gy * self.log(q / m)
         return gp, gq
@@ -216,6 +215,7 @@ class JSDivergence(PairDivergence):
     def __init__(self, **kwargs):
         eps       = kwargs.pop('eps',     1e-9)
         log_base  = kwargs.pop('log_base', 'e')
+        kwargs.setdefault('method', 'combination')
         unit = JSDivergenceUnit(log_base=log_base, eps=eps)
         super().__init__(unit, **kwargs)
 
@@ -463,35 +463,40 @@ class AttentionRegularizer(Function):
         and self.regularize3 is None:
             return 0
         
-        if self.regularize1 is None:
-            ga1 = 0
-        else:
-            gy1 = self.regularize1.backward(gl)
-            ga1 = self.divergence1.backward(gy1)
         if self.scheduler1 is not None:
             eta1 = self.eta1 * self.scheduler1(self.iter)
         else:
             eta1 = self.eta1
-            
-        if self.regularize2 is None:
-            ga2 = 0
+
+        if self.regularize1 is None or eta1 == 0:
+            ga1 = 0
         else:
-            gy2 = self.regularize2.backward(gl)
-            ga2 = self.divergence2.backward(gy2) 
+            gy1 = self.regularize1.backward(gl)
+            ga1 = self.divergence1.backward(gy1)
+
+
         if self.scheduler2 is not None:
             eta2 = self.eta2 * self.scheduler2(self.iter)
         else:
             eta2 = self.eta2
 
-        if self.regularize3 is None:
-            ga3 = 0
+        if self.regularize2 is None or eta2 == 0:
+            ga2 = 0
         else:
-            gy3 = self.regularize3.backward(gl)
-            ga3 = self.divergence3.backward(gy3) 
+            gy2 = self.regularize2.backward(gl)
+            ga2 = self.divergence2.backward(gy2)
+    
+
         if self.scheduler3 is not None:
             eta3 = self.eta3 * self.scheduler3(self.iter)
         else:
             eta3 = self.eta3
+
+        if self.regularize3 is None or eta3 == 0:
+            ga3 = 0
+        else:
+            gy3 = self.regularize3.backward(gl)
+            ga3 = self.divergence3.backward(gy3)
 
         self.iter += 1    
 
