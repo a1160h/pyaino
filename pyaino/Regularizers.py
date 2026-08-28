@@ -206,6 +206,7 @@ class KLDivergence(PairDivergence):
         symmetric = kwargs.pop('symmetric', False)
         eps       = kwargs.pop('eps',        1e-9)
         if symmetric:
+            kwargs.setdefault('method', 'combination')
             unit = SymmetricKLDivergenceUnit(eps=eps)
         else:
             unit = KLDivergenceUnit(eps=eps)
