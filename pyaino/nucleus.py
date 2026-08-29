@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260714 A.Inoue
+# 20260829 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -157,6 +157,8 @@ class Function:
         引数のうち、*inputsは*xsとして派生クラスの__forward__()メソッドに渡され、
         **kwargsはそのまま渡される．前者は計算グラフ生成の対象であり、後者は対象外．
         '''
+        self.inputs  = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
+        self.outputs = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
         debug_print('<forward ↓>', self.__class__.__name__, id(self), 'forward (',
                     Config.create_graph, Config.higher_derivative, Config.derivative,
                     Config.backtrace_duration, Config.operator_state, ')')
