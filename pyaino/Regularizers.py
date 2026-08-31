@@ -166,7 +166,9 @@ class PairDivergence(Function):
                  log_base='e', eps=1e-9):
         """p: モデルからの出力, q: 目標分布"""
         super().__init__()
-        #self.pairwise = F.Pairwise(axis=axis0, broadcast=True, diagonal_mask=True)  
+        self.axis0 = axis0
+        self.method = method
+        self.take_pair = F.TakePair(axis0, method)
         self.axis1 = axis1
         axis1 = (axis1,) if type(axis1) is not tuple else axis1 # 統計量算出軸
         if axis2 is None:
@@ -176,7 +178,6 @@ class PairDivergence(Function):
             self.axis = axis2 + axis1
         self.flatten = flatten
         self.eps = eps
-        self.take_pair = F.TakePair(axis0, method)
         self.unit = unit
         self.mean = F.Mean(axis=self.axis, keepdims=keepdims)
         self.Tk = None
@@ -285,6 +286,7 @@ class PairwiseGap(Function):
         self.target_gap = gap
         self.beta = beta
         self.axis = axis
+        self.method = method
         self.take_pair = F.TakePair(axis, method)
         self.square_mean = F.SquareMean()
 
@@ -405,6 +407,13 @@ class AttentionRegularizer(Function):
         else:    
             self.scheduler3  = scheduler3
 
+        # Pair系のtake_pairはAttentionRegularizerが一元管理する。
+        # PairDivergence / PairwiseGap が単体で生成したtake_pairがあっても、
+        # AttentionRegularizer配下ではここで生成したものを強制的に使用する。
+        self.take_pair_d1, self.take_pair_r1 = self._configure_take_pair(self.divergence1, self.regularize1)
+        self.take_pair_d2, self.take_pair_r2 = self._configure_take_pair(self.divergence2, self.regularize2)
+        self.take_pair_d3, self.take_pair_r3 = self._configure_take_pair(self.divergence3, self.regularize3)
+
         self.axis1 = axis1
         self.axis2 = axis2
         self.axis3 = axis3
@@ -428,6 +437,19 @@ class AttentionRegularizer(Function):
               )
         
         self.result1, self.result2, self.result3 = None, None, None 
+
+    def _configure_take_pair(self, divergence, regularize):
+        take_pair_d, take_pair_r = None, None
+
+        if isinstance(divergence, PairDivergence):
+            take_pair_d = F.TakePair(divergence.axis0, divergence.method)
+            divergence.take_pair = take_pair_d
+
+        if isinstance(regularize, PairwiseGap):
+            take_pair_r = F.TakePair(regularize.axis, regularize.method)
+            regularize.take_pair = take_pair_r
+
+        return take_pair_d, take_pair_r
 
     def __forward__(self, a, target=None):
         result1, result2, result3 = None, None, None
