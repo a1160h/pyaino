@@ -353,90 +353,78 @@ class AttentionRegularizer(Function):
     def __init__(self,
                  divergence1=EntropyDivergence(),
                  regularize1=None,
-                 scheduler1=None, 
+                 scheduler1=None,
                  divergence2=None,
                  regularize2=None,
-                 scheduler2=None, # reguiarize2のscheduler
+                 scheduler2=None,
                  divergence3=None,
                  regularize3=None,
-                 scheduler3=None, # reguiarize3のscheduler
-                 axis1=(0,2,3),   # divergence1の結果の平均軸
-                 axis2=(0,2,3),   # divergence2の結果の平均軸
-                 axis3=(0,2,3),   # divergence3の結果の平均軸
+                 scheduler3=None,
+                 axis1=(0,2,3),
+                 axis2=(0,2,3),
+                 axis3=(0,2,3),
                  eta1=0,
                  eta2=0,
                  eta3=0,
-                 ):
+                ):
         super().__init__()
-        if type(divergence1) == str:
-            self.divergence1 = cf.eval_in_module(divergence1, None)
-        else:    
-            self.divergence1 = divergence1
-        if type(regularize1) == str:
-            self.regularize1 = cf.eval_in_module(regularize1, None)
-        else:    
-            self.regularize1 = regularize1
-        if type(scheduler1) == str:
-            self.scheduler1  = cf.eval_in_module(scheduler1, Optimizers)
-        else:    
-            self.scheduler1  = scheduler1
-            
-        if type(divergence2) == str:
-            self.divergence2 = cf.eval_in_module(divergence2, None)
-        else:    
-            self.divergence2 = divergence2
-        if type(regularize2) == str:
-            self.regularize2 = cf.eval_in_module(regularize2, None)
-        else:    
-            self.regularize2 = regularize2
-        if type(scheduler2) == str:
-            self.scheduler2  = cf.eval_in_module(scheduler2, Optimizers)
-        else:    
-            self.scheduler2  = scheduler2
 
-        if type(divergence3) == str:
-            self.divergence3 = cf.eval_in_module(divergence3, None)
-        else:    
-            self.divergence3 = divergence3
-        if type(regularize3) == str:
-            self.regularize3 = cf.eval_in_module(regularize3, None)
-        else:    
-            self.regularize3 = regularize3
-        if type(scheduler3) == str:
-            self.scheduler3  = cf.eval_in_module(scheduler3, Optimizers)
-        else:    
-            self.scheduler3  = scheduler3
+        settings = [
+            (divergence1, regularize1, scheduler1, axis1, eta1),
+            (divergence2, regularize2, scheduler2, axis2, eta2),
+            (divergence3, regularize3, scheduler3, axis3, eta3),
+        ]
 
-        # Pair系のtake_pairはAttentionRegularizerが一元管理する。
-        # PairDivergence / PairwiseGap が単体で生成したtake_pairがあっても、
-        # AttentionRegularizer配下ではここで生成したものを強制的に使用する。
-        self.take_pair_d1, self.take_pair_r1 = self._configure_take_pair(self.divergence1, self.regularize1)
-        self.take_pair_d2, self.take_pair_r2 = self._configure_take_pair(self.divergence2, self.regularize2)
-        self.take_pair_d3, self.take_pair_r3 = self._configure_take_pair(self.divergence3, self.regularize3)
+        self.settings = []
 
-        self.axis1 = axis1
-        self.axis2 = axis2
-        self.axis3 = axis3
-        
-        self.eta1 = eta1
-        self.eta2 = eta2
-        self.eta3 = eta3
+        for divergence, regularize, scheduler, axis, eta in settings:
+            if type(divergence) == str:
+                divergence = cf.eval_in_module(divergence, None)
+            if type(regularize) == str:
+                regularize = cf.eval_in_module(regularize, None)
+            if type(scheduler) == str:
+                scheduler = cf.eval_in_module(scheduler, Optimizers)
+
+            # Pair系のtake_pairはAttentionRegularizerが一元管理する。
+            # PairDivergence / PairwiseGap が単体で生成したtake_pairがあっても、
+            # AttentionRegularizer配下ではここで生成したものを強制的に使用する。
+            take_pair_d, take_pair_r = self._configure_take_pair(
+                divergence, regularize)
+
+            self.settings.append({
+                'divergence': divergence,
+                'regularize': regularize,
+                'scheduler': scheduler,
+                'axis': axis,
+                'eta': eta,
+                'take_pair_d': take_pair_d,
+                'take_pair_r': take_pair_r,
+                'result': None,
+                'record': [],
+            })
 
         self.iter = 0
 
-        print(self.__class__.__name__,
-              '\ndivergence1:', self.divergence1.__class__.__name__,
-              '\nregularize1:', self.regularize1.__class__.__name__,
-              '\nscheduler1:',  self.scheduler1.__class__.__name__,
-              '\ndivergence2:', self.divergence2.__class__.__name__,
-              '\nregularize2:', self.regularize2.__class__.__name__,
-              '\nscheduler2:', self.scheduler2.__class__.__name__,
-              '\ndivergence3:', self.divergence3.__class__.__name__,
-              '\nregularize3:', self.regularize3.__class__.__name__,
-              '\nscheduler3:', self.scheduler3.__class__.__name__,
-              )
-        
-        self.result1, self.result2, self.result3 = None, None, None 
+        print(self.__class__.__name__)
+        for i, setting in enumerate(self.settings, 1):
+            divergence = setting['divergence']
+            regularize = setting['regularize']
+            scheduler = setting['scheduler']
+            print(
+                f'[{i}]',
+                '\ndivergence:', None if divergence is None else divergence.__class__.__name__,
+                '\nregularize:', None if regularize is None else regularize.__class__.__name__,
+                '\nscheduler:',  None if scheduler is None else scheduler.__class__.__name__,
+            )
+
+    def get_record1(self):
+        return self.settings[0]['record']
+
+    def get_record2(self):
+        return self.settings[1]['record']
+
+    def get_record3(self):
+        return self.settings[2]['record']
 
     def _configure_take_pair(self, divergence, regularize):
         take_pair_d, take_pair_r = None, None
@@ -452,76 +440,55 @@ class AttentionRegularizer(Function):
         return take_pair_d, take_pair_r
 
     def __forward__(self, a, target=None):
-        result1, result2, result3 = None, None, None
+        loss = 0
 
-        if self.divergence1 is not None:
-            result1 = self.divergence1(a)
-        if self.divergence2 is not None:    
-            result2 = self.divergence2(a)
-        if self.divergence3 is not None:    
-            result3 = self.divergence3(a)
-        loss1 = 0 if self.regularize1 is None else self.regularize1(result1)
-        loss2 = 0 if self.regularize2 is None else self.regularize2(result2)
-        loss3 = 0 if self.regularize3 is None else self.regularize3(result3)
-        # 以下は計測用、head毎の値は末尾の軸、それ以外の軸はバッチ軸など平均をとる
-        #print(result1.shape, result2.shape, result3.shape)
-        if self.axis1 is not None and self.divergence1 is not None:
-            self.result1 = np.mean(result1, axis=self.axis1)
-        else:
-            self.result1 = result1
-        if self.axis2 is not None and self.divergence2 is not None:
-            self.result2 = np.mean(result2, axis=self.axis2)
-        else:
-            self.result2 = result2
-        if self.axis3 is not None and self.divergence3 is not None:
-            self.result3 = np.mean(result3, axis=self.axis3)
-        else:
-            self.result3 = result3
-        #print(self.result1.shape, self.result2.shape, self.result3.shape)    
-        return loss1 + loss2 + loss3
+        for setting in self.settings:
+            divergence = setting['divergence']
+            regularize = setting['regularize']
+            axis = setting['axis']
+
+            result = None if divergence is None else divergence(a)
+
+            if regularize is not None:
+                loss += regularize(result)
+
+            # 計測用、head毎の値は末尾の軸、
+            # それ以外の軸はバッチ軸など平均をとる
+            if axis is not None and result is not None:
+                result = np.mean(result, axis=axis)
+
+            setting['result'] = result
+
+        return loss
 
     def __backward__(self, gl):
-        if  self.regularize1 is None \
-        and self.regularize2 is None \
-        and self.regularize3 is None:
+        # backwardまで到達したforwardだけを学習記録として残す
+        for setting in self.settings:
+            result = setting['result']
+            if result is not None:
+                setting['record'].append(result.copy())
+
+        if all(setting['regularize'] is None for setting in self.settings):
             return 0
-        
-        if self.scheduler1 is not None:
-            eta1 = self.eta1 * self.scheduler1(self.iter)
-        else:
-            eta1 = self.eta1
 
-        if self.regularize1 is None or eta1 == 0:
-            ga1 = 0
-        else:
-            gy1 = self.regularize1.backward(gl)
-            ga1 = self.divergence1.backward(gy1)
+        ga = 0
 
+        for setting in self.settings:
+            divergence = setting['divergence']
+            regularize = setting['regularize']
+            scheduler = setting['scheduler']
+            eta = setting['eta']
 
-        if self.scheduler2 is not None:
-            eta2 = self.eta2 * self.scheduler2(self.iter)
-        else:
-            eta2 = self.eta2
+            if scheduler is not None:
+                eta = eta * scheduler(self.iter)
 
-        if self.regularize2 is None or eta2 == 0:
-            ga2 = 0
-        else:
-            gy2 = self.regularize2.backward(gl)
-            ga2 = self.divergence2.backward(gy2)
-    
+            if regularize is None or eta == 0:
+                continue
 
-        if self.scheduler3 is not None:
-            eta3 = self.eta3 * self.scheduler3(self.iter)
-        else:
-            eta3 = self.eta3
+            gy = regularize.backward(gl)
+            gx = divergence.backward(gy)
+            ga += gx * eta
 
-        if self.regularize3 is None or eta3 == 0:
-            ga3 = 0
-        else:
-            gy3 = self.regularize3.backward(gl)
-            ga3 = self.divergence3.backward(gy3)
+        self.iter += 1
 
-        self.iter += 1    
-
-        return ga1 * eta1 + ga2 * eta2 + ga3 * eta3
-   
+        return ga

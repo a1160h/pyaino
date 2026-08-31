@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260825 A.Inoue
+# 20260831 A.Inoue
 
 import copy
 import warnings
@@ -3724,9 +3724,6 @@ class AttentionUnit(Function):
         self.DO = Dropout()
         self.iter = 0
         self.loss = 0
-        self.result1 = None
-        self.result2 = None
-        self.result3 = None
         self.tril = None # causalityの制御のマスク
         self.mask = None # 無効トークンのマスク
        
@@ -3764,11 +3761,9 @@ class AttentionUnit(Function):
        
         a = self.softmax(a)
         
-        if self.regularizer is not None: # aのエントロピーやKLDの算出
+        if self.regularizer is not None: 
             self.loss = self.regularizer.forward(a)
-            self.result1 = self.regularizer.result1
-            self.result2 = self.regularizer.result2
-            self.result3 = self.regularizer.result3
+
         self.iter += 1 
 
         a = self.DO.forward(a, dropout=dropout)
