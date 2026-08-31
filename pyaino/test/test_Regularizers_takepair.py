@@ -1,3 +1,7 @@
+"""
+数値互換・TakePair管理・backward・有限差分まで含む回帰テスト
+
+"""
 # smoke_test_regularizers_takepair_backward.py
 # AttentionRegularizer による F.TakePair 一元管理
 # forward / backward smoke test
@@ -44,24 +48,35 @@ reg = R.AttentionRegularizer(
 )
 
 loss_managed = reg(a)
+
+assert len(reg.get_record2()) == 0
+
 g_a_managed = reg.backward(1.0)
+
+assert reg.settings[1]['divergence'] is jsd
+assert reg.settings[1]['regularize'] is gap
+assert len(reg.get_record2()) == 1
+assert np.allclose(
+    reg.get_record2()[0],
+    reg.settings[1]['result']
+)
 
 
 print('loss base/managed =', float(loss_base), float(loss_managed))
-print('result shape      =', result_base.shape, reg.result2.shape)
+print('result shape      =', result_base.shape, reg.settings[1]['result'].shape)
 print('gradient shape    =', g_a_base.shape, g_a_managed.shape)
 
 print('max loss diff   =', float(np.max(np.abs(loss_base - loss_managed))))
 print('max result diff =',
-      float(np.max(np.abs(result_base.reshape(-1) - reg.result2.reshape(-1)))))
+      float(np.max(np.abs(result_base.reshape(-1) - reg.settings[1]['result'].reshape(-1)))))
 print('max grad diff   =', float(np.max(np.abs(g_a_base - g_a_managed))))
 
 assert np.allclose(loss_base, loss_managed)
-assert np.allclose(result_base.reshape(-1), reg.result2.reshape(-1))
+assert np.allclose(result_base.reshape(-1), reg.settings[1]['result'].reshape(-1))
 assert np.allclose(g_a_base, g_a_managed)
 
-assert jsd.take_pair is reg.take_pair_d2
-assert gap.take_pair is reg.take_pair_r2
+assert jsd.take_pair is reg.settings[1]['take_pair_d']
+assert gap.take_pair is reg.settings[1]['take_pair_r']
 assert jsd.take_pair is not take_pair_d_before
 assert gap.take_pair is not take_pair_r_before
 
@@ -90,12 +105,30 @@ reg_str = R.AttentionRegularizer(
 )
 
 loss_str = reg_str(a)
+
+assert len(reg_str.get_record2()) == 0
+
 g_a_str = reg_str.backward(1.0)
+
+assert reg_str.settings[1]['divergence'].__class__.__name__ == 'JSDivergence'
+assert reg_str.settings[1]['regularize'].__class__.__name__ == 'PairwiseGap'
+assert reg_str.settings[1]['take_pair_d'] is reg_str.settings[1]['divergence'].take_pair
+assert reg_str.settings[1]['take_pair_r'] is reg_str.settings[1]['regularize'].take_pair
+assert len(reg_str.get_record2()) == 1
 
 assert np.allclose(loss_managed, loss_str)
 assert np.allclose(g_a_managed, g_a_str)
 
 print('[OK] string configuration forward/backward')
+
+reg_str(a)
+assert len(reg_str.get_record2()) == 1
+
+reg_str.backward(1.0)
+assert len(reg_str.get_record2()) == 2
+
+print('[OK] record only on backward')
+print('[OK] measurement record accumulation')
 
 
 # ------------------------------------------------------------
