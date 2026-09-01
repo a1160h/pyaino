@@ -3,7 +3,7 @@
 
 """
 # smoke_test_regularizers_takepair_backward.py
-# AttentionRegularizer による F.TakePair 一元管理
+# 7c: TakePair は divergence / regularize 自身が管理
 # forward / backward smoke test
 
 from pyaino.Config import *
@@ -75,10 +75,8 @@ assert np.allclose(loss_base, loss_managed)
 assert np.allclose(result_base.reshape(-1), reg.settings[1]['result'].reshape(-1))
 assert np.allclose(g_a_base, g_a_managed)
 
-assert jsd.take_pair is reg.settings[1]['take_pair_d']
-assert gap.take_pair is reg.settings[1]['take_pair_r']
-assert jsd.take_pair is not take_pair_d_before
-assert gap.take_pair is not take_pair_r_before
+assert jsd.take_pair is take_pair_d_before
+assert gap.take_pair is take_pair_r_before
 
 assert np.array_equal(
     jsd_base.take_pair.take.indices,
@@ -89,7 +87,7 @@ assert np.array_equal(
     gap.take_pair.take.indices,
 )
 
-print('[OK] managed TakePair replacement')
+print('[OK] AttentionRegularizer does not replace TakePair')
 print('[OK] forward compatibility')
 print('[OK] backward compatibility')
 
@@ -112,8 +110,8 @@ g_a_str = reg_str.backward(1.0)
 
 assert reg_str.settings[1]['divergence'].__class__.__name__ == 'JSDivergence'
 assert reg_str.settings[1]['regularize'].__class__.__name__ == 'PairwiseGap'
-assert reg_str.settings[1]['take_pair_d'] is reg_str.settings[1]['divergence'].take_pair
-assert reg_str.settings[1]['take_pair_r'] is reg_str.settings[1]['regularize'].take_pair
+assert reg_str.settings[1]['divergence'].take_pair is not None
+assert reg_str.settings[1]['regularize'].take_pair is not None
 assert len(reg_str.get_record2()) == 1
 
 assert np.allclose(loss_managed, loss_str)
