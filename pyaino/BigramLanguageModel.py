@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20260825 A.Inoue
+# 20260829 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -240,8 +240,8 @@ class BigramLanguageModel5(ModelBase):
         self.lm_head.update(**kwargs)
 
 
-def graph_plus(error_record=None, entropy_record=None, kld_record=None,
-               entropy_offset=0, kld_offset=0, ncols=4, ylim=None):
+def graph_plus(error_record=None, entropy_record=None, kldjsd_record=None,
+               entropy_offset=0, kldjsd_offset=0, ncols=4, ylim=None, kldjsd='kld'):
     xmin = 0; xmax = None
     if error_record is not None:
         plt.plot(np.array(error_record).tolist(), label='error')
@@ -249,25 +249,34 @@ def graph_plus(error_record=None, entropy_record=None, kld_record=None,
 
     if entropy_record is not None:
         entropy_recordn = np.array(entropy_record) + entropy_offset
-        entropy_std = np.std(entropy_recordn, axis=-1) + entropy_offset
-        entropy_range = np.max(entropy_recordn, axis=-1) - np.min(entropy_recordn, axis=-1) \
-                            + entropy_offset
         if xmax is None:
             xmax = len(entropy_record)
         if entropy_offset!=0:
             plt.hlines(entropy_offset, xmin, xmax, color='gray', label='entropy_offset')
 
         plt.plot(entropy_recordn.tolist(), label='entropy')
-        plt.plot(entropy_std.tolist(), label='std')
-        plt.plot(entropy_range.tolist(), label='range')
+
+        if kldjsd_record is None: # entropy飲みの場合だけ表示
+            entropy_std = np.std(entropy_recordn, axis=-1) + entropy_offset
+            entropy_range = np.max(entropy_recordn, axis=-1) - np.min(entropy_recordn, axis=-1) \
+                                + entropy_offset
+            plt.plot(entropy_std.tolist(), label='std')
+            plt.plot(entropy_range.tolist(), label='range')
     
-    if kld_record is not None:
-        kld_recordn = np.array(kld_record) + kld_offset
+    if kldjsd_record is not None:
+        kldjsd_recordn = np.array(kldjsd_record) + kldjsd_offset
+        if kldjsd == 'kld':
+            labelo = 'kld_offset'
+            label  = 'KLD'
+        else:
+            labelo = 'jsd_offset'
+            label = 'JSD'
+         
         if xmax is None:
-            xmax = len(kld_record)
-        if kld_offset!=0:
-            plt.hlines(kld_offset, xmin, xmax, color='gray', label='kld_offset')
-        plt.plot(kld_recordn.tolist(), label='KLD', linestyle='--')
+            xmax = len(kldjsd_record)
+        if kldjsd_offset!=0:
+            plt.hlines(kldjsd_offset, xmin, xmax, color='gray', label=labelo)
+        plt.plot(kldjsd_recordn.tolist(), label=label, linestyle='--')
 
     #plt.legend(bbox_to_anchor=(0, -0.1), loc='upper left', borderaxespad=0)#, fontsize=18)
     if ylim is not None:
