@@ -1,5 +1,5 @@
 # Regularizers
-# 20260901 A.Inoue
+# 20260902 A.Inoue
 from pyaino.Config import *
 from pyaino.nucleus import Function
 from pyaino import common_function as cf
@@ -160,12 +160,15 @@ class EntropyDivergence2(Function):
         return ga
 
 
-class NestedPairRoundRobin:
-    """ head pairをplayerとするnested pair round robin schedule """
-    def __init__(self, n_head, pairs_per_step=2):
-        self.n_head = n_head
-        self.pairs_per_step = pairs_per_step
-        self.head_pairs = list(itertools.combinations(range(n_head), 2))
+class PairRoundRobin:
+    """ round robin順に指定された2つのhead pairを取り出す """
+
+    def __init__(self, n_head, axis=1):
+        self.axis = axis
+        self.head_pairs = list(
+            itertools.combinations(range(n_head), 2)
+        )
+        self.schedule = self.make_schedule()
 
     def make_schedule(self):
         players = self.head_pairs.copy()
@@ -176,32 +179,22 @@ class NestedPairRoundRobin:
         schedule = []
 
         for _ in range(len(players) - 1):
-            pairs = []
-
             for i in range(len(players) // 2):
                 p = players[i]
                 q = players[-1 - i]
 
                 if p is not None and q is not None:
-                    pairs.append((p, q))
-
-            for i in range(0, len(pairs), self.pairs_per_step):
-                schedule.append(pairs[i:i + self.pairs_per_step])
+                    schedule.append((p, q))
 
             players = [players[0], players[-1]] + players[1:-1]
 
         return schedule
 
+    def get_schedule(self):
+        return self.schedule
 
-class Nest0:
-    """  """
-    def __init__(self, schedule, axis):
-        self.schedule = schedule
-        self.axis = axis
-        
     def forward(self, x, index):
-        selected = self.schedule[index]
-        indices = [pair for nested_pair in selected for pair in nested_pair]
+        indices = self.schedule[index]
         self.take = F.Take(self.axis, indices)
         y = self.take(x)
         y = np.moveaxis(y, self.axis + 1, 0)
@@ -214,29 +207,6 @@ class Nest0:
     def __call__(self, *args):
         return self.forward(*args)
     
-
-class Nest1:
-    """  """
-    def __init__(self, schedule, axis):
-        self.schedule = schedule
-        self.axis = axis
-
-    def forward(self, x, index):
-        selected = self.schedule[index]
-        indices = [(2*i, 2*i + 1) for i in range(len(selected))]
-        self.take = F.Take(self.axis, indices)
-        y = self.take(x)
-        y = np.moveaxis(y, self.axis + 1, 0)
-        return y[0], y[1]
-
-    def backward(self, gp, gq):
-        gy = np.stack([gp, gq], axis=self.axis + 1)
-        return self.take.backward(gy)
-
-    def __call__(self, *args):
-        return self.forward(*args)
-
-
 class PairDivergence(Function):
     """ unitで数学的に与えられるKLDやJSDを4軸のattention weightの測定や制御に供する """
     def __init__(self, unit, method='permutation', symmetric=False,
@@ -252,8 +222,7 @@ class PairDivergence(Function):
         self.index = 0
 
         if round_robin:
-            schedule = NestedPairRoundRobin(n_head).make_schedule()
-            self.take_pair = Nest0(schedule, axis=axis0)
+            self.take_pair = PairRoundRobin(n_head, axis0)
         else:
             self.take_pair = F.TakePair(axis0, method)
 
@@ -271,6 +240,11 @@ class PairDivergence(Function):
         self.Tk = None
         self.y_shape = None
         self.p, self.q = None, None
+
+    def get_schedule(self):
+        if self.round_robin:
+            return self.take_pair.get_schedule()
+        return None
 
     def __forward__(self, a):
         self.Tk = a.shape[self.axis1]
@@ -295,7 +269,7 @@ class PairDivergence(Function):
         ga = self.take_pair.backward(gp, gq)
 
         if self.round_robin:
-            self.index = (self.index + 1) % len(self.take_pair.schedule)
+            self.index = (self.index + 1) % len(self.take_pair.get_schedule())
 
         return ga
 
@@ -379,35 +353,18 @@ class MeanStdDeviation(Function):
 
 class PairwiseGap(Function):
     """ 指定する軸のデータの並びの中の各ペアの差分をgapに近づける損失関数 """
-    def __init__(self, gap=0.1, beta=1.0, axis=1,
-                 method='combination',
-                 round_robin=False, n_head=None):
+    def __init__(self, gap=0.1, beta=1.0, axis=1, method='combination'):
         super().__init__()
         self.target_gap = gap
         self.beta = beta
         self.axis = axis
-        self.method = method
-        self.round_robin = round_robin
-        self.n_head = n_head
-        self.index = 0
-
-        if round_robin:
-            schedule = NestedPairRoundRobin(n_head).make_schedule()
-            self.take_pair = Nest1(schedule, axis=axis)
-        else:
-            self.take_pair = F.TakePair(axis, method)
-
+        self.take_pair = F.TakePair(axis, method)
         self.square_mean = F.SquareMean()
 
     def __forward__(self, x, gap=None):
         if gap is not None: # forwardの際に指定した場合
             self.target_gap = gap
-
-        if self.round_robin:
-            p, q = self.take_pair(x, self.index)
-        else:
-            p, q = self.take_pair(x)
-
+        p, q = self.take_pair(x)
         d = p - q
         self.diffs = d
         self.sign = np.sign(d)
@@ -420,52 +377,9 @@ class PairwiseGap(Function):
         gx = self.square_mean.backward(gl)
         gx *= self.sign
         gx = self.take_pair.backward(gx, -gx)
-
-        if self.round_robin:
-            self.index = (self.index + 1) % len(self.take_pair.schedule)
-
         return self.beta * gx
-
-class PairwiseGap_bkup(Function):
-    """ 末尾の軸のデータの並びの中の各ペアの差分をgapに近づける損失関数 """
-    def __init__(self, gap=0.1, beta=1.0):
-        super().__init__()
-        self.target_gap = gap
-        self.beta = beta
-
-    def __forward__(self, x, gap=None):
-        n = x.shape[-1] # ペアをとる末尾の軸
-        d = np.expand_dims(x, -1) - np.expand_dims(x, -2)  # (..., n, n)
-        self.diffs = d
-
-        if gap is not None: # forwardの際に指定した場合
-            self.target_gap = gap
-
-        # マスク：対角成分を無視（== 0）
-        eye = np.eye(n, dtype=bool)
-        mask = eye.reshape((1,) * (x.ndim - 1) + (n, n)) # 上位の次元に1を並べる
-        mask = np.broadcast_to(mask, d.shape)            # dと同じ形状にする
-        
-        self.gap_error = np.abs(d) - self.target_gap
-        self.gap_error[mask] = 0
-
-        loss = np.mean(self.gap_error ** 2) * n / (n - 1)
-        return loss
-
-    def __backward__(self, gl):
-        x, = self.inputs
-        n = x.shape[-1]
-        sign = np.sign(self.diffs)
-        grad = self.gap_error * sign
-
-        dx = np.sum(grad, axis=-1) - np.sum(grad, axis=-2)
-
-        # バッチスケール調整: (2 / n(n-1)) / batch_size
-        batch_size = np.prod(np.array(x.shape[:-1]))
-        scale = gl * (2 / (n * (n - 1))) / batch_size
-        return self.beta * dx * scale
-
     
+   
 class AttentionRegularizer(Function):
     """ MultiHeadAttentionへの組込み機構 """
     def __init__(self,
@@ -511,15 +425,17 @@ class AttentionRegularizer(Function):
             record_schedule = None
             record_rr_index = None
             record_index = None
+            record_seen = None
 
             if round_robin:
                 n_head = divergence.n_head
-                record_schedule = NestedPairRoundRobin(n_head).make_schedule()
+                record_schedule = divergence.get_schedule()
                 record_rr_index = 0
                 record_index = {
                     pair: i for i, pair in enumerate(
                         itertools.combinations(range(n_head), 2))
                 }
+                record_seen = set()
 
             self.settings.append({
                 'divergence': divergence,
@@ -532,7 +448,7 @@ class AttentionRegularizer(Function):
                 'record_rr_index': record_rr_index,
                 'record_index': record_index,
                 'record_buffer': None,
-                'record_count': 0,
+                'record_seen': record_seen,
                 'result': None,
                 'record': [],
             })
@@ -596,11 +512,7 @@ class AttentionRegularizer(Function):
         rr_index = setting['record_rr_index']
         selected = setting['record_schedule'][rr_index]
 
-        head_pairs = [
-            pair
-            for nested_pair in selected
-            for pair in nested_pair
-        ]
+        head_pairs = selected
         values = result.reshape(-1)
 
         if setting['record_buffer'] is None:
@@ -610,15 +522,15 @@ class AttentionRegularizer(Function):
         for pair, value in zip(head_pairs, values):
             slot_index = setting['record_index'][pair]
             setting['record_buffer'][slot_index] = value
+            setting['record_seen'].add(slot_index)
 
-        setting['record_count'] += len(head_pairs)
         setting['record_rr_index'] = (
             rr_index + 1
         ) % len(setting['record_schedule'])
 
-        if setting['record_count'] == len(setting['record_index']):
+        if len(setting['record_seen']) == len(setting['record_index']):
             setting['record'].append(setting['record_buffer'].copy())
-            setting['record_count'] = 0
+            setting['record_seen'].clear()
 
     def __backward__(self, gl):
         # backwardまで到達したforwardだけを学習記録として残す
