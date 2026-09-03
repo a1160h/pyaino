@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260831 A.Inoue
+# 20260903 A.Inoue
 
 import copy
 import warnings
@@ -3760,6 +3760,7 @@ class AttentionUnit(Function):
                            + self.__class__.__name__)
        
         a = self.softmax(a)
+        self.softmax.inputs = None     # backwardに不要なscoreへの参照を破棄
         
         if self.regularizer is not None: 
             self.loss = self.regularizer.forward(a)
@@ -4515,40 +4516,49 @@ class ContextualSelfAttentionZ4(ContextualSelfAttention):
 
 
 #### ドロップアウト ###############################################　
-class Dropout(Function): # inverted_dropout 
+class Dropout(Function):
+    """ inverted_dropout """ 
     def __init__(self, preset=None, inplace=False):
         super().__init__()
         self.preset = preset
         self.dropout_mx = None          # はじめて伝播する際に必要
+        self.dropout_ratio = None       # 直前のforwardで実際に使ったdropout率
         self.inplace = inplace          # inplace演算とするかどうか
         
     def __forward__(self, x, *, dropout=0.0): # x→y,ドロップアウト率(非学習時は0)
         if self.preset is not None and dropout==0.0:
             dropout = self.preset
         y = x if self.inplace else x.copy() # inplaceではyはxと同一
-        scale = 1 / (1 - dropout + 1e-7)
-        if dropout > 0.0: # ドロップアウトする場合に残る割合で拡大
-            rand = np.random.rand(*x.shape) # yと同じ形状の乱数の行列 
-            # 予めスケールを合わせておく
-            self.dropout_mx = np.where(rand > dropout, scale, 0).astype(Config.dtype)
-            y *= self.dropout_mx  # ニューロンをランダムに無効化(0固定
+        self.dropout_ratio = dropout
+
+        if dropout > 0.0:               # ドロップアウトする場合に残る割合で拡大
+            self.dropout_mx = np.random.rand(*x.shape) > dropout # True/Falseの配列
+            scale = 1 / (1 - dropout + 1e-7)
+            y *= self.dropout_mx        # ニューロンをランダムに無効化(0固定
+            y *= scale                  # 予めスケールを合わせておく
         else:
             self.dropout_mx = 1         # ドロップアウトしたりしなかったりに対応   
         return y                        # inplaceの場合にはx更新で返り値不要
 
-    def __backward__(self, gy):     # 順伝播時に無効化したニューロンは逆伝播しない
+    def __backward__(self, gy):         # 順伝播時に無効化したニューロンは逆伝播しない
         gx = gy if self.inplace else gy.copy() # inplaceではgxはgyと同一
-        gx *= self.dropout_mx           # 順伝播時の情報を使う
+
+        gx *= self.dropout_mx
+        if self.dropout_ratio > 0.0:
+            scale = 1 / (1 - self.dropout_ratio + 1e-7)
+            gx *= scale
+
         return gx                       # inplaceの場合にはgy更新で返り値不要 
-    
-   
+
+
 #### ドロップアウト ###############################################　
-class Dropout2(Function): # direct_dropout
+class Dropout2(Function):
+    """ direct_dropout """
     def __init__(self, preset=None, inplace=False):
         super().__init__()
         self.preset = preset
         self.dropout_mx = None          # はじめて伝播する際に必要
-        self.dropout_ratio = None
+        self.dropout_ratio = None       # 最後に学習時に使ったdropout率
         self.inplace = inplace          # inplace演算とするかどうか
         
     def __forward__(self, x, *, dropout=0.0): # x→y,ドロップアウト率(非学習時は0)
@@ -4557,8 +4567,7 @@ class Dropout2(Function): # direct_dropout
         y = x if self.inplace else x.copy() # inplaceではyはxと同一
         if dropout > 0.0: 
             self.dropout_ratio = dropout   # ドロップアウト時に覚える
-            self.dropout_mx = np.random.rand(*x.shape) > dropout # 0/1の行列
-            self.dropout_mx = self.dropout_mx.astype(Config.dtype)
+            self.dropout_mx = np.random.rand(*x.shape) > dropout # True/Falseの行列
             y *= self.dropout_mx  # ニューロンをランダムに無効化(0固定
         else:           # ドロップアウトしない場合にスケールを合わせる
             dropout = 0 if self.dropout_ratio is None else self.dropout_ratio
@@ -4571,50 +4580,6 @@ class Dropout2(Function): # direct_dropout
         gx *= self.dropout_mx           # 順伝播時の情報を使う
         return gx
 
-#### ドロップアウト ###############################################　
-class Dropout_bkup(Function): # inverted_dropout 
-    def __init__(self):
-        super().__init__()
-        self.dropout_mx = None          # はじめて伝播する際に必要
-        
-    def __forward__(self, x, *, dropout=0.0): # x→y,ドロップアウト率(非学習時は0)
-        scale = 1 / (1 - dropout)
-        if dropout > 0.0: # ドロップアウトする場合に残る割合で拡大
-            rand = np.random.rand(*x.shape) # yと同じ形状の乱数の行列 
-            # 予めスケールを合わせておく
-            self.dropout_mx = np.where(rand > dropout, scale, 0).astype(Config.dtype)
-            return x * self.dropout_mx  # ニューロンをランダムに無効化(0固定
-        
-        else:
-            self.dropout_mx = 1         # ドロップアウトしたりしなかったりに対応   
-            return x
-
-    def __backward__(self, grad_y):     # 順伝播時に無効化したニューロンは逆伝播しない
-        return grad_y * self.dropout_mx # 順伝播時の情報を使う
-    
-   
-#### ドロップアウト ###############################################　
-class Dropout2_bkup(Function): # direct_dropout
-    def __init__(self):
-        super().__init__()
-        self.dropout_mx = None          # はじめて伝播する際に必要
-        self.dropout_ratio = None
-        
-    def __forward__(self, x, *, dropout=0.0): # x→y,ドロップアウト率(非学習時は0)
-        if dropout > 0.0: 
-            self.dropout_ratio = dropout   # ドロップアウト時に覚える
-            self.dropout_mx = np.random.rand(*x.shape) > dropout # 0/1の行列
-            self.dropout_mx = self.dropout_mx.astype(Config.dtype)
-            return x * self.dropout_mx  # ニューロンをランダムに無効化(0固定
-        else:           # ドロップアウトしない場合にスケールを合わせる
-            dropout = 0 if self.dropout_ratio is None else self.dropout_ratio
-            self.dropout_mx = 1.0       # ドロップアウトしたりしなかったりに対応　
-            return (1 - dropout) * x
-            
-    def __backward__(self, grad_y):     # 順伝播時に無効化したニューロンは逆伝播しない
-        return grad_y * self.dropout_mx # 順伝播時の情報を使う
-   
-  
         
 #### キャプチャ #####################################################　
 #  RNN などで出力の一部、例えば、最後の時刻のみを使うような場合に対応する
