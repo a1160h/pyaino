@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20260829 A.Inoue
+# 20260903 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -80,27 +80,39 @@ class ModelBase:
                 break
         return gen_data
    
-    def get_sa_result1(self, flatten=True):
-        sa_result1 = []
+    def get_sa_records(self, flatten=True):
+        layer_records = []
         for bl in self.blocks.layers:
-            result1 = bl.sa.attention.result1
-            if result1 is not None:
-                sa_result1.append(result1)
-        sa_result1 = np.array(sa_result1)
-        if flatten:
-            sa_result1 = sa_result1.reshape(-1)
-        return sa_result1
+            regularizer = bl.sa.attention.regularizer
+            if regularizer is not None:
+                layer_records.append(regularizer.get_records())
 
-    def get_sa_result2(self, flatten=True):
-        sa_result2 = []
-        for bl in self.blocks.layers:
-            result2 = bl.sa.attention.result2
-            if result2 is not None:
-                sa_result2.append(result2)
-        sa_result2 = np.array(sa_result2)
-        if flatten:
-            sa_result2 = sa_result2.reshape(-1)
-        return sa_result2
+        if not layer_records:
+            return []
+
+        n_record = max(len(records) for records in layer_records)
+        sa_records = []
+
+        for i in range(n_record):
+            records = []
+
+            for layer_record in layer_records:
+                if i >= len(layer_record) or len(layer_record[i]) == 0:
+                    continue
+
+                record = np.array(layer_record[i])
+                if flatten:
+                    record = record.reshape(record.shape[0], -1)
+                records.append(record)
+
+            if not records:
+                sa_records.append(None)
+            elif flatten:
+                sa_records.append(np.concatenate(records, axis=1))
+            else:
+                sa_records.append(np.array(records))
+
+        return sa_records
 
     def accommodate(self):
         """モデルのEmbeddingと出力層を現在の語彙数へ拡張する。"""
@@ -312,7 +324,7 @@ if __name__=='__main__':
                                 )
     cf.get_obj_info(model)
 
-    error_record = []; entropy_record = []
+    error_record = []
     print('学習を開始')
     for i in range(epoch):
         #print(x.shape, t.shape)
@@ -320,10 +332,7 @@ if __name__=='__main__':
         
         model.backward()
         model.update(eta=0.01)#, g_clip=0.5)
-
-        # ここでエントロピーを採取
-        entropy_record.append(model.get_sa_result1())
-        
+       
         error_record.append(float(l))
         print('Epoch: {:3d} | Error {:9.6f}'.format(i, float(l)))
         if i % 20 == 0:
@@ -331,12 +340,15 @@ if __name__=='__main__':
             created_data = model.generate(list(range(10)), 20)
             print(created_data.tolist())
             
-    entropy_record = np.array(entropy_record)
-    cf.graph(entropy_record.tolist())
+    sa_records = model.get_sa_records()
+    entropy_record = sa_records[0] if len(sa_records) > 0 else None
+    if entropy_record is not None:
+        cf.graph(entropy_record.tolist())
     cf.graph(error_record)
     error_record = np.array(error_record)
-    record = np.concatenate([error_record.reshape(-1,1), entropy_record], axis=1)
-    cf.graph(record.tolist())
+    if entropy_record is not None:
+        record = np.concatenate([error_record.reshape(-1,1), entropy_record], axis=1)
+        cf.graph(record.tolist())
     print('結果を確認')
     created_data = model.generate(np.arange(10), 101)
     print(created_data.tolist())

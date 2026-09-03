@@ -478,6 +478,9 @@ class AttentionRegularizer(Function):
     def get_record3(self):
         return self.settings[2]['record']
 
+    def get_records(self):
+        return [s['record'] for s in self.settings]
+
     def __forward__(self, a, target=None):
         loss = 0
 
