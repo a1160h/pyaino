@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260829 A.Inoue
+# 20260906 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -138,10 +138,21 @@ class Function:
         self.y_shapes = None     # 同上仮処置20240927
         self.graph_exist = False # 仮20241003
         self.preserve_attr = preserve_attr # 出力の上書き時のアトリビュート保護
+        self.called_in_forward = None 
 
         if Config.log_function:
             Config.function_list.append(id(self))
-        
+
+    def call_forward(self, *xs, **kwargs):
+        """
+        forward中のforwardはグラフ生成しない
+        そしてbackwardの計算に必要な入出力は各サブクラスの責任で保持する
+
+        """
+        with (using_config('create_graph', False), # forward中のforwardはグラフ生成しない
+              using_config('in_forward', True)):   # Function.__forward__の実行中だけTrue
+            return self.__forward__(*xs, **kwargs)
+    
     def forward(self, *inputs, **kwargs):# kwargsはグラフ生成対象外
         """ 逆伝播のためにグラフを作りつつ順伝播 """
         '''
@@ -159,6 +170,8 @@ class Function:
         '''
         self.inputs  = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
         self.outputs = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
+        self.called_in_forward = Config.in_forward # forwardの中で呼ばれたFunction
+
         debug_print('<forward ↓>', self.__class__.__name__, id(self), 'forward (',
                     Config.create_graph, Config.higher_derivative, Config.derivative,
                     Config.backtrace_duration, Config.operator_state, ')')
@@ -176,8 +189,7 @@ class Function:
             xs = inputs
 
         # -- 派生クラスの順伝播 --
-        with using_config('create_graph', False): # forward中のforwardはグラフ生成しない
-            ys = self.__forward__(*xs, **kwargs)  # 演算に使うxsはinputsと別物で構わない
+        ys = self.call_forward(*xs, **kwargs)   # 演算に使うxsはinputsと別物で構わない
 
         if isinstance(ys, tuple):
             outputs = ys.copy() if self.preserve_attr else ys
@@ -259,6 +271,8 @@ class Function:
         # すなわち、下記のwith using_configは要らない
         #with using_config('create_graph', Config.higher_derivative):
         gxs = self.__backward__(*gys, **kwargs)
+        if self.called_in_forward: # forwardの中から呼ばれた場合
+            self.outputs = None
         if gxs is None: # 20250605AI 
             return
 
@@ -493,9 +507,16 @@ class Function:
 
 
 class HDFunction(Function):
-    pass
+    def call_forward(self, *xs, **kwargs):
+        """
+        forward中のforwardはグラフ生成しない
+        しかしグラフ生成に必要なinputs/outputsは必ず保持（今後守るべきこと）
+        in_forwardは設定しない
 
-
+        """
+        with using_config('create_graph', False):  
+            return self.__forward__(*xs, **kwargs)
+    
 def print_data_class_etc(xs, comment=None):
     xs = (xs,) if type(xs) not in(tuple, list) else xs # 常にタプルかリストにする
     for x in xs:
