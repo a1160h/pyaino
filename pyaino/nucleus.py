@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260906 A.Inoue
+# 20260908 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -139,6 +139,7 @@ class Function:
         self.graph_exist = False # 仮20241003
         self.preserve_attr = preserve_attr # 出力の上書き時のアトリビュート保護
         self.called_in_forward = None 
+        self._io_alias_attrs = () # forward内で保持した入出力の別名属性名
 
         if Config.log_function:
             Config.function_list.append(id(self))
@@ -153,6 +154,35 @@ class Function:
               using_config('in_forward', True)):   # Function.__forward__の実行中だけTrue
             return self.__forward__(*xs, **kwargs)
     
+    def _record_io_aliases(self, attrs_before, xs, ys_tuple):
+        """ forward内で新たに保持した入出力配列の別名属性名を記録する """
+        if not self.called_in_forward:
+            self._io_alias_attrs = ()
+            return
+
+        refs = tuple(v for v in (*xs, *ys_tuple) if isinstance(v, np.ndarray))
+        sentinel = object()
+        aliases = []
+
+        for name, value in self.__dict__.items():
+            if not isinstance(value, np.ndarray):
+                continue
+
+            old_value = attrs_before.get(name, sentinel)
+            if old_value is value:
+                continue
+
+            if any(value is ref for ref in refs):
+                aliases.append(name)
+
+        self._io_alias_attrs = tuple(aliases)
+
+    def _release_io_aliases(self):
+        """ backward完了後、記録された入出力の別名参照を解放する """
+        for name in self._io_alias_attrs:
+            setattr(self, name, None)
+        self._io_alias_attrs = ()
+
     def forward(self, *inputs, **kwargs):# kwargsはグラフ生成対象外
         """ 逆伝播のためにグラフを作りつつ順伝播 """
         '''
@@ -189,14 +219,21 @@ class Function:
             xs = inputs
 
         # -- 派生クラスの順伝播 --
+        attrs_before = self.__dict__.copy()
         ys = self.call_forward(*xs, **kwargs)   # 演算に使うxsはinputsと別物で構わない
 
+        # __forward__の出力を一旦タプルに統一
         if isinstance(ys, tuple):
-            outputs = ys.copy() if self.preserve_attr else ys
+            ys_tuple = ys
         elif isinstance(ys, list):
-            outputs = tuple(ys.copy()) if self.preserve_attr else tuple(ys)
+            ys_tuple = tuple(ys)
         else:
-            outputs = (ys.copy(),) if self.preserve_attr else (ys,)
+            ys_tuple = (ys,)
+
+        self._record_io_aliases(attrs_before, xs, ys_tuple)
+
+        # 属性保護が必要な場合だけ各出力をコピー
+        outputs = tuple(y.copy() for y in ys_tuple) if self.preserve_attr else ys_tuple
 
         self.y_shapes = [y.shape if isinstance(y, np.ndarray) else () for y in outputs] # 仮処置20241023   
 
@@ -272,6 +309,7 @@ class Function:
         #with using_config('create_graph', Config.higher_derivative):
         gxs = self.__backward__(*gys, **kwargs)
         if self.called_in_forward: # forwardの中から呼ばれた場合
+            self._release_io_aliases()
             self.outputs = None
         if gxs is None: # 20250605AI 
             return
