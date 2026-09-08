@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260903 A.Inoue
+# 20260908 A.Inoue
 
 import copy
 import warnings
@@ -612,9 +612,25 @@ class BaseLayer(Function):
 
     @classmethod
     def resolve_categories(cls, namespace):
-        """文字列 → クラスオブジェクトに変換"""
+        """ 文字列 → クラスオブジェクトに変換 """
         for typeid, names in cls.category_names.items():
             cls.categories[typeid] = tuple(namespace[name] for name in names)
+
+    def __init_subclass__(cls, **kwargs):
+        """ サブクラスの__forward__/__backward__を_forward/_backwardに挿げ替える """
+
+        forward = cls.__dict__.get('__forward__')
+        if forward is not None:
+            cls._forward = forward
+            delattr(cls, '__forward__')
+
+        backward = cls.__dict__.get('__backward__')
+        if backward is not None:
+            cls._backward = backward
+            delattr(cls, '__backward__')
+
+        # super().__init_subclass__(**kwargs)  # nucleus側導入までは保留
+
 
     def __init__(self, **kwargs):
         super().__init__()
@@ -762,13 +778,6 @@ class BaseLayer(Function):
         if not self.use_residual:
             return grad_x
         return grad_x, grad_r
-
-
-    def _forward(self, *args, **kwargs):
-        raise NotImplementedError()
-
-    def _backward(self, *args, **kwargs):
-        raise NotImplementedError()
 
     def get_parameter_size(self):    
         raise Exception('Invalid configuration')
@@ -934,12 +943,12 @@ class NeuronLayer(BaseLayer): # ニューロンの基本機能
         m, n = self.config
         return m, n
 
-    def _forward(self, x):
+    def __forward__(self, x):
         w, b, gamma = self.parameters()
         y = self.dot_linear.forward(x, w, b, gamma)
         return y 
         
-    def _backward(self, grad_y, flush=True):
+    def __backward__(self, grad_y, flush=True):
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
@@ -995,7 +1004,7 @@ class Conv1dLayer(BaseLayer):
         n = M     # フィルタ数
         return m, n
 
-    def _forward(self, x):
+    def __forward__(self, x):
         w, b, gamma = self.parameters()    
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
@@ -1009,7 +1018,7 @@ class Conv1dLayer(BaseLayer):
         y = y.reshape(-1, Ow, M).transpose(0, 2, 1)       # u.shape=(B,M,Ow) 
         return y
     
-    def _backward(self, grad_y, flush=True):
+    def __backward__(self, grad_y, flush=True):
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Ow)               # grad_y.shape=(B,M,Ow)
         grad_y = grad_y.transpose(0, 2, 1).reshape(-1, M) #grad_y.shape=(B*Ow,M)
@@ -1069,7 +1078,7 @@ class Conv1dTransposeLayer(BaseLayer):
         n = M*Fw           # フィルタ数とフィルタサイズ「要注意」
         return m, n
 
-    def _forward(self, x):
+    def __forward__(self, x):
         w, b, gamma = self.parameters()    
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
@@ -1082,7 +1091,7 @@ class Conv1dTransposeLayer(BaseLayer):
         y = y[:,:,pad:pad+Ow]                     # y.shape=(B,M,Ow)
         return y
 
-    def _backward(self, grad_y, flush=True):
+    def __backward__(self, grad_y, flush=True):
         C, Iw, M, Fw, stride, pad, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Ow)       # grad_y.shape=(B,M,Ow)
         #  '0'パディング
@@ -1207,7 +1216,7 @@ class Conv2dLayer(BaseLayer):
         n = M        # フィルタ数
         return m, n
 
-    def _forward(self, x):
+    def __forward__(self, x):
         w, b, gamma = self.parameters()    
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
@@ -1220,7 +1229,7 @@ class Conv2dLayer(BaseLayer):
         y = y.reshape(-1, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
         return y
     
-    def _backward(self, grad_y, flush=True):
+    def __backward__(self, grad_y, flush=True):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
         grad_y = grad_y.transpose(0, 2, 3, 1).reshape(-1, M) # grad_y.shape=(B*Oh*Ow,M)
@@ -1290,7 +1299,7 @@ class Conv2dTransposeLayer(BaseLayer):
         n = M*Fh*Fw        # フィルタ数とフィルタサイズ「要注意」
         return m, n
 
-    def _forward(self, x):
+    def __forward__(self, x):
         w, b, gamma = self.parameters()    
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
@@ -1303,7 +1312,7 @@ class Conv2dTransposeLayer(BaseLayer):
         y = y[:,:,pad:pad+Oh,pad:pad+Ow]              # y.shape=(B,M,Oh,Ow)
         return y
 
-    def _backward(self, grad_y, flush=True):
+    def __backward__(self, grad_y, flush=True):
         C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
         #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
         #  '0'パディング
@@ -2276,7 +2285,7 @@ class MaskedExpansionLayer(BaseLayer):
         n = Fh*Fw          # フィルタ数
         return m, n
 
-    def _forward(self, x):
+    def __forward__(self, x):
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         B = x.size // (C*Ih*Iw)             # B = x.shape[0] = len(x)
         w, b, gamma = self.parameters()     # w.shape=(M,C*Fh*Fw)
@@ -2285,7 +2294,7 @@ class MaskedExpansionLayer(BaseLayer):
         y = y.reshape(B,C,Ih,Iw,Fh,Fw).transpose(0,1,2,4,3,5).reshape(B,C,Oh,Ow)
         return y
     
-    def _backward(self, grad_y, flush=True): 
+    def __backward__(self, grad_y, flush=True): 
         x, = self.inputs
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         B = grad_y.size // (C*Oh*Ow)        # B = grad_y.shape[0] = len(grad_y)
@@ -3470,13 +3479,13 @@ class PatchEmbedding(Conv2dLayer):
         #                M,              kernel_size, stride,     pad
         super().__init__(dimensionality, patch_size,  patch_size, pad, **kwargs)
 
-    def _forward(self, x):
+    def __forward__(self, x):
         C,Ih,Iw,M,Fh,Fw,Sh,Sw,pad,Oh,Ow = self.config
         y = super()._forward(x)
         y = y.transpose(0,2,3,1).reshape(-1,Oh*Ow,M)
         return y
 
-    def _backward(self, grad_y, flush=True):
+    def __backward__(self, grad_y, flush=True):
         C,Ih,Iw,M,Fh,Fw,Sh,Sw,pad,Oh,Ow = self.config
         grad_y = grad_y.reshape(-1,Oh,Ow,M).transpose(0,3,1,2)
         grad_x = super()._backward(grad_y, flush=flush)
