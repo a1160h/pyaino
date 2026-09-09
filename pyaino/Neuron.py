@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260908 A.Inoue
+# 20260909 A.Inoue
 
 import copy
 import warnings
@@ -782,8 +782,9 @@ class BaseLayer(Function):
     def get_parameter_size(self):    
         raise Exception('Invalid configuration')
     
-class PrePhase:
+class PrePhase(Function):
     def __init__(self, layer=None, **kwargs):
+        super().__init__()
         #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
         self.layer      = layer
         batchnorm       = kwargs.pop('batchnorm',  False) # バッチ正規化の適用有無
@@ -823,16 +824,14 @@ class PrePhase:
         self.activator = cf.eval_in_module(activate, Activators, **activate_option) \
                          if activate is not None else None
         
-    def forward(self, x, *, train=False):
-        #print('    prephase f', x.shape)
+    def __forward__(self, x, *, train=False):
         if self.Norm:
             x = self.Norm.forward(x, train=train)      # バッチor層ノーマライゼーション
         if self.activator:
             x = self.activator.forward(x)
         return x
         
-    def backward(self, grad_x, **kwargs):
-        #print('    prephase b', grad_x.shape)
+    def __backward__(self, grad_x, **kwargs):
         if self.activator:
             grad_x = self.activator.backward(grad_x)
         if self.Norm:
@@ -843,8 +842,9 @@ class PrePhase:
         if self.Norm:
             self.Norm.update(eta=eta, **kwargs)
 
-class PostPhase:  
+class PostPhase(Function):  
     def __init__(self, layer=None, **kwargs):
+        super().__init__()
         #print(self.__class__.__name__, 'layer =', layer, 'kwargs =', kwargs)
         activate          = kwargs.pop('activate',    None) # Post-activation
         dropout           = kwargs.pop('dropout',    False) # ドロップアウト可否(forwardで指定)
@@ -889,7 +889,7 @@ class PostPhase:
         if self.Norm:
             self.Norm.update(eta=eta, **kwargs)
         
-    def forward(self, y, residual=None, *, train=False, dropout=0.0):
+    def __forward__(self, y, residual=None, *, train=False, dropout=0.0):
         if self.Norm:
             y = self.Norm.forward(y, train=train)   # バッチor層ノーマライゼーション
 
@@ -903,7 +903,7 @@ class PostPhase:
             y = self.DO.forward(y, dropout=dropout) # ドロップアウト
         return y    
         
-    def backward(self, grad_y, **kwargs):
+    def __backward__(self, grad_y, **kwargs):
         if self.DO:
             grad_y = self.DO.backward(grad_y)       # ドロップアウト
         if self.activator:    
@@ -4926,6 +4926,7 @@ class GeneralNormalizationBase(Function):
             self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
 
     def __forward__(self, x, *, train=False):
+        self.x = x
         if (self.ppl and self.mu_ppl is None) or (self.sb and self.gamma is None):
             self.init_parameters(x.shape)
             
@@ -4945,7 +4946,8 @@ class GeneralNormalizationBase(Function):
         return y        
 
     def __backward__(self, gy):
-        x, = self.inputs
+        #x, = self.inputs
+        x = self.x
         #y = self.get_outputs()
         n = x.size // self.sigma.size        # 正規化対象の要素数
         z = (x - self.mu) / self.sigma       # 中間値：Norm出力=Scale&Bias入力
