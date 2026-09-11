@@ -20,10 +20,12 @@ class ModelBase:
         kwargs['optimize']  = optimize
         #kwargs['decayrate'] = decayrate
         kwargs['w_decay']   = w_decay
+        chunk_size = kwargs.pop('chunk_size', None) # Attention用
         self.embed = Neuron.PositionalEmbedding(
             vocab_size, block_size, emb_dim, **kwargs)
         self.blocks = Neuron.Sequential(
-            *[sbh.TransformerBlock(emb_dim, n_head, 'tri', False, expansion, rms, **kwargs)
+            *[sbh.TransformerBlock(
+                emb_dim, n_head, 'tri', False, expansion, rms, chunk_size=chunk_size, **kwargs)
               for _ in range(n_layer)]
             )
         matmul = True                   

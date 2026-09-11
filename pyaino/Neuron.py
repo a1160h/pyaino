@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260909 A.Inoue
+# 20260911 A.Inoue
 
 import copy
 import warnings
@@ -3823,6 +3823,203 @@ class AttentionUnit(Function):
         gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
         return gq, gk, gv
 
+
+class StatelessSoftmax:
+    """ QueryChunkAttention用のSoftmax """
+    def __init__(self, temperature=1.0, **kwargs):
+        self.temperature = temperature
+
+    def forward(self, x):
+        x = x / self.temperature   # 温度スケーリング
+        max_x = np.max(x, axis=-1, keepdims=True) 
+        exp_a = np.exp(x - max_x)  # オーバーフロー対策
+        sum_exp_a = snp.sum(exp_a, axis=-1, keepdims=True)  
+        y = exp_a / (sum_exp_a + 1e-7)
+        return y
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    def backward(self, gy, y): 
+        gx = y * gy
+        sumdx = snp.sum(gx, axis=-1, keepdims=True)
+        gx -= y * sumdx
+        gx = gx / self.temperature # 温度スケーリング
+        return gx
+
+
+class QueryChunkAttentionUnit(AttentionUnit):
+    def __init__(self, head=1, **kwargs):
+        self.chunk_size = kwargs.pop('chunk_size', None)
+        temperature = kwargs.pop('temperature', 1.0)
+        super().__init__(head, **kwargs)
+        self.softmax = StatelessSoftmax(temperature=temperature)
+        self.DO = StatelessDropout()
+       
+    def __forward__(self, q, k, v, *, mask=None, dropout=0.0):
+        B,Tq,C = q.shape
+        B,Tk,C = k.shape
+        B,Tv,C = v.shape
+        h = self.head
+        H = C // h
+        q = q.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
+        k = k.reshape(B,Tk,h,H).transpose(0,2,1,3) # (B,Tk,C)->(B,h,Tk,H)
+        v = v.reshape(B,Tv,h,H).transpose(0,2,1,3) # (B,Tv,C)->(B,h,Tv,H)
+
+        kt = k.transpose(0,1,3,2)
+        chunk_size = Tq if self.chunk_size is None else self.chunk_size
+        invrootH = np.array(H ** -0.5, dtype=Config.dtype)
+
+        if self.causality:
+            if Tq != Tk:
+                raise Exception(
+                    f"causality cannot be applied" + self.__class__.__name__)
+            self.tril = np.empty((1, 1, Tq, Tk), dtype=Config.dtype)
+    
+        if mask is None:   # 無効トークンの処理
+            self.mask = None
+        elif mask.shape == (B, Tk):
+            self.mask = mask.astype(q.dtype)[:, None, None, :] # (B,1,1,Tk)
+        else:
+            raise ValueError(
+                f"Mask shape {mask.shape} must be ({B}, {Tk})"
+                + self.__class__.__name__)
+
+        dropout_mx = 1
+        if dropout > 0:
+            dropout_mx = np.random.rand(B,h,Tq,Tk) > dropout
+        self.dropout = dropout
+        self.dropout_mx = dropout_mx
+
+        if self.regularizer is not None:
+            a_soft = np.empty((B, h, Tq, Tk), dtype=q.dtype)
+        else:
+            a_soft = None
+
+        y = np.empty((B, h, Tq, H), dtype=v.dtype)
+        for i in range(0, Tq, chunk_size):
+            j = min(i + chunk_size, Tq)
+            a_chunk = np.matmul(q[:, :, i:j, :], kt)
+
+            if self.scale:
+                a_chunk *= invrootH
+
+            if self.causality:
+                tril_chunk = np.tri(j-i, Tk, k=i, dtype=Config.dtype)[None, None, :, :]
+                self.tril[:, :, i:j, :] = tril_chunk
+                a_chunk += (tril_chunk - 1.0) * Config.inf
+                
+            if self.mask is not None:
+                a_chunk += (self.mask - 1.0) * Config.inf # 無効個所は-inf
+
+            a_soft_chunk = self.softmax(a_chunk)
+
+            if self.regularizer is not None:
+                a_soft[:, :, i:j, :] = a_soft_chunk
+
+            if dropout > 0:
+                dropout_mx_chunk = dropout_mx[:, :, i:j, :]
+            else:
+                dropout_mx_chunk = 1
+                
+            a_drop_chunk = self.DO.forward(
+                a_soft_chunk, dropout_mx_chunk, dropout=dropout)
+
+            y_chunk = np.matmul(a_drop_chunk, v)
+
+            y[:, :, i:j, :] = y_chunk
+
+        if self.regularizer is not None:
+            self.loss = self.regularizer.forward(a_soft)
+
+        self.iter += 1
+        y = y.transpose(0,2,1,3).reshape(B,Tq,C)     # (B,h,Tq,H)->(B,Tq,C)
+        self.q = q                                   # query
+        self.k = k                                   # key
+        self.v = v                                   # value
+        self.y = y
+        return y                                     # (B,Tq,C)
+
+    def __backward__(self, gy):
+        dropout = self.dropout
+        dropout_mx = self.dropout_mx
+        q = self.q
+        k = self.k
+        v = self.v
+        kt = k.transpose(0,1,3,2)
+        B, h, Tq, H = q.shape
+        B, h, Tk, H = k.shape
+        B, h, Tv, H = v.shape
+        C = h * H
+        gy = gy.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
+
+        invrootH = np.array(H ** -0.5, dtype=Config.dtype)
+        chunk_size = Tq if self.chunk_size is None else self.chunk_size
+
+        gq = np.empty_like(q)
+        gk = np.zeros_like(k)
+        gv = np.zeros_like(v)
+
+        ga2 = None
+        if self.regularizer is not None:
+            ga2 = self.regularizer.backward()
+            if getattr(ga2, 'ndim', 0) == 0:
+                ga2 = None
+
+        for i in range(0, Tq, chunk_size):
+            j = min(i + chunk_size, Tq)
+            # -- 順伝播再計算 --
+            a_chunk = np.matmul(q[:, :, i:j, :], kt)
+
+            if self.scale:
+                a_chunk *= invrootH
+
+            if self.causality:
+                tril_chunk = np.tri(j-i, Tk, k=i, dtype=Config.dtype)[None, None, :, :]
+                self.tril[:, :, i:j, :] = tril_chunk
+                a_chunk += (tril_chunk - 1.0) * Config.inf
+                
+            if self.mask is not None:
+                a_chunk += (self.mask - 1.0) * Config.inf # 無効個所は-inf
+
+            a_soft_chunk = self.softmax(a_chunk)
+
+            if dropout > 0:
+                dropout_mx_chunk = dropout_mx[:, :, i:j, :]
+            else:
+                dropout_mx_chunk = 1
+
+            a_drop_chunk = self.DO.forward(a_soft_chunk, dropout_mx_chunk, dropout=dropout)
+
+            # -- 以下、逆伝播の計算 --
+            gy_chunk = gy[:, :, i:j, :]
+            ga_chunk = np.matmul(gy_chunk, v.transpose(0,1,3,2))
+
+            gv += np.matmul(a_drop_chunk.transpose(0,1,3,2), gy_chunk)
+
+            ga_chunk = self.DO.backward(ga_chunk, dropout_mx_chunk, dropout=dropout)
+
+            if ga2 is not None:
+                ga_chunk += ga2[:, :, i:j, :]
+
+            ga_chunk = self.softmax.backward(ga_chunk, a_soft_chunk)
+
+            # maskとcausalityとscale
+            if self.mask is not None:
+                ga_chunk *= self.mask
+            if self.causality:
+                ga_chunk *= tril_chunk
+            if self.scale:
+                ga_chunk *= invrootH
+
+            gq[:, :, i:j, :] = np.matmul(ga_chunk, k)
+            gk += np.matmul(ga_chunk.transpose(0,1,3,2), q[:, :, i:j, :])
+
+        gq = gq.transpose(0,2,1,3).reshape(B,Tq,C) # (B,h,Tq,H)->(B,Tq,C)
+        gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)
+        gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
+        return gq, gk, gv
+
 #### 時系列データをまとめて処理する Attention層 ############################
 # q:入力 query、x:入力 keyとvalue、y:出力、w:attention_weight
 # query に一致する key を探して、その key に対応する value を出力する
@@ -3861,6 +4058,7 @@ class SelfAttention(Function):
         self.config = emb_dim, head_dim, n_head
         print('Initialize', self.__class__.__name__, self.config, kwargs)
         optimize = kwargs.pop('optimize',   'Adam') 
+        chunk_size = kwargs.pop('chunk_size', None)
         # linear_iとlinear_oのconfigはfix_configurationで設定
         self.linear_i = LinearLayer(matmul=True, bias=False,
                                     #scale=True,
@@ -3870,7 +4068,11 @@ class SelfAttention(Function):
 
         causality = kwargs.pop('causality', False)
 
-        self.attention = AttentionUnit(head=n_head, causality=causality, **kwargs)
+        if chunk_size is None:
+            self.attention = AttentionUnit(head=n_head, causality=causality, **kwargs)
+        else:
+            self.attention = QueryChunkAttentionUnit(
+                head=n_head, causality=causality, chunk_size=chunk_size, **kwargs)
                      #scale=scale, temperature=temperature, entropy_decay=entropy_decay)
         self.linear_o = LinearLayer(matmul=True, bias=True,
                                     #scale=True, 
@@ -4588,6 +4790,28 @@ class Dropout2(Function):
         gx = gy if self.inplace else gy.copy() # inplaceではgxはgyと同一
         gx *= self.dropout_mx           # 順伝播時の情報を使う
         return gx
+
+class StatelessDropout:
+    """ QueryChunkAttention用のDropout """ 
+    def __init__(self, inplace=False):
+        self.inplace = inplace          # inplace演算とするかどうか
+        
+    def forward(self, x, dropout_mx=1, dropout=0): # x→y,ドロップアウト率(非学習時は0)
+        y = x if self.inplace else x.copy() 
+        if dropout > 0.0:
+            scale = 1 / (1 - dropout + 1e-7)
+            y *= dropout_mx             # ニューロンをランダムに無効化(0固定
+            y *= scale                  # 予めスケールを合わせておく
+        return y                        # inplaceの場合にはx更新で返り値不要
+
+    def backward(self, gy, dropout_mx=1, dropout=0): # 順伝播時に無効化したニューロンは逆伝播しない
+        gx = gy if self.inplace else gy.copy() # inplaceではgxはgyと同一
+        if dropout > 0.0:
+            scale = 1 / (1 - dropout + 1e-7)
+            gx *= dropout_mx
+            gx *= scale
+        return gx                       # inplaceの場合にはgy更新で返り値不要 
+
 
         
 #### キャプチャ #####################################################　

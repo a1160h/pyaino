@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260825 A.Inoue
+# 20260910 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -37,11 +37,13 @@ class FeedForward:
 class TransformerBlock(nucleus.Function):
     """ Transformer block: communication followed by computation """
 
-    def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False, 
-                 expansion=4, rms=False, activate='Mish', **kwargs):
+    def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False,
+                 expansion=4, rms=False, activate='Mish',
+                 chunk_size=None, **kwargs):
         super().__init__()
         self.sa = nn.MultiHeadSelfAttention(
-            emb_dim, emb_dim//n_head, n_head, causality=causality, **kwargs) # entropy制御はkwargsで指定
+            emb_dim, emb_dim//n_head, n_head, causality=causality, chunk_size=chunk_size,
+            **kwargs) # entropy制御はkwargsで指定
         self.ffwd = FeedForward(emb_dim, expansion, activate=activate, **kwargs)
         Norm = nn.RMSNormalization if rms else nn.LayerNormalization
         self.ln1 = Norm(**kwargs)

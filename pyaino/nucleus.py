@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260908 A.Inoue
+# 20260910 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -128,6 +128,8 @@ def clear_log():
 
 class Function:
     """ 微分可能関数の基底クラス """
+    set_in_forward = True # __forward__実行中にConfig.in_forwardを立てる
+    
     def __init__(self, log=False, log_file='log_file.txt', preserve_attr=False):
         self.inputs = None
         self.outputs = None
@@ -150,10 +152,30 @@ class Function:
         そしてbackwardの計算に必要な入出力は各サブクラスの責任で保持する
 
         """
-        with (using_config('create_graph', False), # forward中のforwardはグラフ生成しない
-              using_config('in_forward', True)):   # Function.__forward__の実行中だけTrue
-            return self.__forward__(*xs, **kwargs)
-    
+        attrs_before = self.__dict__.copy() if self.called_in_forward else None
+
+        if self.set_in_forward:
+            with (using_config('create_graph', False),
+                  using_config('in_forward', True)):
+                ys = self.__forward__(*xs, **kwargs)
+        else:
+            with using_config('create_graph', False):
+                ys = self.__forward__(*xs, **kwargs)
+
+        if isinstance(ys, tuple):
+            outputs = ys
+        elif isinstance(ys, list):
+            outputs = tuple(ys)
+        else:
+            outputs = (ys,)
+
+        if attrs_before is not None:
+            self._record_io_aliases(attrs_before, xs, outputs)
+        else:
+            self._io_alias_attrs = ()
+
+        return ys, outputs
+
     def _record_io_aliases(self, attrs_before, xs, ys_tuple):
         """ forward内で新たに保持した入出力配列の別名属性名を記録する """
         if not self.called_in_forward:
@@ -200,6 +222,8 @@ class Function:
         '''
         self.inputs  = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
         self.outputs = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
+        self.graph_exist = False
+        self.outputs_copy = None
         self.called_in_forward = Config.in_forward # forwardの中で呼ばれたFunction
 
         debug_print('<forward ↓>', self.__class__.__name__, id(self), 'forward (',
@@ -219,22 +243,11 @@ class Function:
             xs = inputs
 
         # -- 派生クラスの順伝播 --
-        attrs_before = self.__dict__.copy()
-        ys = self.call_forward(*xs, **kwargs)   # 演算に使うxsはinputsと別物で構わない
-
-        # __forward__の出力を一旦タプルに統一
-        if isinstance(ys, tuple):
-            ys_tuple = ys
-        elif isinstance(ys, list):
-            ys_tuple = tuple(ys)
-        else:
-            ys_tuple = (ys,)
-
-        self._record_io_aliases(attrs_before, xs, ys_tuple)
+        ys, outputs = self.call_forward(*xs, **kwargs)   # 演算に使うxsはinputsと別物で構わない
 
         # 属性保護が必要な場合だけ各出力をコピー
-        outputs = tuple(y.copy() for y in ys_tuple) if self.preserve_attr else ys_tuple
-
+        if self.preserve_attr:
+            outputs = tuple(y.copy() for y in outputs)
         self.y_shapes = [y.shape if isinstance(y, np.ndarray) else () for y in outputs] # 仮処置20241023   
 
         # -- グラフ非生成時の短縮パス --
@@ -288,15 +301,14 @@ class Function:
         # backward中のforwardでグラフ生成の場合には、その実行前に、
         # forwardのinputsになる変数をHDArrayにしておく必要がある
         # すなわちgysは予めHDArrayにしておく必要がある
-        if len(gys)==0: # backtraceの際に勾配は引数で与えられない
-            #gys = [self.get_grad(y) for y in self.outputs]
-            gys = self.get_grads() # 仮処置20240927
-        else: # 勾配が引数で与えられるがgy=1などの場合にも対処
-            gys = self.fix_grads(gys)
 
-        if seen_var is None:
-            seen_var = set()
-            #print('<bw>initialize seen_var', seen_var)
+        if len(gys) != 0:               # 勾配が与えられた場合 
+            gys = self.fix_grads(gys)
+        elif Config.backtrace_duration: # 勾配は変数から取得
+            gys = self.get_grads()
+        else:                           # デフォルト1
+            gys = self.get_default_grads()
+
         debug_print(self.__class__.__name__, id(self), 'backward',
                     'gys =', [id(gy) for gy in gys],
                     Config.create_graph, Config.higher_derivative, Config.derivative,
@@ -319,6 +331,9 @@ class Function:
         # バックトレース期間中でないならば__backward__()メソッドの結果をそのまま返せば良い20250506AI
         if not Config.backtrace_duration:
             return gxs
+
+        if seen_var is None:
+            seen_var = set()
         
         #if not (self.graph_exist and Config.derivative):
         if not self.graph_exist: # forward中のforwardでグラフ生成しないことに対応
@@ -428,31 +443,26 @@ class Function:
                        else y for y in self.outputs]
         return outputs[0] if len(outputs)<=1 else outputs        
 
-    def get_grads(self, default=1.0): # 仮処置20240927
-        """ 勾配が設定されていればそれを、さもなくばdefault値を返す """
+    def get_grads(self):
+        """ 変数に設定された勾配（Noneなら0）を取得する """
         gys = []
         for y, y_shape in zip(self.outputs, self.y_shapes):
-            if isinstance(y, weakref.ReferenceType): # weakrefの判別
+            if isinstance(y, weakref.ReferenceType):
                 y = y()
-            if y is None:
-                msg = self.__class__.__name__+' getting grads of'+str(self.outputs)
-                warnings.warn(msg)
-            if hasattr(y, 'grad') and y.grad is not None:
+            if y is not None and hasattr(y, 'grad') and y.grad is not None:
                 gy = y.grad
-            else: # 与えられない場合には一括してdefaultをy形状に展開 20260714　
-                gy = np.broadcast_to(np.array(default, dtype=Config.dtype), y_shape)
-            gys.append(gy)     
+            else:
+                gy = np.zeros(y_shape, dtype=Config.dtype)
+            gys.append(gy)
         return gys
-    
 
-    def get_grad(self, y, default=1.0):
-        """ 出力に勾配が設定されていればそれを、さもなくばdefault値を返す """
-        # yがHDArrayであってもなくても有効
-        if isinstance(y, weakref.ReferenceType): # weakrefの判別
-            y = y()
-        if hasattr(y, 'grad') and y.grad is not None:
-            return y.grad
-        return np.broadcast_to(np.array(default, dtype=Config.dtype), y.shape)
+    def get_default_grads(self, default=1):
+        """ default勾配をy_shapesに合わせて返す """
+        gys = [
+            np.broadcast_to(np.array(default, dtype=Config.dtype), y_shape)
+            for y_shape in self.y_shapes
+            ]
+        return gys
 
     def fix_grads(self, gys):
         """ 与えられた勾配の型と形状を出力に合わせる """
@@ -460,7 +470,9 @@ class Function:
             raise Exception("Can't fix grad's shape as output's shape.")
         #gys = [np.broadcast_to(gy if isinstance(gy, np.ndarray) else np.array(gy) ,
         #                       y_shape) for gy, y_shape in zip(gys, self.y_shapes)]
-        gys = [np.broadcast_to(asndarray(gy), y_shape) for gy, y_shape in zip(gys, self.y_shapes)]
+        gys = [gy if isinstance(gy, np.ndarray) and gy.shape == y_shape \
+               else np.broadcast_to(asndarray(gy), y_shape) 
+               for gy, y_shape in zip(gys, self.y_shapes)]
         return gys
 
     def set_creator_and_generation(self, y):
@@ -545,16 +557,9 @@ class Function:
 
 
 class HDFunction(Function):
-    def call_forward(self, *xs, **kwargs):
-        """
-        forward中のforwardはグラフ生成しない
-        しかしグラフ生成に必要なinputs/outputsは必ず保持（今後守るべきこと）
-        in_forwardは設定しない
-
-        """
-        with using_config('create_graph', False):  
-            return self.__forward__(*xs, **kwargs)
-    
+    set_in_forward = False
+   
+   
 def print_data_class_etc(xs, comment=None):
     xs = (xs,) if type(xs) not in(tuple, list) else xs # 常にタプルかリストにする
     for x in xs:
