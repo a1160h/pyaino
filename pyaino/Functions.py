@@ -1,5 +1,5 @@
-# Functions 順伝播逆伝播双方に対応した関数
-# 20260825 A.Inoue
+﻿# Functions 順伝播逆伝播双方に対応した関数
+# 20260911 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -25,10 +25,11 @@ class Branch(Function):
         self.gx = None
         
     def __forward__(self, x):
+        self.x = x
         return x.copy()
     
     def __backward__(self, gy, *, flush=True):
-        x, = self.inputs
+        x = self.x
         if self.gx is None or flush: 
             self.gx = np.zeros_like(x)
         self.gx += assign(gy)     
@@ -53,11 +54,12 @@ class Pow(Function):
         self.c = c
         
     def __forward__(self, x):
+        self.x = x
         y = np.power(x, self.c) # 20241019 x**c
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs 
+        x = self.x
         c = self.c
         gx = gy * c * x ** (c - 1)
         return gx
@@ -67,11 +69,12 @@ def pow(x, c):
 
 class Square(Function):
     def __forward__(self, x):
+        self.x = x
         y = np.square(x)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * 2 * x 
         return gx
     
@@ -81,10 +84,11 @@ def square(x):
 class Sqrt(Function):
     def __forward__(self, x):
         y = np.sqrt(x)
+        self.y = y
         return y
 
     def __backward__(self, gy):
-        y = self.get_outputs()
+        y = self.y
         gx = gy * 0.5 / (y + 1e-12) # gy * 0.5 * self.x ** (-0.5) 
         return gx
     
@@ -103,10 +107,11 @@ class Exp(Function):
    
     def __forward__(self, x):
         y = np.exp(self.log_of_base * x)
+        self.y = y
         return y
 
     def __backward__(self, gy):
-        y = self.get_outputs()
+        y = self.y
         gx = gy * self.log_of_base * y
         return gx
 
@@ -127,11 +132,12 @@ class Log(Function):
         self.log_of_base = log_of_base   
        
     def __forward__(self, x):
+        self.x = x
         y = np.log(x)/self.log_of_base
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs 
+        x = self.x
         gx = gy / (x * self.log_of_base)
         return gx
 
@@ -140,11 +146,12 @@ def log(x, a=None):
 
 class Abs(Function):
     def __forward__(self, x):
+        self.x = x
         y = np.abs(x)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * ((x >= 0) * 2 - 1)
         return gx
 
@@ -153,11 +160,12 @@ def abs(x):
     
 class Sin(Function):
     def __forward__(self, x):
+        self.x = x
         y = np.sin(x)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * cos(x)
         return gx
 
@@ -166,11 +174,12 @@ def sin(x):
 
 class Cos(Function):
     def __forward__(self, x):
+        self.x = x
         y = np.cos(x)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * - sin(x)
         return gx
 
@@ -211,22 +220,25 @@ class Erf(Function):
                 print('Use Abramowitz Stegun approximation for erf.')
 
     def __forward__(self, x):
+        self.x = x
         return self.erf(x)
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         return gy * (2.0 / np.sqrt(np.pi)) * np.exp(-x * x)
 
 class Add(Function):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = x0, x1
         y = x0 + x1
         return y
     
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         y_shape, = self.y_shapes
-        gx0 = assign(gy) if y_shape==x0.shape else SumTo(x0.shape)(gy)
-        gx1 = assign(gy) if y_shape==x1.shape else SumTo(x1.shape)(gy)
+        x0_shape, x1_shape = np.shape(x0), np.shape(x1)
+        gx0 = assign(gy) if y_shape==x0_shape else SumTo(x0_shape)(gy)
+        gx1 = assign(gy) if y_shape==x1_shape else SumTo(x1_shape)(gy)
         return gx0, gx1
 
 def add(x0, x1):
@@ -234,14 +246,16 @@ def add(x0, x1):
 
 class Sub(Function):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = x0, x1
         y = x0 - x1
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         y_shape, = self.y_shapes
-        gx0 =  assign(gy) if y_shape==x0.shape else SumTo(x0.shape)(gy)
-        gx1 = -gy         if y_shape==x1.shape else SumTo(x1.shape)(-gy)
+        x0_shape, x1_shape = np.shape(x0), np.shape(x1)
+        gx0 =  assign(gy) if y_shape==x0_shape else SumTo(x0_shape)(gy)
+        gx1 = -gy         if y_shape==x1_shape else SumTo(x1_shape)(-gy)
         return gx0, gx1
 
 def sub(x0, x1):
@@ -252,16 +266,18 @@ def rsub(x0, x1):
 
 class Mul(Function):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = x0, x1
         y = x0 * x1
         return y
     
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         y_shape, = self.y_shapes
+        x0_shape, x1_shape = np.shape(x0), np.shape(x1)
         gx0 = x1 * gy
         gx1 = x0 * gy
-        gx0 = gx0 if y_shape==x0.shape else SumTo(x0.shape)(gx0)
-        gx1 = gx1 if y_shape==x1.shape else SumTo(x1.shape)(gx1)
+        gx0 = gx0 if y_shape==x0_shape else SumTo(x0_shape)(gx0)
+        gx1 = gx1 if y_shape==x1_shape else SumTo(x1_shape)(gx1)
         return gx0, gx1
     
 def mul(x0, x1):
@@ -269,16 +285,18 @@ def mul(x0, x1):
 
 class Div(Function):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = x0, x1
         y = x0 / x1
         return y
     
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         y_shape, = self.y_shapes
+        x0_shape, x1_shape = np.shape(x0), np.shape(x1)
         gx0 = gy / x1
         gx1 = - gy * x0 / x1 ** 2
-        gx0 = gx0 if y_shape==x0.shape else SumTo(x0.shape)(gx0)
-        gx1 = gx1 if y_shape==x1.shape else SumTo(x1.shape)(gx1)
+        gx0 = gx0 if y_shape==x0_shape else SumTo(x0_shape)(gx0)
+        gx1 = gx1 if y_shape==x1_shape else SumTo(x1_shape)(gx1)
         return gx0, gx1
 
 def div(x0, x1):
@@ -294,6 +312,7 @@ class SumTo(Function):
         self.gy_shape = None
 
     def __forward__(self, x):
+        self.x = x
         if x.shape == self.shape:
             self.gy_shape = x.shape             # backwardで必要
             return x
@@ -320,7 +339,7 @@ class SumTo(Function):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs 
+        x = self.x
         #gx = gy.reshape(self.gy_shape)          # 先ずは次元数を合わせる
         gx = snp.reshape(gy, self.gy_shape)      # 先ずは次元数を合わせる
         gx = snp.broadcast_to(gx, x.shape)       # それから所望のbroadcast
@@ -335,12 +354,13 @@ class BroadcastTo(Function):
         self.shape = shape
 
     def __forward__(self, x):
+        self.x = x
         y = snp.broadcast_to(x, self.shape)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
-        gx = sum_to(gy, x.shape)
+        x = self.x
+        gx = sum_to(gy, np.shape(x))
         return gx
 
 def broadcast_to(x, shape):
@@ -385,18 +405,20 @@ class SumMeanVar(Function):
         self.n = n
         
     def __backward__(self, gy):
-        x, = self.inputs
-        if self.last_x_shape != x.shape:
-            self.set_axis_and_shape(x.shape)
-            self.last_x_shape = x.shape
+        x = self.x
+        x_shape = np.shape(x)
+        if self.last_x_shape != x_shape:
+            self.set_axis_and_shape(x_shape)
+            self.last_x_shape = x_shape
         gy = snp.reshape(gy, self.gy_shape)         # gyは次元を合わせる
-        gy = snp.broadcast_to(gy, x.shape)          # 畳まれた分をbroadcastして元に戻す
+        gy = snp.broadcast_to(gy, x_shape)          # 畳まれた分をbroadcastして元に戻す
         return gy
 
 
 class Sum(SumMeanVar):
     """ 和 """
     def __forward__(self, x):
+        self.x = x
         y = snp.sum(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
@@ -406,6 +428,7 @@ def sum(x, axis=None, keepdims=False):
 class Mean(SumMeanVar):
     """ 平均 """
     def __forward__(self, x):
+        self.x = x
         y = snp.mean(x, axis=self.axis, keepdims=self.keepdims)
         return y
     
@@ -420,12 +443,13 @@ def mean(x, axis=None, dtype=None, out=None, keepdims=False):
 class Var(SumMeanVar):
     """ 分散 """
     def __forward__(self, x):
+        self.x = x
         y = snp.var(x, axis=self.axis, keepdims=self.keepdims)
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
+        x = self.x
         mu = snp.mean(x, axis=self.axis, keepdims=True)
         gx = gy * (2/self.n) * (x - mu)
         return gx
@@ -436,13 +460,15 @@ def var(x, axis=None, keepdims=False):
 class Std(SumMeanVar):
     """ 標準偏差 """
     def __forward__(self, x):
+        self.x = x
         y = snp.std(x, axis=self.axis, keepdims=self.keepdims)
+        self.y = y
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         mu = snp.mean(x, axis=self.axis, keepdims=True)
         yr = snp.reshape(y, self.gy_shape)
         gvar = gy * 0.5 / (yr + 1e-12) # std = sqrt(var) の逆伝播　
@@ -456,38 +482,42 @@ def std(x, axis=None, keepdims=False):
 class SquareSum(SumMeanVar):
     """ 二乗和 """
     def __forward__(self, x):
+        self.x = x
         y = snp.sum(x**2, axis=self.axis, keepdims=self.keepdims)
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
+        x = self.x
         gx = gy * 2 * x
         return gx
         
 class SquareMean(SumMeanVar):
     """ 二乗平均 """
     def __forward__(self, x):
+        self.x = x
         y = snp.mean(x**2, axis=self.axis, keepdims=self.keepdims)
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
+        x = self.x
         gx = gy * (1/self.n) * 2 * x
         return gx
     
 class RootSumSquare(SumMeanVar):
     """ 二乗和平方根 """
     def __forward__(self, x):
+        self.x = x
         sqsm = snp.sum(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqsm)
+        self.y = y
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         yr = snp.reshape(y, self.gy_shape) # gyと形状を揃える
         gsqsm = gy * 0.5 / (yr + 1e-12)    # RMS = sqrt(sqmu)の逆伝播
         gx = 2 * x * gsqsm
@@ -496,14 +526,16 @@ class RootSumSquare(SumMeanVar):
 class RootMeanSquare(SumMeanVar):
     """ 二乗平均平方根(RootMeanSquare) """
     def __forward__(self, x):
+        self.x = x
         sqmu = snp.mean(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqmu)
+        self.y = y
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         yr = snp.reshape(y, self.gy_shape) # gyと形状を揃える
         gsqmu = gy * 0.5 / (yr + 1e-12)    # RMS = sqrt(sqmu)の逆伝播
         gx = (1/self.n) * 2 * x * gsqmu
@@ -614,10 +646,11 @@ class GetItem(Function):
         self.slices = slices
 
     def __forward__(self, x):
+        self.x = x
         return x[self.slices]
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = np.zeros_like(x, dtype=Config.dtype)
         snp.add_at(gx, self.slices, gy)
         return gx
@@ -645,6 +678,7 @@ class TopKprimitive(Function):
         self.indices = None
 
     def __forward__(self, x):
+        self.x = x
         axis = self.axis
 
         # 軸axisに沿って降順でxのインデクスを並べ先頭のk個を選ぶ
@@ -658,7 +692,7 @@ class TopKprimitive(Function):
         return values
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = scatter_add_along_axis(
             gy, self.indices, output_shape=x.shape, axis=self.axis,
         )
@@ -745,12 +779,13 @@ class Reshape_bkup(Function):
             self.shape, = shape # タプルにする
         
     def __forward__(self, x):
+        self.x = x
         y = snp.reshape(x, self.shape)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
-        gx = snp.reshape(gy, x.shape)
+        x = self.x
+        gx = snp.reshape(gy, np.shape(x))
         return gx
 
 class Reshape(Function):
@@ -764,22 +799,24 @@ class Reshape(Function):
             self.shape = shape
 
     def __forward__(self, x):
+        self.x = x
         return snp.reshape(x, self.shape)
 
     def __backward__(self, gy):
-        x, = self.inputs
-        return snp.reshape(gy, x.shape)
+        x = self.x
+        return snp.reshape(gy, np.shape(x))
 
 def reshape(x, *shape):
     return Reshape(*shape)(x)
 
 class Dot(Function):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = x0, x1
         y = np.dot(x0, x1)
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         gx0 = np.dot(gy, x1.T)
         gx1 = np.dot(x0.T, gy)
         return gx0, gx1
@@ -789,11 +826,12 @@ def dot(x0, x1):
 
 class MatMul(Function):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = x0, x1
         y = np.matmul(x0, x1)
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         #x0T = x0.T if x0.ndim <= 2 else x0.transpose(*range(x0.ndim)[:-2], -1, -2)
         #x1T = x1.T if x1.ndim <= 2 else x1.transpose(*range(x1.ndim)[:-2], -1, -2)
         x0T = x0.T if x0.ndim <= 2 else snp.transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
@@ -812,13 +850,14 @@ class DotLinear(Function):
         self.bias = bias
         
     def __forward__(self, x, w, b):
+        self.x, self.w, self.b = x, w, b
         y = np.dot(x, w)
         if self.bias:
             y += b
         return y
 
     def __backward__(self, gy):
-        x, w, b = self.inputs
+        x, w, b = self.x, self.w, self.b
         gx = dot(gy, w.T)
         gw = dot(x.T, gy)
         if self.bias:
@@ -829,7 +868,7 @@ class DotLinear(Function):
 
     def __backward__bkup(self, gy):
         # ニューラルネットワークで使うことに限れば不要
-        x, w, b = self.inputs
+        x, w, b = self.x, self.w, self.b
         w_T = transpose(w) 
         x_T = transpose(x)  
         gx = np.dot(gy, w_T)
@@ -844,11 +883,12 @@ class DotLinear(Function):
 
 class HadamardLinear(Function):
     def __forward__(self, x, w, b):
+        self.x, self.w, self.b = x, w, b
         y = x * w + b
         return y
 
     def __backward__(self, gy):
-        x, w, b = self.inputs
+        x, w, b = self.x, self.w, self.b
         gx = gy * w
         gw = gy * x
         gb = gy
@@ -856,7 +896,7 @@ class HadamardLinear(Function):
 
     def __backward__bkup(self, gy):
         # ニューラルネットワークで使うことに限れば不要
-        x, w, b = self.inputs
+        x, w, b = self.x, self.w, self.b
         gx = gy * w
         gw = gy * x
         gb = gy if gy.shape==b.shape else SumTo(b.shape)(gy)
@@ -869,13 +909,14 @@ class MatMulLinear(Function):
         self.bias = bias
         
     def __forward__(self, x, w, b):
+        self.x, self.w, self.b = x, w, b
         y = np.matmul(x, w)
         if self.bias:
             y += b
         return y
 
     def __backward__(self, gy):
-        x, w, b = self.inputs
+        x, w, b = self.x, self.w, self.b
         #x_T = x.T if x.ndim <= 2 else x.reshape(-1, x.shape[-1]).T
         x_T = x.T if x.ndim <= 2 else snp.reshape(x, (-1, x.shape[-1])).T
         gx = np.matmul(gy, w.T)
@@ -895,6 +936,7 @@ class MatMulLinear_bkup(Function):
         self.bias = bias
         
     def __forward__(self, x, w, b):
+        self.x, self.w, self.b = x, w, b
         y = np.matmul(x, w)
         if self.bias:
             y += b
@@ -902,7 +944,7 @@ class MatMulLinear_bkup(Function):
 
     def __backward__(self, gy):
         # wやbの次元数
-        x, w, b = self.inputs
+        x, w, b = self.x, self.w, self.b
         x_T = x.T if x.ndim <= 2 else snp.transpose(x, (*range(x.ndim)[:-2], -1, -2))
         gx = np.matmul(gy, w.T)
         gw = np.matmul(x_T, gy)
@@ -919,13 +961,14 @@ class DualDotLinear(Function):
         self.bias = bias
         
     def __forward__(self, x, r, w, v, b):
+        self.x, self.r, self.w, self.v, self.b = x, r, w, v, b
         y = np.dot(x, w) + np.dot(r, v) 
         if self.bias:
             y += b
         return y
 
     def __backward__(self, gy):
-        x, r, w, v, b = self.inputs
+        x, r, w, v, b = self.x, self.r, self.w, self.v, self.b
         gx = np.dot(gy, w.T)
         gr = np.dot(gy, v.T)
         gw = np.dot(x.T, gy)
@@ -947,16 +990,18 @@ class ScaleDotLinear(Function):
         self.eps = eps
         
     def __forward__(self, x, w, b, g=1.0):
+        self.x, self.w, self.b, self.g = x, w, b, g
         y = self.dot(x, w)
         if self.scale:
             y *= g 
         if self.bias:
             y += b
+        self.y = y
         return y
 
     def __backward__(self, gy):
-        x, w, b, g = self.inputs
-        y = self.get_outputs()
+        x, w, b, g = self.x, self.w, self.b, self.g
+        y = self.y
         #x_T = x.T if x.ndim <= 2 else x.reshape(-1, x.shape[-1]).T
         x_T = x.T if x.ndim <= 2 else snp.reshape(x, (-1, x.shape[-1])).T
         #gyf = gy.reshape(-1, gy.shape[-1])
@@ -1005,6 +1050,7 @@ class Normalize(Function):
         self.mask = None
     
     def __forward__(self, x):
+        self.x = x
         mu = snp.mean(x, axis=self.axis, keepdims=True)
         sigma = snp.std(x, axis=self.axis, keepdims=True)
         z = x - mu
@@ -1012,11 +1058,13 @@ class Normalize(Function):
         self.sigma = sigma
         self.mask = sigma < self.eps # sigmaが極小値の場合には正規化しない
         self.n = x.size//sigma.size  # 畳んだ大きさ 
-        return y * (1 - self.mask) + x * self.mask
+        y = y * (1 - self.mask) + x * self.mask
+        self.y = y
+        return y
    
     def __backward__(self, gy):
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         sigma = self.sigma + self.eps
         n = self.n
         # y = z / sigma の逆伝播 
@@ -1044,16 +1092,18 @@ class NormalizeSimple(Function):
         self.eps = eps
     
     def __forward__(self, x):
+        self.x = x
         mu = snp.mean(x, axis=self.axis, keepdims=True)
         sigma = snp.std(x, axis=self.axis, keepdims=True)
         z = x - mu
         y = z / (sigma + self.eps)
         self.sigma = sigma
+        self.y = y
         return y
    
     def __backward__(self, gy):
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         sigma = self.sigma + self.eps
         n = x.size//sigma.size   # 畳んだ大きさ
         # y = z / sigma の逆伝播 
@@ -1168,6 +1218,7 @@ class Concatenate(Function):
         self.axis = axis
 
     def __forward__(self, *xs):
+        self.xs = xs
         return snp.concatenate(xs, axis=self.axis)
 
     def __backward__(self, gy):
@@ -1178,7 +1229,7 @@ class Concatenate(Function):
         sections = []
         stop = 0
 
-        for x in self.inputs[:-1]:
+        for x in self.xs[:-1]:
             stop += x.shape[axis]
             sections.append(stop)
 
@@ -1283,13 +1334,14 @@ class TakeAlongAxis(Function):
         self.axis = axis
 
     def __forward__(self, x):
+        self.x = x
         y = np.take_along_axis(x, self.indices, axis=self.axis)
         if self.axis is not None and self.axis < 0:
             self.axis += x.ndim
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = np.zeros_like(x, dtype=Config.dtype)
 
         if self.axis is None: # axis=Noneではxを一次元に展開して処理
@@ -1317,6 +1369,7 @@ class ScatterAddAlongAxis(Function):
         self.axis = axis
 
     def __forward__(self, x):
+        self.x = x
         y = np.zeros(self.output_shape, dtype=Config.dtype)
 
         if x.ndim != y.ndim:
@@ -1347,7 +1400,7 @@ class ScatterAddAlongAxis(Function):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         indices = snp.broadcast_to(self.indices, x.shape)
         gx = np.take_along_axis(gy, indices, axis=self.axis)
         return gx
@@ -1467,6 +1520,7 @@ class UpperTriangle(Function):
         self.mask = None # 
 
     def __forward__(self, x):
+        self.x = x
         if x.shape[-1] != x.shape[-2]:
             raise ValueError("末尾2軸が正方行列である必要があります")
         N = x.shape[-1]
@@ -1477,7 +1531,7 @@ class UpperTriangle(Function):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         N = x.shape[-1]
         gx = np.zeros(x.shape, dtype=gy.dtype)
         gx[..., self.mask] = gy
@@ -1490,11 +1544,12 @@ class Take(Function):
         self.indices = np.array(indices)
 
     def __forward__(self, x):
+        self.x = x
         y = snp.take(x, self.indices, axis=self.axis)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         axis = self.axis
         indices = self.indices.flatten()
         gx = np.zeros_like(x, dtype=Config.dtype)
@@ -1707,20 +1762,22 @@ class Argsort(Function):
 class Sigmoid(Function):
     def __forward__(self, x):
         y = 1 / (1 + np.exp(-x))
+        self.y = y
         return y
 
     def __backward__(self, gy):
-        y = self.get_outputs()         
+        y = self.y         
         gx = y * (1 - y) * gy
         return gx
 
 class Tanh(Function):
     def __forward__(self, x):
         y = np.tanh(x)
+        self.y = y
         return y
 
     def __backward__(self, gy):
-        y = self.get_outputs()
+        y = self.y
         gx = gy * (1 - y * y)
         return gx
 
@@ -1730,10 +1787,11 @@ class Softmax(Function):
         exp_a = np.exp(x - max_x)  # オーバーフロー対策
         sum_exp_a = snp.sum(exp_a, axis=-1, keepdims=True) #if dimx>1 else snp.sum(exp_a) 
         y = exp_a / (sum_exp_a + 1e-7)
+        self.y = y
         return y
 
     def __backward__(self, gy): # ソフトマックス本来の逆伝播
-        y = self.get_outputs()
+        y = self.y
         gx = y * gy
         sumgx = snp.sum(gx, axis=-1, keepdims=True)
         gx -= y * sumgx

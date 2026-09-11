@@ -1,5 +1,5 @@
-# LossFunctions
-# 2026.04.25 A.Inoue
+﻿# LossFunctions
+# 2026.09.11 A.Inoue
 from pyaino.Config import *
 from pyaino import nucleus
 from pyaino import safe_np as snp
@@ -33,6 +33,7 @@ class LossFunctionBase(nucleus.Function):
         return math.prod(l.shape)
 
     def __forward__(self, y, t):
+        self.y = y
         # tの整形
         if self.label2onehot and y.shape != t.shape:   # tが正解ラベル 
             self.t = np.eye(y.shape[-1], dtype=Config.dtype)[t]
@@ -67,7 +68,7 @@ class LossFunctionBase(nucleus.Function):
         raise ValueError(f'Invalid reduction {self.reduction}')
 
     def __backward__(self, gl=1):
-        y, _ = self.inputs
+        y = self.y
         y_shape = y.shape
         # glの整形
         gl = np.asarray(gl, dtype=Config.dtype)
@@ -255,6 +256,7 @@ class PairwiseGap(nucleus.Function):
         self.beta = beta
 
     def __forward__(self, x, gap=None):
+        self.x = x
         n = x.shape[-1] # ペアをとる末尾の軸
         d = np.expand_dims(x, -1) - np.expand_dims(x, -2)  # (..., n, n)
         self.diffs = d
@@ -274,7 +276,7 @@ class PairwiseGap(nucleus.Function):
         return loss
 
     def __backward__(self, gl):
-        x, = self.inputs
+        x = self.x
         n = x.shape[-1]
         sign = np.sign(self.diffs)
         grad = self.gap_error * sign
@@ -295,6 +297,7 @@ class PairwiseGap_bkup(nucleus.Function):
         self.beta = beta
 
     def __forward__(self, x):
+        self.x = x
         n = x.shape[0]                       
         d = x[:, None] - x[None, :]          # 各要素の差を並べたペアワイズ差分行列
         mask = ~np.eye(n, dtype=bool)        # 対角要素はFalse
@@ -304,7 +307,7 @@ class PairwiseGap_bkup(nucleus.Function):
         return loss
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         n = x.shape[0]
         sign = np.sign(self.diffs)
         grad = gy * (2 / (n * (n - 1))) * snp.sum(self.gap_error * sign, axis=1)

@@ -483,6 +483,7 @@ class LinearLayerCrossEntropy(LinearLayer):
         self.tile_size = kwargs.pop('tile_size', None) #
        
     def __forward__(self, x, t=None, **kwargs):       # kwargsは使わない
+        self.x, self.t = x, t
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -553,7 +554,7 @@ class LinearLayerCrossEntropy(LinearLayer):
         
     def __backward__(self, *args): # argsは使わない
         m, n = self.config
-        x, t = self.inputs 
+        x, t = self.x, self.t
         w, b, gamma = self.parameters()
 
         grad_w = np.zeros_like(w)
@@ -1437,6 +1438,7 @@ class Pooling1dLayer(Function):
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
             
     def __forward__(self, x, *, train=False, dropout=0.0):
+        self.x = x
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -1460,7 +1462,7 @@ class Pooling1dLayer(Function):
         grad_x = self.unpooling(self.grad_y, self.max_index)
         # 画像調整 トリミング
         grad_x = grad_x[:, :, pad:pad+Iw]            # grad_x.shape=(B,C,Iw) 
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        grad_x = grad_x.reshape(self.x.shape)
         return grad_x
 
 ### 逆プーリング層 ####################################################
@@ -1504,6 +1506,7 @@ class UnPooling1dLayer(Function):
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
+        self.x = x
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -1528,7 +1531,7 @@ class UnPooling1dLayer(Function):
         # 画像調整                 B      C     Iw左 Iw右　 ゼロパディング   
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pdw)], 'constant')
         grad_x, _ = self.pooling(grad_y)
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        grad_x = grad_x.reshape(self.x.shape)
         return grad_x
 
 class Pooling1d:  
@@ -1621,6 +1624,7 @@ class Pooling2dLayer(Function):
       
             
     def __forward__(self, x, *, train=False, dropout=0.0):
+        self.x = x
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -1646,7 +1650,7 @@ class Pooling2dLayer(Function):
         grad_x = self.unpooling(self.grad_y, self.max_index)
         # 画像調整 トリミング
         grad_x = grad_x[:, :, pad:pad+Ih, pad:pad+Iw] # grad_x.shape=(B,C,Ih,Iw) 
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        grad_x = grad_x.reshape(self.x.shape)
         return grad_x
 
 class PoolingLayer(Pooling2dLayer):
@@ -1703,6 +1707,7 @@ class UnPooling2dLayer(Function):
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
             
     def __forward__(self, x, *, train=False, dropout=0.0, max_index=None):
+        self.x = x
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -1729,7 +1734,7 @@ class UnPooling2dLayer(Function):
         # 画像調整            B      C     Ih上　Ih下   Iw左 Iw右　ゼロパディング   
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pdh), (pad, pdw)], 'constant')
         grad_x, _ = self.pooling(grad_y)
-        grad_x = grad_x.reshape(self.inputs[0].shape)
+        grad_x = grad_x.reshape(self.x.shape)
         return grad_x
 
 class UnPoolingLayer(UnPooling2dLayer):
@@ -1786,13 +1791,14 @@ class GlobalAveragePooling(Function):
         self.DO = Dropout() if kwargs.pop('dropout', False) else None
 
     def __forward__(self, x, *, train=False, dropout=0.0):
+        self.x = x
         y = np.mean(x, axis=(2, 3))
         if self.DO:
             y = self.DO.forward(y, dropout=dropout)       
         return y
         
     def __backward__(self, grad_y):
-        x, = self.inputs
+        x = self.x
         B, C, Ih, Iw = x.shape
         if self.DO:
             grad_y = self.DO.backward(grad_y) 
@@ -2190,6 +2196,7 @@ class Interpolate2dNearest(Interpolate2d):
     """ 最近傍アップサンプリング別ルート実装 """
 
     def __forward__(self, x):
+        self.x = x
         if None in self.config:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -2217,7 +2224,7 @@ class Interpolate2dNearest(Interpolate2d):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         B = x.shape[0]
         prefix = x.shape[1:-2] # バッチ軸 B と末尾の空間軸 (H, W) の間にある軸
         Ih, Iw, Oh, Ow, mode, align = self.config
@@ -2286,6 +2293,7 @@ class MaskedExpansionLayer(BaseLayer):
         return m, n
 
     def __forward__(self, x):
+        self.x = x
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         B = x.size // (C*Ih*Iw)             # B = x.shape[0] = len(x)
         w, b, gamma = self.parameters()     # w.shape=(M,C*Fh*Fw)
@@ -2295,7 +2303,7 @@ class MaskedExpansionLayer(BaseLayer):
         return y
     
     def __backward__(self, grad_y, flush=True): 
-        x, = self.inputs
+        x = self.x
         C, Ih, Iw, M, Fh, Fw, Oh, Ow = self.config
         B = grad_y.size // (C*Oh*Ow)        # B = grad_y.shape[0] = len(grad_y)
         grad_y = (grad_y.reshape(B,C,Ih,Fh,Iw,Fw)
@@ -2510,6 +2518,7 @@ class LatentSamplingZ:
 class MuVarSampling(Function):
     """ muとlog_varによるReparameterize """
     def __forward__(self, mu, log_var, *, epsilon=None, rate=1.0):
+        self.mu, self.log_var = mu, log_var
         if epsilon is None:
             epsilon = (rate * np.random.randn(*log_var.shape)).astype(Config.dtype)
         self.epsilon = epsilon # 逆伝播に備えて覚える
@@ -2517,7 +2526,7 @@ class MuVarSampling(Function):
         return z
 
     def __backward__(self, gz=1):
-        mu, log_var = self.inputs
+        mu, log_var = self.mu, self.log_var
         epsilon = self.epsilon # 順伝播から引き継ぐ 
         gmu = np.broadcast_to(gz, mu.shape) 
         glog_var = 0.5 * gz * epsilon * np.exp(log_var/2)
@@ -2526,11 +2535,12 @@ class MuVarSampling(Function):
 class MuVarSampling2(Function):
     """ mu, log_var, epsilonのすべてが位置変数のサンプリング """
     def __forward__(self, mu, log_var, epsilon):
+        self.mu, self.log_var, self.epsilon = mu, log_var, epsilon
         z = mu + epsilon * np.exp(log_var/2)
         return z
 
     def __backward__(self, gz=1):
-        mu, log_var, epsilon = self.inputs
+        mu, log_var, epsilon = self.mu, self.log_var, self.epsilon
         gmu = np.broadcast_to(gz, mu.shape) 
         gepsilon = gz * np.exp(log_var/2)
         #glog_var = 0.5 * gz * epsilon * np.exp(log_var/2)
@@ -2559,6 +2569,7 @@ class KullbackLeiblerDivergenceNormal(Function):
         self.free_bits = free_bits
 
     def __forward__(self, mu, log_var):
+        self.mu, self.log_var = mu, log_var
         # element-wise KLD
         kld_elem = -0.5 * (1 + log_var - mu**2 - np.exp(log_var))
 
@@ -2603,7 +2614,7 @@ class KullbackLeiblerDivergenceNormal(Function):
             raise ValueError(f"Unknown KLD mode: {self.mode}")
 
     def __backward__(self, gkll=1):
-        mu, log_var = self.inputs
+        mu, log_var = self.mu, self.log_var
 
         # element-wise derivative
         gmu = mu
@@ -2646,12 +2657,12 @@ class KullbackLeiblerDivergenceNormal(Function):
 class KullbackLeiblerDivergenceNormalBasic(Function):
     """ 標準正規分布に対する任意の正規分布のKLDの解析解 """
     def __forward__(self, mu, log_var):
-        #self.inputs = mu, log_var
+        self.mu, self.log_var = mu, log_var
         kll = -0.5 * np.sum(1 + log_var - mu**2 - np.exp(log_var))
         return kll/len(mu)
 
     def __backward__(self, gkll=1):
-        mu, log_var = self.inputs
+        mu, log_var = self.mu, self.log_var
         gmu = gkll * mu
         glog_var = gkll * (-0.5) * (1 - np.exp(log_var))
         return gmu/len(mu), glog_var/len(log_var)
@@ -2664,6 +2675,7 @@ class KullbackLeiblerDivergenceNormal2(CompositFunction):
 
 class MutualInformationLoss(Function):
     def __forward__(self, z, mu, log_var):
+        self.z, self.mu, self.log_var = z, mu, log_var
         log_qz_cond_x = self.log_normal_density(z, mu, log_var)
         log_pz = self.log_standard_normal(z)
         mi_loss = np.sum(log_qz_cond_x - log_pz, axis=-1)
@@ -2679,7 +2691,7 @@ class MutualInformationLoss(Function):
         return np.sum(log_density, axis=-1)
 
     def __backward__(self, gmil=1):
-        z, mu, log_var = self.inputs
+        z, mu, log_var = self.z, self.mu, self.log_var
         var = np.exp(log_var)
         dz = gmil * (-(z - mu) / var + z)
         dmu = gmil * ((z - mu) / var)
@@ -3323,6 +3335,7 @@ class Embedding(Function):
         kwargsは使わないが、他の層と併せて呼ばれる際の引数対応
         
         """
+        self.x = x
         w = self.parameters()
         y = w[x]
        
@@ -3336,7 +3349,7 @@ class Embedding(Function):
                            + self.__class__.__name__)
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         if self.mask is not None:
             gy *= self.mask
         self.parameters.set_gradient(x, gy)
@@ -3498,6 +3511,7 @@ class PatchEmbeddingSimple(Function):
         self.linear = LinearLayer(dimensionality, matmul=True, **kwargs)
        
     def __forward__(self, x):
+        self.x = x
         B, C, Ih, Iw = x.shape
         p = self.patch_size
 
@@ -3516,7 +3530,7 @@ class PatchEmbeddingSimple(Function):
         return self.forward(*args, **kwargs)
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         B, C, Ih, Iw = x.shape
         p = self.patch_size
         
@@ -3551,6 +3565,7 @@ class Unpatchfy(Function):
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def __forward__(self, x, **kwargs):
+        self.x = x
         if None in self.linear.config: # linearの設定を確認
             self.fix_configuration(x.shape)
             
@@ -3575,7 +3590,7 @@ class Unpatchfy(Function):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         B, T, H = x.shape
         P = self.config[1]         # patch_size
         C, Ih, Iw = self.config[0] # img_size
@@ -4376,6 +4391,7 @@ class ContextualSelfAttention(Function):
         return m, n
 
     def __forward__(self, x, dropout=0.0):
+        self.x = x
         if None in self.config or self.q is None:
             #print(self.__class__.__name__, '.input.shape', x.shape)
             self.fix_configuration(x.shape)
@@ -4391,7 +4407,7 @@ class ContextualSelfAttention(Function):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         m, n = self.config
         B, _, _ = x.shape
 
@@ -4824,6 +4840,7 @@ class StatelessDropout:
 #      リカレントなパスからの勾配のみを伝播する
 class Capture(Function): 
     def __forward__(self, x, *, width=None):
+        self.x = x
         self.config = None, None, width
         if width is None:
             return x
@@ -4846,7 +4863,7 @@ class Capture(Function):
 
     def __backward__(self, grad_y):
         Tf, m, width = self.config
-        x, = self.inputs
+        x = self.x
         if width is None:
             return grad_y
         if   grad_y.ndim==3:
@@ -4928,6 +4945,7 @@ class Normalization(Function):
             self.OFs.update(self.sigma_ppl, self.sigma_ppl - self.sigma, eta=0.1)
 
     def __forward__(self, x, *, train=False):
+        self.x = x
         if self.ppl and self.mu_ppl is None:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.init_parameters(x.shape)
@@ -4943,6 +4961,7 @@ class Normalization(Function):
         self.sigma = np.sqrt(var + self.eps) # 極小分散に対応
         sigma = self.sigma_ppl if self.ppl and not train else self.sigma
         y /= sigma
+        self.y = y
 
         if not self.mask_enable:
             return y
@@ -4954,8 +4973,8 @@ class Normalization(Function):
         return y 
    
     def __backward__(self, gy):
-        x, = self.inputs
-        y = self.get_outputs()       # inplaceではxと同一
+        x = self.x
+        y = self.y                   # inplaceではxと同一
         n = x.size//self.sigma.size  # 畳んだ大きさ
         gsigma = np.sum(-gy * y, axis=self.axis, keepdims=True) / self.sigma
                                                           # gyが書き変わる前に
@@ -4981,6 +5000,7 @@ class Normalization(Function):
 
     def __forward__bkup(self, x, *, train=False):
         """ 参照用の処理 """
+        self.x = x
         if self.ppl and self.mu_ppl is None:
             #print(self.__class__.__name__, 'input.shape', x.shape)
             self.init_parameters(x.shape)
@@ -4993,13 +5013,14 @@ class Normalization(Function):
             sigma = self.sigma_ppl
         z = x - mu
         y = z / (sigma + self.eps)
+        self.y = y
         self.mask = sigma < self.eps # sigmaが極小値の場合には正規化しない
         return y * (1 - self.mask) + x * self.mask
    
     def __backward__bkup(self, gy):
         """ 参照用の処理 """
-        x = self.inputs[0]
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         sigma = self.sigma + self.eps
         n = x.size//sigma.size   # 畳んだ大きさ
         # y = z / sigma の逆伝播 
@@ -5044,6 +5065,7 @@ class ScaleAndBias(Function):
         self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
                
     def __forward__(self, x):
+        self.x = x
         if self.gamma is None:
             self.init_parameters(x.shape)
         y = x * self.gamma    # xを温存しないと逆伝播出来ない
@@ -5051,7 +5073,7 @@ class ScaleAndBias(Function):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         self.gbeta  = np.sum(gy, axis=self.remain_axis, keepdims=True)
         self.ggamma = np.sum(x * gy, axis=self.remain_axis, keepdims=True)
         gx = gy * self.gamma
@@ -5077,13 +5099,14 @@ class ScalarScale(Function):
         self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
                
     def __forward__(self, x):
+        self.x = x
         if self.gamma is None:
             self.init_parameters()
         y = x * self.gamma    # xを温存しないと逆伝播出来ない
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         self.ggamma = np.sum(x * gy)
         gx = gy * self.gamma
         return gx 
@@ -5191,7 +5214,7 @@ class GeneralNormalizationBase(Function):
         return gx 
 
     def __backward__bkup(self, gy):
-        x, = self.inputs
+        x = self.x
         #y = self.get_outputs()
         n = x.size // self.sigma.size        # 正規化対象の要素数
         z = (x - self.mu) / self.sigma       # Norm出力=Scale&Bias入力
@@ -5384,6 +5407,7 @@ class RootMeanSquareNormalization(Function):
             self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
 
     def __forward__(self, x, *, train=False):
+        self.x = x
         if (self.ppl and self.sigma_ppl is None) or (self.sb and self.gamma is None):
             self.init_parameters(x.shape)
             
@@ -5400,7 +5424,7 @@ class RootMeanSquareNormalization(Function):
         return y        
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         #y = self.get_outputs()
         n = x.size // self.sigma.size        # 正規化対象の要素数
         z = x / self.sigma                   # 中間値：Norm出力=Scale&Bias入力

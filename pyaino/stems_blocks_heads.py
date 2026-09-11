@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260910 A.Inoue
+# 20260911 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus

@@ -1,5 +1,5 @@
 # Regularizers
-# 20260902 A.Inoue
+# 20260911 A.Inoue
 from pyaino.Config import *
 from pyaino.nucleus import Function
 from pyaino import common_function as cf
@@ -15,13 +15,14 @@ class EntropyUnit(Function):
         self.eps = eps
 
     def __forward__(self, p):
+        self.p = p
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         entropy = - p * np.log(p)
         return entropy  
 
     def __backward__(self, ge):
-        p, = self.inputs
+        p = self.p
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         gp = ge * (-np.log(p) - 1.0)
@@ -34,6 +35,7 @@ class KLDivergenceUnit(Function):
         self.eps = eps
 
     def __forward__(self, p, q):
+        self.p, self.q = p, q
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
@@ -41,7 +43,7 @@ class KLDivergenceUnit(Function):
         return kld
 
     def __backward__(self, gy):
-        p, q = self.inputs
+        p, q = self.p, self.q
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
@@ -55,6 +57,7 @@ class SymmetricKLDivergenceUnit(Function):
         self.eps = eps
 
     def __forward__(self, p, q):
+        self.p, self.q = p, q
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
@@ -62,7 +65,7 @@ class SymmetricKLDivergenceUnit(Function):
         return 0.5 * kld 
 
     def __backward__(self, gy):
-        p, q = self.inputs
+        p, q = self.p, self.q
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
@@ -77,6 +80,7 @@ class JSDivergenceUnit(Function):
         self.eps = eps
 
     def __forward__(self, p, q):
+        self.p, self.q = p, q
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
@@ -86,7 +90,7 @@ class JSDivergenceUnit(Function):
         return 0.5 * (klp + klq)
 
     def __backward__(self, gy):
-        p, q = self.inputs
+        p, q = self.p, self.q
         eps = self.eps
         p = np.clip(p, eps, 1.0)
         q = np.clip(q, eps, 1.0)
@@ -373,7 +377,6 @@ class PairwiseGap(Function):
         return loss
 
     def __backward__(self, gl):
-        x, = self.inputs
         gx = self.square_mean.backward(gl)
         gx *= self.sign
         gx = self.take_pair.backward(gx, -gx)

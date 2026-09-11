@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260910 A.Inoue
+# 20260911 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -128,7 +128,6 @@ def clear_log():
 
 class Function:
     """ 微分可能関数の基底クラス """
-    set_in_forward = True # __forward__実行中にConfig.in_forwardを立てる
     
     def __init__(self, log=False, log_file='log_file.txt', preserve_attr=False):
         self.inputs = None
@@ -154,12 +153,12 @@ class Function:
         """
         attrs_before = self.__dict__.copy() if self.called_in_forward else None
 
-        if self.set_in_forward:
-            with (using_config('create_graph', False),
-                  using_config('in_forward', True)):
+        if isinstance(self, HDFunction):
+            with using_config('create_graph', False):
                 ys = self.__forward__(*xs, **kwargs)
         else:
-            with using_config('create_graph', False):
+            with (using_config('create_graph', False),
+                  using_config('in_forward', True)):
                 ys = self.__forward__(*xs, **kwargs)
 
         if isinstance(ys, tuple):
@@ -251,10 +250,11 @@ class Function:
         self.y_shapes = [y.shape if isinstance(y, np.ndarray) else () for y in outputs] # 仮処置20241023   
 
         # -- グラフ非生成時の短縮パス --
-        if not Config.create_graph:# and Config.operator_state != 3: # 仮処置20240924
-            self.inputs  = inputs
-            self.outputs = outputs
-            return ys                                  # ysを外から書き換えてもself.outputsに影響しない　　　　　　　　　　
+        if not Config.create_graph:
+            if isinstance(self, HDFunction): # HDFはグラフ非生成時もinputs/outputsを使う
+                self.inputs  = inputs
+                self.outputs = outputs
+            return ys                        # ysを外から書き換えてもself.outputsに影響しない　　　　　　　　　　
         
         # -- 入出力対象にグラフ生成する --
         debug_print('<fw>', self.__class__.__name__, 'creating graph')
@@ -320,7 +320,7 @@ class Function:
         # すなわち、下記のwith using_configは要らない
         #with using_config('create_graph', Config.higher_derivative):
         gxs = self.__backward__(*gys, **kwargs)
-        if self.called_in_forward: # forwardの中から呼ばれた場合
+        if self.called_in_forward and not isinstance(self, HDFunction): # forwardの中から呼ばれた場合
             self._release_io_aliases()
             self.outputs = None
         if gxs is None: # 20250605AI 
@@ -557,7 +557,7 @@ class Function:
 
 
 class HDFunction(Function):
-    set_in_forward = False
+    pass
    
    
 def print_data_class_etc(xs, comment=None):
