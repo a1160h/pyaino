@@ -1,10 +1,16 @@
 # HDFunctions 
-# 20260805 A.Inoue
+# 20260914 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import HDArray, HDFunction
 from pyaino import safe_np as snp
 import copy
+
+def _hold_hda(x):
+    """ backwardで使う値をgraph-readyなHDArrayとして保持する。 """
+    if x is None or (isinstance(x, HDArray) and hasattr(x, 'generation')):
+        return x
+    return HDArray(x)
 
 
 """
@@ -16,11 +22,12 @@ import copy
 class Zeros(HDFunction):
     """ 加法の単位元 Derivative Identity """
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.zeros_like(x, dtype=Config.dtype)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = zeros(x)         # 0を微分しても0
         return gx
         
@@ -30,11 +37,12 @@ def zeros(x):
 class Ones(HDFunction):
     """ 乗法の単位元 Derivative Identity """
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.ones_like(x, dtype=Config.dtype)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = zeros(x)         # 1を微分したら0
         return gx
         
@@ -44,10 +52,11 @@ def ones(x):
 class Assign(HDFunction):
     """ y=x 但し演算子オーバーロードは効かない """
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         return x.copy()
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * ones(x)     # gx=gy*dydx 
         return gx
    
@@ -56,10 +65,11 @@ def assign(x):
 
 class Neg(HDFunction):
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         return -x
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = - gy * ones(x)
         return gx
 
@@ -75,11 +85,12 @@ class Pow(HDFunction):
         #self.c.name = 'exponent' # 数値が出ればそれで良い
     
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.power(x, self.c) # 20241019
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         c  = self.c
         gx = gy * c * x ** (c - 1)
         return gx
@@ -89,11 +100,12 @@ def pow(x, c):
 
 class Square(HDFunction):
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.square(x)        # 20241019
         return y 
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * 2 * x
         return gx
 
@@ -102,11 +114,12 @@ def square(x):
 
 class SquareRoot(HDFunction):
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.sqrt(x)
         return y 
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * 0.5 * x ** -0.5
         return gx
 
@@ -121,6 +134,7 @@ class Exp(HDFunction):
     """ 指数関数(底を指定可能) """
     def __init__(self, a=None):
         super().__init__()
+        self.a = a
         if a is None:          # 底がネイピア数eの場合
             log_of_base = 1          
         else:                  # 底が指定された場合　
@@ -130,10 +144,11 @@ class Exp(HDFunction):
    
     def __forward__(self, x):
         y = np.exp(self.log_of_base * x)
+        self.y = y
         return y
 
     def __backward__(self, gy):
-        y = self.get_outputs()   
+        y = self.y
         gx = gy * self.log_of_base * y
         return gx
 
@@ -154,11 +169,12 @@ class Log(HDFunction):
         self.log_of_base.name = None if a is None else 'log'+str(a)  
        
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.log(x)/self.log_of_base
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs 
+        x = self.x
         gx = gy * (x * self.log_of_base) ** -1
         return gx
 
@@ -168,10 +184,11 @@ def log(x, a=None):
 
 class Abs(HDFunction):
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         return np.abs(x)
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * (step(x) * 2 - 1)
         return gx
 
@@ -180,11 +197,12 @@ def abs(x):
 
 class Sin(HDFunction):
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.sin(x)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = gy * cos(x)
         return gx
 
@@ -193,11 +211,12 @@ def sin(x):
 
 class Cos(HDFunction):
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.cos(x)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = - gy * sin(x)
         return gx
 
@@ -207,11 +226,12 @@ def cos(x):
 class SinCos(HDFunction):
     def __forward__(self, x):
         """ 複数出力の関数の確認用 """
+        self.x = _hold_hda(x)
         y = np.sin(x), np.cos(x)
         return y
 
     def __backward__(self, *gy):
-        x, = self.inputs
+        x = self.x
         gx = gy[0] * cos(x) - gy[1] * sin(x)
         return gx
 
@@ -220,13 +240,14 @@ def sin_cos(x):
 
 class Add(HDFunction):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = _hold_hda(x0), _hold_hda(x1)
         y = x0 + x1
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
-        gx0 = sum_to(gy, x0.shape) * ones(x0)
-        gx1 = sum_to(gy, x1.shape) * ones(x1)
+        x0, x1 = self.x0, self.x1
+        gx0 = sum_to(gy, np.shape(x0)) * ones(x0)
+        gx1 = sum_to(gy, np.shape(x1)) * ones(x1)
         return gx0, gx1
 
 def add(x0, x1):
@@ -235,13 +256,14 @@ def add(x0, x1):
 
 class Sub(HDFunction):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = _hold_hda(x0), _hold_hda(x1)
         y = x0 - x1
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
-        gx0 = sum_to(gy, x0.shape) * ones(x0)
-        gx1 = - sum_to(gy, x1.shape) * ones(x1)
+        x0, x1 = self.x0, self.x1
+        gx0 = sum_to(gy, np.shape(x0)) * ones(x0)
+        gx1 = - sum_to(gy, np.shape(x1)) * ones(x1)
         return gx0, gx1
 
 def sub(x0, x1):
@@ -252,13 +274,14 @@ def rsub(x0, x1):
 
 class Mul(HDFunction):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = _hold_hda(x0), _hold_hda(x1)
         y = x0 * x1
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
-        gx0 = sum_to(gy * ones(x0) * x1, x0.shape)
-        gx1 = sum_to(gy * x0 * ones(x1), x1.shape)        
+        x0, x1 = self.x0, self.x1
+        gx0 = sum_to(gy * ones(x0) * x1, np.shape(x0))
+        gx1 = sum_to(gy * x0 * ones(x1), np.shape(x1))        
         return gx0, gx1
 
 def mul(x0, x1):
@@ -270,13 +293,14 @@ class Div(HDFunction):
         self.epsilon = epsilon
         
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = _hold_hda(x0), _hold_hda(x1)
         y = x0 / (x1 + self.epsilon)
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
-        gx0 = sum_to(gy * ones(x0) / x1, x0.shape)
-        gx1 = sum_to(- gy * x0 * x1 ** -2, x1.shape)
+        x0, x1 = self.x0, self.x1
+        gx0 = sum_to(gy * ones(x0) / x1, np.shape(x0))
+        gx1 = sum_to(- gy * x0 * x1 ** -2, np.shape(x1))
         return gx0, gx1
    
 def div(x0, x1):
@@ -292,6 +316,7 @@ class SumTo(HDFunction):
         self.gy_shape = None
 
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         if x.shape == self.shape:
             self.gy_shape = x.shape             # backwardで必要
             return x
@@ -317,9 +342,9 @@ class SumTo(HDFunction):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs 
+        x = self.x
         gx = gy.reshape(self.gy_shape)          # 先ずは次元数を合わせる
-        gx = broadcast_to(gx, x.shape)          # それから所望のbroadcast
+        gx = broadcast_to(gx, np.shape(x))      # それから所望のbroadcast
         return gx
 
 def sum_to(x, shape):
@@ -331,12 +356,13 @@ class BroadcastTo(HDFunction):
         self.shape = shape
 
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.broadcast_to(x, self.shape).copy() # copy()で結果をwriteableにする
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
-        gx = sum_to(gy, x.shape)
+        x = self.x
+        gx = sum_to(gy, np.shape(x))
         return gx
 
 def broadcast_to(x, shape):
@@ -348,6 +374,7 @@ class SumTo_bkup(HDFunction):
         self.shape = shape
 
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         ndim = len(self.shape)
         lead = x.ndim - ndim
         lead_axis = tuple(range(lead))
@@ -359,8 +386,8 @@ class SumTo_bkup(HDFunction):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
-        gx = broadcast_to(gy, x.shape)
+        x = self.x
+        gx = broadcast_to(gy, np.shape(x))
         return gx
 
 class BroadcastTo_bkup(HDFunction):
@@ -369,12 +396,13 @@ class BroadcastTo_bkup(HDFunction):
         self.shape = shape
 
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.broadcast_to(x, self.shape)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
-        gx = sum_to(gy, x.shape)
+        x = self.x
+        gx = sum_to(gy, np.shape(x))
         return gx
 
 class Sum_bkup(HDFunction):
@@ -384,12 +412,14 @@ class Sum_bkup(HDFunction):
         self.keepdims = keepdims
         
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.sum(x, axis=self.axis, keepdims=self.keepdims)
+        self.y_shape = np.shape(y)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
-        y_shape, = self.y_shapes 
+        x = self.x
+        y_shape = self.y_shape
         if self.axis is not None: # 畳まれる軸を'1'とした形状
             gy_shape = x.shape[:self.axis] + (1,) + x.shape[self.axis+1:]
         else: # y.ndimはkeepdimsに従うからdon't care
@@ -407,6 +437,7 @@ class SumMeanVar(HDFunction):
         self.axis = axis
         self.n = None
         self.gy_shape = None
+        self.last_x_shape = None
     
     def set_axis_and_shape(self, shape):
         """ 畳まれる軸と残る軸を明らかにする """
@@ -436,16 +467,17 @@ class SumMeanVar(HDFunction):
         self.n.name = 'n'   #  
 
     def __forward__(self, x):
-        last_x = self.inputs[0] if self.inputs else None
-        if last_x is not None and last_x.shape == x.shape: # 前回と同じ形状
-            return
-        self.set_axis_and_shape(x.shape)
+        self.x = _hold_hda(x)
 
     def __backward__(self, gy):
         """ 逆伝播:形状のややこしい操作があるので親クラスのbackwardを上書き """
-        x, = self.inputs
+        x = self.x
+        x_shape = np.shape(x)
+        if self.last_x_shape != x_shape:
+            self.set_axis_and_shape(x_shape)
+            self.last_x_shape = x_shape
         gy = gy.reshape(self.gy_shape)          # gyは次元を合わせる
-        gy = broadcast_to(gy, x.shape)          # 畳まれた分をbroadcastして元に戻す
+        gy = broadcast_to(gy, x_shape)          # 畳まれた分をbroadcastして元に戻す
         return gy
 
 class Sum(SumMeanVar):
@@ -482,7 +514,7 @@ class Var(SumMeanVar):
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
+        x = self.x
         mu = x.mean(axis=self.axis, keepdims=True)
         gx = gy * (2/self.n) * (x - mu)
         return gx
@@ -500,12 +532,13 @@ class Std(SumMeanVar):
     def __forward__(self, x):
         super().__forward__(x)
         y = np.std(x, axis=self.axis, keepdims=self.keepdims)
+        self.y = y
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         mu = x.mean(axis=self.axis, keepdims=True)
         yr = y.reshape(self.gy_shape)
         gvar = gy * 0.5 / (yr + 1e-12) # std = sqrt(var) の逆伝播　
@@ -525,7 +558,7 @@ class SquareSum(SumMeanVar):
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
+        x = self.x
         gx = gy * 2 * x
         return gx
         
@@ -538,7 +571,7 @@ class SquareMean(SumMeanVar):
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
+        x = self.x
         gx = gy * (1/self.n) * 2 * x
         return gx
     
@@ -548,12 +581,13 @@ class RootSumSquare(SumMeanVar):
         super().__forward__(x)
         sqsm = np.sum(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqsm)
+        self.y = y
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         yr = y.reshape(self.gy_shape) # gyと形状を揃える
         gsqsm = gy * 0.5 / (yr + 1e-12)    # RMS = sqrt(sqmu)の逆伝播
         gx = 2 * x * gsqsm
@@ -565,12 +599,13 @@ class RootMeanSquare(SumMeanVar):
         super().__forward__(x)
         sqmu = np.mean(x**2, axis=self.axis, keepdims=self.keepdims)
         y = np.sqrt(sqmu)
+        self.y = y
         return y
 
     def __backward__(self, gy):
         gy = super().__backward__(gy)
-        x, = self.inputs
-        y = self.get_outputs()
+        x = self.x
+        y = self.y
         yr = y.reshape(self.gy_shape) # gyと形状を揃える
         gsqmu = gy * 0.5 / (yr + 1e-12)    # RMS = sqrt(sqmu)の逆伝播
         gx = (1/self.n) * 2 * x * gsqmu
@@ -636,11 +671,12 @@ class GetItem(HDFunction):
         self.slices = slices
 
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = x[self.slices]
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         f = GetItemGrad(self.slices, x.shape)
         return f(gy)
 
@@ -670,12 +706,13 @@ class Reshape(HDFunction):
             self.shape, = shape 
         
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.reshape(x, self.shape)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
-        gx = reshape(gy, x.shape)
+        x = self.x
+        gx = reshape(gy, np.shape(x))
         return gx
 
 def reshape(x, *shape):
@@ -732,13 +769,14 @@ class Dot(HDFunction):
         行列積(x.ndim>1, w.ndim>1)->行列
         
         """
+        self.x, self.w = _hold_hda(x), _hold_hda(w)
         y = np.dot(x, w)
         return y
 
     def __backward__(self, gy):
-        x, w = self.inputs
-        x_shape = x.shape
-        w_shape = w.shape
+        x, w = self.x, self.w
+        x_shape = np.shape(x)
+        w_shape = np.shape(w)
         if x.ndim>1 and w.ndim>1:
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
@@ -788,15 +826,16 @@ def dot(x, w):
 
 class MatMul(HDFunction):
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = _hold_hda(x0), _hold_hda(x1)
         y = np.matmul(x0, x1)
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
-        #x0T = x0.T if x0.ndim <= 2 else x0.transpose(*range(x0.ndim)[:-2], -1, -2)
-        #x1T = x1.T if x1.ndim <= 2 else x1.transpose(*range(x1.ndim)[:-2], -1, -2)
-        x0T = x0.T if x0.ndim <= 2 else transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
-        x1T = x1.T if x1.ndim <= 2 else transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
+        x0, x1 = self.x0, self.x1
+        x0T = transpose_s(x0) if x0.ndim <= 2 \
+              else transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
+        x1T = transpose_s(x1) if x1.ndim <= 2 \
+              else transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
         gx0 = matmul(gy, x1T)
         gx1 = matmul(x0T, gy)
         return gx0, gx1
@@ -815,17 +854,20 @@ class DotLinear(HDFunction):
         行列積(x.ndim>1, w.ndim>1)->行列
         
         """
+        self.x, self.w, self.b = _hold_hda(x), _hold_hda(w), _hold_hda(b)
         y = np.dot(x, w)
         self.dot_dim = y.ndim
         y += b
+        self.y_shape = np.shape(y)
         return y
 
     def __backward__(self, gy):
-        x, w, b = self.inputs
-        y = self.get_outputs()
-        x_shape = x.shape
-        w_shape = w.shape
-        gb = gy if y.shape==b.shape else SumTo(b.shape)(gy)
+        x, w, b = self.x, self.w, self.b
+        y_shape = self.y_shape
+        x_shape = np.shape(x)
+        w_shape = np.shape(w)
+        b_shape = np.shape(b)
+        gb = gy if y_shape==b_shape else SumTo(b_shape)(gy)
 
         if x.ndim>1 and w.ndim>1:
             gx = dot(gy, w.transpose())
@@ -850,7 +892,7 @@ class DotLinear(HDFunction):
             gx = gx.reshape(*x_shape)
             return gx, gw, gb
         if x.ndim==1 and w.ndim==1:
-            if self.dot_dim < y.ndim and len(y)==1:
+            if self.dot_dim < len(y_shape) and len(y_shape)==1 and y_shape[0]==1:
                 # forwardの際に+bでスカラがarrayになった場合
                 gy = gy[0]
             gx = dot(gy, w)
@@ -877,14 +919,16 @@ class DotLinear(HDFunction):
 
 class DotLinearz(HDFunction):
     def __forward__(self, x, w, b):
+        self.x, self.w, self.b = _hold_hda(x), _hold_hda(w), _hold_hda(b)
         y = np.dot(x, w) + b
+        self.y_shape = np.shape(y)
         return y
 
     def __backward__(self, gy):
-        x, w, b = self.inputs
-        y_shape, = self.y_shapes ()
-        x_shape = x.shape
-        w_shape = w.shape
+        x, w, b = self.x, self.w, self.b
+        y_shape = self.y_shape
+        x_shape = np.shape(x)
+        w_shape = np.shape(w)
         if w.ndim == 1 and x.ndim >= 1:
             w  = w.reshape(-1, 1)
             gy = gy.reshape(-1, 1)
@@ -900,7 +944,8 @@ class DotLinearz(HDFunction):
             gw = gw.reshape(*w_shape)
         elif w.ndim == 0 and gw.ndim > 1: # 仮処置20240417
             gw = gw[0, 0]
-        gb = gy if y_shape==b.shape else SumTo(b.shape)(gy)
+        b_shape = np.shape(b)
+        gb = gy if y_shape==b_shape else SumTo(b_shape)(gy)
         return gx, gw, gb
 
 def dot_linear(x, w, b):
@@ -908,15 +953,18 @@ def dot_linear(x, w, b):
 
 class HadamardLinear(HDFunction):
     def __forward__(self, x, w, b):
+        self.x, self.w, self.b = _hold_hda(x), _hold_hda(w), _hold_hda(b)
         y = x * w + b
+        self.y_shape = np.shape(y)
         return y
 
     def __backward__(self, gy):
-        x, w, b = self.inputs
-        y_shape, = self.y_shapes ()
+        x, w, b = self.x, self.w, self.b
+        y_shape = self.y_shape
         gx = gy * w
         gw = gy * x
-        gb = gy if y_shape==b.shape else SumTo(b.shape)(gy)
+        b_shape = np.shape(b)
+        gb = gy if y_shape==b_shape else SumTo(b_shape)(gy)
         return gx, gw, gb
 
 def hadamard_linear(x, w, b):
@@ -925,11 +973,12 @@ def hadamard_linear(x, w, b):
 class Flatten(HDFunction):
     """ 軸0はバッチとし、それ以下の軸を平坦化 """
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         return np.reshape(x, (x.shape[0], -1))
 
     def __backward__(self, gy):
-        x, = self.inputs
-        return gy.reshape(x.shape)
+        x = self.x
+        return gy.reshape(np.shape(x))
 
 
 def normalize(x, axis=None, eps=1e-12):
@@ -1032,17 +1081,20 @@ class Concatenate(HDFunction):
         self.axis = axis
 
     def __forward__(self, *xs):
-        return snp.concatenate(xs, axis=self.axis)
+        self.xs = tuple(_hold_hda(x) for x in xs)
+        y = snp.concatenate(xs, axis=self.axis)
+        self.y_shape = np.shape(y)
+        return y
 
     def __backward__(self, gy):
         axis = self.axis
         if axis < 0:
-            axis += len(self.y_shapes[0])
+            axis += len(self.y_shape)
 
         sections = []
         stop = 0
 
-        for x in self.inputs[:-1]:
+        for x in self.xs[:-1]:
             stop += x.shape[axis]
             sections.append(stop)
 
@@ -1145,11 +1197,12 @@ class TakeAlongAxisPrimitive(HDFunction):
         self.axis = axis
 
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.take_along_axis(x, self.indices, axis=self.axis)
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         axis = self.axis
         if axis < 0:
             axis += x.ndim
@@ -1171,6 +1224,7 @@ class ScatterAddAlongAxisPrimitive(HDFunction):
         self.axis = axis
 
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = np.zeros(self.output_shape, dtype=Config.dtype)
 
         if x.ndim != y.ndim:
@@ -1200,7 +1254,7 @@ class ScatterAddAlongAxisPrimitive(HDFunction):
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         indices = snp.broadcast_to(self.indices, x.shape)
         gx = TakeAlongAxisPrimitive(indices, axis=self.axis)(gy)
         return gx
@@ -1302,11 +1356,12 @@ class AddSimple(HDFunction):
 class MulSimple(HDFunction):
     """ デバグ用 """
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = _hold_hda(x0), _hold_hda(x1)
         y = x0 * x1
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         gx0 = muls(gy, x1)
         gx1 = muls(gy, x0)
         return gx0, gx1
@@ -1322,11 +1377,12 @@ class PowSimple(HDFunction):
         self.c = c
     
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = x ** self.c
         return y
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         c  = self.c
         gx = muls(gy, muls(c, pows(x, c - 1))) # gy * c * x ** (c - 1)
         return gx
@@ -1337,11 +1393,12 @@ def pows(x, c):
 class SquareSimple(HDFunction):
     """ デバグ用 """
     def __forward__(self, x):
+        self.x = _hold_hda(x)
         y = x ** 2
         return y 
 
     def __backward__(self, gy):
-        x, = self.inputs
+        x = self.x
         gx = muls(gy, muls(2, x)) # gy * 2 * x
         return gx
 
@@ -1355,11 +1412,12 @@ class DivSimple(HDFunction):
         self.epsilon = epsilon
         
     def __forward__(self, x0, x1):
+        self.x0, self.x1 = _hold_hda(x0), _hold_hda(x1)
         y = x0 / (x1 + self.epsilon)
         return y
 
     def __backward__(self, gy):
-        x0, x1 = self.inputs
+        x0, x1 = self.x0, self.x1
         gx0 = divs(gy, x1)
         gx1 = negs(divs(muls(gy, x0), squares(x1)))
         return gx0, gx1

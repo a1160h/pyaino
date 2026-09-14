@@ -1,5 +1,5 @@
 # Config
-# 20260906 A.Inoue
+# 20260912 A.Inoue
 #try:
 #    import cupy as np
 #except:
@@ -22,7 +22,8 @@ class Config:
     #log_file = 'log_file.txt'
     function_list = []
     backtrace_duration = False # バックトレース中かどうかを明示 20250506AI
-    in_forward = False # Function.__forward__ の実行中のみ True
+    in_forward  = False # Function.__forward__  の実行中のみ True
+    in_backward = False # Function.__backward__ の実行中のみ True
 
 def set_inf(value):
     setattr(Config, 'inf', value)
