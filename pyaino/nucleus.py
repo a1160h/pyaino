@@ -47,16 +47,17 @@ class HDArray(np.ndarray):
         """ HDAを入口にしてグラフを辿って逆伝播開始する """
         # グラフを辿る過程でcreate_graph=Trueでない限りグラフを生成しない
         if not hasattr(self, 'generation'):
-            raise Exception('Inconsistent HDArray for backtrace. May created by numpy arithmetic.')
+            raise Exception(
+                'Inconsistent HDArray for backtrace. May created by numpy arithmetic.')
         debug_print('\n<backtrace>',
                     f"creator={[c.__class__.__name__ for c in self.creator]}",
                     f'gen={self.generation}', f'shape={self.shape}',
                     f'create_graph={create_graph or Config.higher_derivative}')
         # 勾配が指定されたら自身のアトリビュートに設定
         self.set_grad(grad)
-        # -- 引数に従ってConfig.create_graphを設定して実行 --
-        with using_config('create_graph', create_graph or Config.higher_derivative): # 20241030
-            seen_var, seen_func = backtrace_graph(self, seen_var, seen_func) # seen_var, seen_funcは更新
+        # -- 引数に従ってConfig.create_graphを設定して実行 seen_var, seen_funcは更新 --
+        with using_config('create_graph', create_graph or Config.higher_derivative): 
+            seen_var, seen_func = backtrace_graph(self, seen_var, seen_func)  
         return seen_var, seen_func    
 
     def reset(self):
@@ -78,8 +79,8 @@ class HDArray(np.ndarray):
                 raise Exception('Invalid gradient specified.' + str(grad))
             grad = np.broadcast_to(np.array(grad, dtype=Config.dtype), self.shape)
         # バックトレース中にグラフ生成するには勾配もHDArrayでなければならない
-        self.grad = HDArray(grad) if Config.create_graph and not isinstance(grad, HDArray) \
-                                  else grad
+        self.grad = HDArray(grad) \
+            if Config.create_graph and not isinstance(grad, HDArray)  else grad
         
     @property
     def copyz(self): # 仮処置(numpy/cupyと干渉するので除外)
@@ -94,10 +95,12 @@ class HDArray(np.ndarray):
 
 class XArray(np.ndarray):
     """
-    HDArrayは演算子オーバーロード対象なので、対象から外すには通常のndarrayに戻さなければならない．
-    しかしそのためには、np.array()で別オブジェクトを起こす必要があり、頻繁な処理では好ましくない．
-    そこで、np.asarray()でデータを引き継ぐことができ、かつ、演算子オーバーロード非対象の
-    オブジェクトとしてXArrayを設ける．    
+    HDArrayは演算子オーバーロード対象なので、
+    対象から外すには通常のndarrayに戻さなければならない．
+    しかしそのためには、np.array()で別オブジェクトを起こす必要があり、
+    頻繁な処理では好ましくない．
+    そこで、np.asarray()でデータを引き継ぐことができ、
+    かつ、演算子オーバーロード非対象のオブジェクトとしてXArrayを設ける．    
 
     """
     def __new__(cls, data):
@@ -128,6 +131,16 @@ def clear_log():
     #with open(file_path, "w") as f:
     #    pass # 何も書かない
 
+def as_tuple(x):
+    """ タプル形式に正規化する """
+    if isinstance(x, tuple):
+        y = x
+    elif isinstance(x, list):
+        y = tuple(x)
+    else:
+        y = (x,)
+    return y    
+
 class Function:
     """ 微分可能関数の基底クラス """
     
@@ -138,7 +151,7 @@ class Function:
         if not hasattr(self, 'config'): # 派生クラスのコントラクタの設定を壊さないように
             self.config = None          # layerとして使う場合に必要
         self.outputs_copy = None # weakrefでdeadしないようにするため
-        self.y_shapes = None     # 同上仮処置20240927
+        self.output_shapes = None     # 同上仮処置20240927
         self.graph_exist = False # 仮20241003
         self.preserve_attr = preserve_attr # 出力の上書き時のアトリビュート保護
         self.called_in_forward  = None 
@@ -155,15 +168,6 @@ class Function:
                 "Backward state must be preserved by the Function subclass."
             )            
 
-    def as_tuple(self, x):
-        """ タプル形式に正規化する """
-        if isinstance(x, tuple):
-            y = x
-        elif isinstance(x, list):
-            y = tuple(x)
-        else:
-            y = (x,)
-        return y    
 
     def call_forward(self, *xs, **kwargs):
         """ サブクラスの__forward__を数値計算として実行する """
@@ -207,7 +211,7 @@ class Function:
 
     def record_io_aliases(self, attrs_before, xs, ys):
         """ forward内で新たに保持した入出力配列の別名属性名を記録する """
-        ys = self.as_tuple(ys)
+        ys = as_tuple(ys)
         refs = tuple(v for v in (*xs, *ys) if isinstance(v, np.ndarray))
         sentinel = object()
         aliases = []
@@ -231,10 +235,9 @@ class Function:
             setattr(self, name, None)
         self.io_aliases = ()
 
-    def _replace_output_aliases(self, raw_outputs, outputs, inputs):
-        """ HDFのforward内で保持したraw outputのaliasをgraph outputへ置換する。 """
+    def replace_output_aliases(self, raw_outputs, outputs, inputs):
+        """ HDFのforward内で保持したraw outputのaliasをgraph outputへ置換する """
         input_ids = {id(x) for x in inputs}
-
         for y, o in zip(raw_outputs, outputs):
             # 入出力が同一objectの場合は、入力stateまで出力に置換しない
             if id(y) in input_ids:
@@ -259,8 +262,9 @@ class Function:
         引数のうち、*inputsは*xsとして派生クラスの__forward__()メソッドに渡され、
         **kwargsはそのまま渡される．前者は計算グラフ生成の対象であり、後者は対象外．
         '''
-        self.inputs  = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
-        self.outputs = None # 前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
+        # 入出力は前回の状態を明示的に破棄し、CuPy poolで再利用可能になる時期を前倒し
+        self.inputs  = None 
+        self.outputs = None 
         self.graph_exist = False
         self.outputs_copy = None
         self.called_in_forward  = Config.in_forward  # 私は誰かのforward の中で呼ばれた
@@ -270,47 +274,49 @@ class Function:
                     f'called_in_forward={self.called_in_forward}',
                     f'called_in_backward={self.called_in_backward}')
 
-        # -- 派生クラスの引数がタプルやリストに複数オペランドをパックした形式の場合20250503AI          
+        # -- 派生クラスの引数がタプルやリストに複数オペランドをパックした形式の場合          
         if len(inputs)==1 and all(isinstance(x, (tuple, list)) for x in inputs):
             inputs, = inputs
             warnings.warn(self.__class__.__name__+' inputs packed in list or tuple.')
 
-        # -- 派生クラスの順伝播 --
-        ys = self.call_forward(*inputs, **kwargs)   # inputsをそのままxsとして実行部へ渡す
-        outputs = self.as_tuple(ys) 
+        # -- 派生クラスの順伝播 inputsをそのままxsとして実行部へ渡す --
+        ys = self.call_forward(*inputs, **kwargs)    
+        ys = as_tuple(ys) 
 
         # 属性保護が必要な場合だけ各出力をコピー 後日削除予定20260912AI
         if self.preserve_attr:
-            outputs = tuple(y.copy() for y in outputs)
+            ys = tuple(y.copy() for y in ys)
 
-        self.y_shapes = [y.shape if isinstance(y, np.ndarray) else () for y in outputs] # 仮処置20241023   
+        self.output_shapes = [y.shape if isinstance(y, np.ndarray) else () for y in ys]    
 
-        # -- グラフ非生成時の短縮パス --
+        # -- グラフ非生成時の短縮パス ysを外から書き換えてもself.outputsに影響しない --
         if not Config.create_graph:
-            return ys                        # ysを外から書き換えてもself.outputsに影響しない　　　　　　　　　　
+            return ys[0] if len(ys)<=1 else ys # 後日単純化予定　
         
         # -- 入出力対象にグラフ生成する --
-        #if issubclass(self.__class__, HDFunction):
         for x in inputs:
             self.check_decency(x) # チェックだけ 仮に全チェック20250503AI
-        # inputsをHDArrayにするが、元々そうでない場合には別物になる(高階微分やグラフ可視化では問題)
+        # inputsをHDArrayにするが、元々そうでない場合には別物になる
+        # (高階微分やグラフ可視化では問題)
         # backwardで勾配セットの準備  Noneの対処20260414AI
-        self.inputs = [x if x is None or (isinstance(x, HDArray) and hasattr(x, 'generation'))
-                         else HDArray(x) for x in inputs]
+        self.inputs = \
+            [x if x is None or (isinstance(x, HDArray) and hasattr(x, 'generation'))
+               else HDArray(x) for x in inputs]
         if self.inputs: # inputsが無い場合には'0'のまま20260603AI              
             self.generation = max(x.generation for x in self.inputs if x is not None)
             
         # 出力をgraph-readyなHDArrayにする
         # HDFで__forward__内にraw outputのaliasを保持している場合は、
         # graph outputへ差し替えてbackwardから同じ出力graphを参照できるようにする
-        raw_outputs = outputs
-        outputs = [self.set_creator_and_generation(y) for y in raw_outputs]
+        outputs = [self.set_creator_and_generation(y) for y in ys]
         if isinstance(self, HDFunction):
-            self._replace_output_aliases(raw_outputs, outputs, inputs)
+            self.replace_output_aliases(ys, outputs, inputs)
 
         debug_print('  graph',
-                    f"gen={[x.generation for x in self.inputs if x is not None]} -> {[o.generation for o in outputs]}",
-                    f"shape={[x.shape if isinstance(x, np.ndarray) else x for x in self.inputs]} -> {[y.shape if isinstance(y, np.ndarray) else y for y in outputs]}")
+            f"gen={[x.generation for x in self.inputs if x is not None]}",
+            f"-> {[o.generation for o in outputs]}",
+            f"shape={[x.shape if isinstance(x, np.ndarray) else x for x in self.inputs]}",
+            f"-> {[y.shape if isinstance(y, np.ndarray) else y for y in outputs]}")
         # self.outputsはweakrefだが、その中身はoutputsと同一で生成者や世代も引継ぐ
         self.outputs = [weakref.ref(y) if y is not None else y for y in outputs]
 
@@ -347,14 +353,15 @@ class Function:
         # -- 派生クラスの逆伝播 --
         gxs = self.call_backward(*gys, **kwargs)
 
-        if self.called_in_forward and not isinstance(self, HDFunction): # forwardの中から呼ばれた場合
+        # forwardの中から呼ばれた場合の早期解放
+        if self.called_in_forward and not isinstance(self, HDFunction): 
             self.release_io_aliases()
             self.outputs = None
         if gxs is None: # 20250605AI 
             return
 
         # -- グラフ非生成時の短縮パス --
-        # バックトレース期間中でないならば__backward__()メソッドの結果をそのまま返せば良い20250506AI
+        # バックトレース期間中でないならば__backward__()メソッドの結果をそのまま返せば良い
         if not Config.backtrace_duration:
             return gxs
         
@@ -362,7 +369,7 @@ class Function:
             return gxs
 
         # -- 勾配を入力変数に設定 --
-        gxs = self.as_tuple(gxs)
+        gxs = as_tuple(gxs)
         self.set_input_grads(gxs, seen_var)
                
         return gxs[0] if len(gxs)<=1 else gxs
@@ -373,29 +380,33 @@ class Function:
 
             if not isinstance(x, HDArray):
                 warnings.warn(self.__class__.__name__+'non HDArray variable for backward.')
-                x = self.fix_inconsistent_variable(x, seen_var) # xは別物になるため返り値で反映必要20250506AI                　
+                x = self.fix_inconsistent_variable(x, seen_var)
+                        # xは別物になるため返り値で反映必要                　
 
             if id(x) in seen_var:
-                x.grad += gx  # x.gradのidを変えない(この操作で関数の定義次第ではgysが影響を受けるので要注意)
+                x.grad += gx  # x.gradのidを変えない
+                              # (この操作で関数の定義次第ではgysが影響を受けるので要注意)
 
-                if Config.create_graph:#Config.higher_derivative:# + Config.create_graph: # 仮処置20241001
+                if Config.create_graph:
                     self.check_decency(x.grad)
                     self.check_decency(gx)
                     x.grad.generation = max(x.grad.generation, gx.generation)
                     x.grad.creator.update(gx.creator)
-                    self.gx_creator_update(x, gx) # x.gradに併合されたgx側の計算グラフの辻褄合わせ
+                    self.gx_creator_update(x, gx)
+                              # x.gradに併合されたgx側の計算グラフの辻褄合わせ
 
             else:
                 x.grad = gx
                 seen_var.add(id(x))
 
-            if gx is not None: # 仮処置20241002 勾配が帰らないような引数を持つ関数もありうる
+            if gx is not None: # 勾配が帰らないような引数を持つ関数もありうる
                 if x.grad is None:
                     print(id(x), 'in', seen_var, 'whereas', x.grad is None)
                     raise Exception("x is in seen_var, but, who's gradient is None")
 
     def check_decency(self, x, warning=False):
-        """ グラフの作れるようなまともな変数であることの確認(まともなHDArray、但し、定数項は除く) """
+        """ グラフの作れるようなまともな変数であることの確認
+            (まともなHDArray、但し、定数項は除く) """
         if isinstance(x, HDArray) and hasattr(x, 'generation'):
             return 0
         elif isinstance(x, (int, float)):
@@ -403,21 +414,10 @@ class Function:
         elif warning:    
             msg = 'Excuting ' + self.__class__.__name__ + ', '
             msg += 'variable is not ready to create graph.'
-            #msg += '\n' + str(id(x)) + str(type(x))    
             msg += '\n' + str(type(x))    
             msg += '\nmay need to specify create_graph=True for backtrace()'
-            #msg += '\n' + str(x)
             x = HDArray(x)
             warnings.warn(msg)
-            """
-            if type(x) in (int, float):
-                debug_print('### check_decency 1', self.__class__.__name__, x, type(x))
-                return 1
-            elif x.ndim==0:
-                debug_print('### check_decency 2', self.__class__.__name__, x, type(x))
-                return 1
-            else:
-            """
             return 2
         else:
             return 2
@@ -428,14 +428,14 @@ class Function:
             gxc.outputs = [weakref.ref(x.grad) for y in gxc.outputs if id(gx)==id(y())]
 
     def fix_inconsistent_variable(self, x, seen_var):
-        id_x_old = id(x)          # 元のid
+        id_x_old = id(x)           # 元のid
         msg = 'During backward() of {} got non HDArray variable. {} id {} '\
         .format(self.__class__.__name__, type(x), id_x_old)   
-        x = HDArray(x)            # 新たにHDArrayにするとidが変わる
+        x = HDArray(x)             # 新たにHDArrayにするとidが変わる
         x.grad = np.zeros_like(x, dtype=Config.dtype) # 勾配を初期化
-        id_x_new = id(x)          # HDArrayにした後のid
-        msg += str(id_x_new)      # これをmsgに追加
-        warnings.warn(msg)        # waringの出力、停止しないで続行
+        id_x_new = id(x)           # HDArrayにした後のid
+        msg += str(id_x_new)       # これをmsgに追加
+        warnings.warn(msg)         # waringの出力、停止しないで続行
         seen_var.discard(id_x_old) # 削除ただし、無くてもエラーしない
         seen_var.add(id_x_new)     # 追加 
         return x
@@ -449,7 +449,7 @@ class Function:
     def get_grads(self):
         """ 変数に設定された勾配（Noneなら0）を取得する """
         gys = []
-        for y, y_shape in zip(self.outputs, self.y_shapes):
+        for y, y_shape in zip(self.outputs, self.output_shapes):
             if isinstance(y, weakref.ReferenceType):
                 y = y()
             if y is not None and hasattr(y, 'grad') and y.grad is not None:
@@ -460,22 +460,20 @@ class Function:
         return gys
 
     def get_default_grads(self, default=1):
-        """ default勾配をy_shapesに合わせて返す """
+        """ default勾配をoutput_shapesに合わせて返す """
         gys = [
             np.broadcast_to(np.array(default, dtype=Config.dtype), y_shape)
-            for y_shape in self.y_shapes
+            for y_shape in self.output_shapes
             ]
         return gys
 
     def fix_grads(self, gys):
         """ 与えられた勾配の型と形状を出力に合わせる """
-        if len(self.y_shapes)!=len(gys): # y_shapesもgysも常にタプル
+        if len(self.output_shapes)!=len(gys): # output_shapesもgysも常にタプル
             raise Exception("Can't fix grad's shape as output's shape.")
-        #gys = [np.broadcast_to(gy if isinstance(gy, np.ndarray) else np.array(gy) ,
-        #                       y_shape) for gy, y_shape in zip(gys, self.y_shapes)]
         gys = [gy if isinstance(gy, np.ndarray) and gy.shape == y_shape \
                else np.broadcast_to(asndarray(gy), y_shape) 
-               for gy, y_shape in zip(gys, self.y_shapes)]
+               for gy, y_shape in zip(gys, self.output_shapes)]
         return gys
 
     def set_creator_and_generation(self, y):
@@ -571,11 +569,10 @@ class HDFunction(Function):
     '''
     def call_forward(self, *xs, **kwargs):
         """
-        HDFunctionの__forward__を実行する。
+        HDFunctionの__forward__を実行
 
-        XArrayには変換せず、入力HDArrayのidentityを保つ。
         通常の演算子式だけを一時的に抑止する一方、create_graphは抑止しないため、
-        明示的に呼ばれたHDFunctionは内部graphを生成できる。
+        明示的に呼ばれたHDFunctionは内部graphを生成
         """
         attrs_before = self.__dict__.copy() if self.called_in_forward else None
 
@@ -592,14 +589,10 @@ class HDFunction(Function):
         else:
             self.io_aliases = ()
 
-        if not Config.create_graph: # グラフ非生成時もinputs/outputsを使っていた
-            #self.inputs  = xs
-            #self.outputs = ys
-            pass
         return ys
     
     def call_backward(self, *gys, **kwargs):
-        """ HDFunctionの__backward__はoperator overload状態をそのまま受け継ぐ。 """
+        """ HDFunctionの__backward__はoperator overload状態をそのまま受け継ぐ """
         with using_config('in_backward', True):
             gxs = self.__backward__(*gys, **kwargs)
         return gxs    
@@ -634,17 +627,18 @@ def backtrace_graph(y, seen_var=None, seen_func=None):
     ③ 入口のHDAの親関数をfuncsに入れてバックトレース開始
     ④ funcsをリストにして世代順にソートして、HDFを一つ取出す
     ⑤ 継承元の関数のbackwardメソッドを呼出す
-    ⑥ 得られた勾配を入力変数に設定、このとき既出の変数かどうかで勾配を加算または新たに設定
+    ⑥ 得られた勾配を入力変数に設定、このとき既出の変数かどうかで
+       勾配を加算または新たに設定
     ⑦ Functionの入力の親関数を次に備えてfuncsに加える
        その後④に戻って繰り返す
     '''
-    if not y.creator:  # 試し20240301
+    if not y.creator:  
         print('Quit backtracing.')
         return
     if seen_var  is None:
-        seen_var  = set() # 既出の変数のidを記録する、seen_varの初期化により勾配は初期化 
+        seen_var  = set() # 既出の変数のidを記録、seen_varの初期化により勾配は初期化 
     if seen_func is None:
-        seen_func = set() # 既出の関数のidを記録する 
+        seen_func = set() # 既出の関数のidを記録 
 
     funcs = set()
     funcs.update(y.creator)
@@ -675,17 +669,17 @@ def gradient(y, x, create_graph=True):
 
 
 class CompositFunction:
-    """
-    合成関数、_forwardメソッドに順方向だけ記述した合成関数の順逆両方の伝播メソッドを得る
+    """ 合成関数
+    _forwardメソッドに順方向だけ記述した合成関数の順逆両方の伝播メソッドを得る
 
     これにより静的計算グラフによる順・逆の両方向の伝播のものと組み合わせることが出来る
     逆伝播のメソッドは、define-by-runの機能を使って作るため、_forwardメソッドの定義は、
     Functionsに定義したnucleusのFunctionクラスを親とするクラスによらなければならない．
-    引数については、Functionクラス同様に外でHDA化していればそのまま、否なら中でHDA化して、
-    self.inputsに保存するとともに_forwardメソッドの引数とする．
-    従って、_forwardメソッドの中で定義に使われるFunctionクラスでは、属性も含めてそのまま
-    各々のself.inputsとなり、逆伝播の際にはそれを通じて、このCompositFunctionクラスの
-    self.inputsに属性が反映されることになる．　　　
+    引数については、Functionクラス同様に外でHDA化していればそのまま、
+    否なら中でHDA化して、self.inputsに保存するとともに_forwardメソッドの引数とする．
+    従って、_forwardメソッドの中で定義に使われるFunctionクラスでは、
+    属性も含めてそのまま各々のself.inputsとなり、逆伝播の際にはそれを通じて、
+    このCompositFunctionクラスのself.inputsに属性が反映されることになる．　　　
     """
     
     def __init__(self):
@@ -737,7 +731,8 @@ class CompositFunction:
         debug_print(f'<composite backward> {self.__class__.__name__}',
                     f'input_shape={[i.shape for i in self.inputs]}')
         ginputs = [np.zeros_like(i, dtype=Config.dtype) if i.grad is None
-                   else np.array(i.grad) for i in self.inputs] # 勾配はndarrayにする(HDArrayではない)
+                   else np.array(i.grad) for i in self.inputs]
+                       # 勾配はndarrayにする(HDArrayではない)
         # 上記は引数が関数に含まれない場合(合成関数ではありうる)も正しい 
         return ginputs[0] if len(ginputs) <= 1 else ginputs
 
@@ -830,9 +825,7 @@ OperatorOverloadは以下の3つの場合がある
 __forward__ メソッドでは、
 ⓪ではそのまま
 ①②ではOperatorOverloadの抑止が必須
-抑止の手段は、with文により一時的にOperatorOverloadを無効にするか、あるいは、
-オペランドをXArrayに変換してOperatorOverloadの対象外にするかのいずれかだが、
-後者の方が簡単
+抑止の手段は、with文により一時的にOperatorOverloadを無効にすることによる
 
 __backward__ メソッドでは、
 ⓪ではそのまま
@@ -851,16 +844,17 @@ HDFで実行し、そして、その外部とのやり取りに際してndarray�
 
 if __name__=='__main__':
     import matplotlib.pyplot as plt
-    set_higher_derivative(True)   # これでメモリリーク発生
+    set_higher_derivative(True)    
    
     # メモリリークのテスト
     class Square(Function):
         def __forward__(self, x):
+            self.x = x
             y = np.square(x)
             return y
 
         def __backward__(self, gy):
-            x, = self.inputs
+            x = self.x
             gx = gy * 2 * x 
             return gx
 
