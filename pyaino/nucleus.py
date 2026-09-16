@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260914 A.Inoue
+# 20260916 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -53,10 +53,11 @@ class HDArray(np.ndarray):
                     f"creator={[c.__class__.__name__ for c in self.creator]}",
                     f'gen={self.generation}', f'shape={self.shape}',
                     f'create_graph={create_graph or Config.higher_derivative}')
-        # 勾配が指定されたら自身のアトリビュートに設定
-        self.set_grad(grad)
         # -- 引数に従ってConfig.create_graphを設定して実行 seen_var, seen_funcは更新 --
         with using_config('create_graph', create_graph or Config.higher_derivative): 
+            # 勾配が指定されたら自身のアトリビュートに設定
+            self.set_grad(grad)
+            # バックトレース実施
             seen_var, seen_func = backtrace_graph(self, seen_var, seen_func)  
         return seen_var, seen_func    
 
@@ -294,11 +295,8 @@ class Function:
             return ys[0] if len(ys)<=1 else ys # 後日単純化予定　
         
         # -- 入出力対象にグラフ生成する --
-        for x in inputs:
-            self.check_decency(x) # チェックだけ 仮に全チェック20250503AI
         # inputsをHDArrayにするが、元々そうでない場合には別物になる
-        # (高階微分やグラフ可視化では問題)
-        # backwardで勾配セットの準備  Noneの対処20260414AI
+        # しかし元々HDArrayでないばらグラフは繋がっておらず問題なし
         self.inputs = \
             [x if x is None or (isinstance(x, HDArray) and hasattr(x, 'generation'))
                else HDArray(x) for x in inputs]
@@ -322,7 +320,6 @@ class Function:
 
         if Config.preserve_weakref_obj:
             self.outputs_copy = [y() for y in self.outputs] # weakrefでdeadしない為に
-        #outputs = [y() for y in self.outputs]
         self.graph_exist = True # 仮20241003
         return outputs[0] if len(outputs)<=1 else outputs
     
@@ -384,12 +381,12 @@ class Function:
                         # xは別物になるため返り値で反映必要                　
 
             if id(x) in seen_var:
-                x.grad += gx  # x.gradのidを変えない
-                              # (この操作で関数の定義次第ではgysが影響を受けるので要注意)
+                x.grad += gx # x.gradのidを変えない
+                             # (この操作で関数の定義次第ではgysが影響を受けるので要注意)
 
                 if Config.create_graph:
-                    self.check_decency(x.grad)
-                    self.check_decency(gx)
+                    self.assert_graph_ready(x.grad)
+                    self.assert_graph_ready(gx)
                     x.grad.generation = max(x.grad.generation, gx.generation)
                     x.grad.creator.update(gx.creator)
                     self.gx_creator_update(x, gx)
@@ -404,23 +401,14 @@ class Function:
                     print(id(x), 'in', seen_var, 'whereas', x.grad is None)
                     raise Exception("x is in seen_var, but, who's gradient is None")
 
-    def check_decency(self, x, warning=False):
-        """ グラフの作れるようなまともな変数であることの確認
-            (まともなHDArray、但し、定数項は除く) """
-        if isinstance(x, HDArray) and hasattr(x, 'generation'):
-            return 0
-        elif isinstance(x, (int, float)):
-            return 1
-        elif warning:    
-            msg = 'Excuting ' + self.__class__.__name__ + ', '
-            msg += 'variable is not ready to create graph.'
-            msg += '\n' + str(type(x))    
-            msg += '\nmay need to specify create_graph=True for backtrace()'
-            x = HDArray(x)
-            warnings.warn(msg)
-            return 2
-        else:
-            return 2
+    def assert_graph_ready(self, x):
+        """ 高階微分用のgraph-readyなHDArrayであることを確認する """
+        if not isinstance(x, HDArray):
+            raise TypeError(f'{self.__class__.__name__}: '
+                            f'non HDArray found during graph construction: {type(x)}')
+        if not hasattr(x, 'generation') or not hasattr(x, 'creator'):
+            raise RuntimeError(f'{self.__class__.__name__}: '
+                               'inconsistent HDArray found during graph construction.')
 
     def gx_creator_update(self, x, gx):
         """ gxの生成者の出力==gxそのものをx.gradで置換える(弱参照に注意) """

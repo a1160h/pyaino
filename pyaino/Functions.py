@@ -1,5 +1,5 @@
 ﻿# Functions 順伝播逆伝播双方に対応した関数
-# 20260911 A.Inoue
+# 20260916 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
@@ -231,11 +231,12 @@ class Add(Function):
     def __forward__(self, x0, x1):
         self.x0, self.x1 = x0, x1
         y = x0 + x1
+        self.y_shape = y.shape
         return y
     
     def __backward__(self, gy):
         x0, x1 = self.x0, self.x1
-        y_shape, = self.y_shapes
+        y_shape = self.y_shape
         x0_shape, x1_shape = np.shape(x0), np.shape(x1)
         gx0 = assign(gy) if y_shape==x0_shape else SumTo(x0_shape)(gy)
         gx1 = assign(gy) if y_shape==x1_shape else SumTo(x1_shape)(gy)
@@ -248,11 +249,12 @@ class Sub(Function):
     def __forward__(self, x0, x1):
         self.x0, self.x1 = x0, x1
         y = x0 - x1
+        self.y_shape = y.shape
         return y
 
     def __backward__(self, gy):
         x0, x1 = self.x0, self.x1
-        y_shape, = self.y_shapes
+        y_shape = self.y_shape
         x0_shape, x1_shape = np.shape(x0), np.shape(x1)
         gx0 =  assign(gy) if y_shape==x0_shape else SumTo(x0_shape)(gy)
         gx1 = -gy         if y_shape==x1_shape else SumTo(x1_shape)(-gy)
@@ -268,11 +270,12 @@ class Mul(Function):
     def __forward__(self, x0, x1):
         self.x0, self.x1 = x0, x1
         y = x0 * x1
+        self.y_shape = y.shape
         return y
     
     def __backward__(self, gy):
         x0, x1 = self.x0, self.x1
-        y_shape, = self.y_shapes
+        y_shape = self.y_shape
         x0_shape, x1_shape = np.shape(x0), np.shape(x1)
         gx0 = x1 * gy
         gx1 = x0 * gy
@@ -287,11 +290,12 @@ class Div(Function):
     def __forward__(self, x0, x1):
         self.x0, self.x1 = x0, x1
         y = x0 / x1
+        self.y_shape = y.shape
         return y
     
     def __backward__(self, gy):
         x0, x1 = self.x0, self.x1
-        y_shape, = self.y_shapes
+        y_shape = self.y_shape
         x0_shape, x1_shape = np.shape(x0), np.shape(x1)
         gx0 = gy / x1
         gx1 = - gy * x0 / x1 ** 2
@@ -1219,12 +1223,14 @@ class Concatenate(Function):
 
     def __forward__(self, *xs):
         self.xs = xs
-        return snp.concatenate(xs, axis=self.axis)
+        y = snp.concatenate(xs, axis=self.axis)
+        self.y_shape = y.shape
+        return y
 
     def __backward__(self, gy):
         axis = self.axis
         if axis < 0:
-            axis += len(self.y_shapes[0])
+            axis += len(self.y_shape)
 
         sections = []
         stop = 0
