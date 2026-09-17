@@ -1,16 +1,10 @@
 # HDFunctions 
-# 20260916 A.Inoue
+# 20260917 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import HDArray, HDFunction
 from pyaino import safe_np as snp
 import copy
-
-def ensure_graph_ready(x):
-    """ backwardで使う値をgraph-readyなHDArrayとして保持する。 """
-    if x is None or (isinstance(x, HDArray) and hasattr(x, 'generation')):
-        return x
-    return HDArray(x)
 
 
 """
@@ -22,8 +16,8 @@ def ensure_graph_ready(x):
 class Zeros(HDFunction):
     """ 加法の単位元 Derivative Identity """
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
-        y = np.zeros_like(x, dtype=Config.dtype)
+        self.x = x
+        y = np.zeros(np.shape(x), dtype=Config.dtype)
         return y
 
     def __backward__(self, gy):
@@ -37,8 +31,8 @@ def zeros(x):
 class Ones(HDFunction):
     """ 乗法の単位元 Derivative Identity """
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
-        y = np.ones_like(x, dtype=Config.dtype)
+        self.x = x
+        y = np.ones(np.shape(x), dtype=Config.dtype)
         return y
 
     def __backward__(self, gy):
@@ -52,7 +46,7 @@ def ones(x):
 class Assign(HDFunction):
     """ y=x 但し演算子オーバーロードは効かない """
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         return x.copy()
 
     def __backward__(self, gy):
@@ -65,7 +59,7 @@ def assign(x):
 
 class Neg(HDFunction):
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         return -x
 
     def __backward__(self, gy):
@@ -80,12 +74,9 @@ class Pow(HDFunction):
     def __init__(self, c=1):
         super().__init__()
         self.c = HDArray(c)     # 20241019 nucleusでdtypeを指定しないならば元の型を継承
-        #if isinstance(c, int):  # 20241030 不要
-        #    self.c = self.c.astype(int)
-        #self.c.name = 'exponent' # 数値が出ればそれで良い
     
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.power(x, self.c) # 20241019
         return y
 
@@ -100,7 +91,7 @@ def pow(x, c):
 
 class Square(HDFunction):
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.square(x)        # 20241019
         return y 
 
@@ -114,7 +105,7 @@ def square(x):
 
 class SquareRoot(HDFunction):
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.sqrt(x)
         return y 
 
@@ -169,7 +160,7 @@ class Log(HDFunction):
         self.log_of_base.name = None if a is None else 'log'+str(a)  
        
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.log(x)/self.log_of_base
         return y
 
@@ -184,7 +175,7 @@ def log(x, a=None):
 
 class Abs(HDFunction):
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         return np.abs(x)
 
     def __backward__(self, gy):
@@ -197,7 +188,7 @@ def abs(x):
 
 class Sin(HDFunction):
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.sin(x)
         return y
 
@@ -211,7 +202,7 @@ def sin(x):
 
 class Cos(HDFunction):
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.cos(x)
         return y
 
@@ -226,7 +217,7 @@ def cos(x):
 class SinCos(HDFunction):
     def __forward__(self, x):
         """ 複数出力の関数の確認用 """
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.sin(x), np.cos(x)
         return y
 
@@ -240,7 +231,7 @@ def sin_cos(x):
 
 class Add(HDFunction):
     def __forward__(self, x0, x1):
-        self.x0, self.x1 = ensure_graph_ready(x0), ensure_graph_ready(x1)
+        self.x0, self.x1 = x0, x1
         y = x0 + x1
         return y
 
@@ -256,7 +247,7 @@ def add(x0, x1):
 
 class Sub(HDFunction):
     def __forward__(self, x0, x1):
-        self.x0, self.x1 = ensure_graph_ready(x0), ensure_graph_ready(x1)
+        self.x0, self.x1 = x0, x1
         y = x0 - x1
         return y
 
@@ -274,7 +265,7 @@ def rsub(x0, x1):
 
 class Mul(HDFunction):
     def __forward__(self, x0, x1):
-        self.x0, self.x1 = ensure_graph_ready(x0), ensure_graph_ready(x1)
+        self.x0, self.x1 = x0, x1
         y = x0 * x1
         return y
 
@@ -293,7 +284,7 @@ class Div(HDFunction):
         self.epsilon = epsilon
         
     def __forward__(self, x0, x1):
-        self.x0, self.x1 = ensure_graph_ready(x0), ensure_graph_ready(x1)
+        self.x0, self.x1 = x0, x1
         y = x0 / (x1 + self.epsilon)
         return y
 
@@ -316,7 +307,7 @@ class SumTo(HDFunction):
         self.gy_shape = None
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         if x.shape == self.shape:
             self.gy_shape = x.shape             # backwardで必要
             return x
@@ -356,7 +347,7 @@ class BroadcastTo(HDFunction):
         self.shape = shape
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.broadcast_to(x, self.shape).copy() # copy()で結果をwriteableにする
         return y
 
@@ -374,7 +365,7 @@ class SumTo_bkup(HDFunction):
         self.shape = shape
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         ndim = len(self.shape)
         lead = x.ndim - ndim
         lead_axis = tuple(range(lead))
@@ -396,7 +387,7 @@ class BroadcastTo_bkup(HDFunction):
         self.shape = shape
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.broadcast_to(x, self.shape)
         return y
 
@@ -412,7 +403,7 @@ class Sum_bkup(HDFunction):
         self.keepdims = keepdims
         
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.sum(x, axis=self.axis, keepdims=self.keepdims)
         self.y_shape = np.shape(y)
         return y
@@ -467,7 +458,7 @@ class SumMeanVar(HDFunction):
         self.n.name = 'n'   #  
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
 
     def __backward__(self, gy):
         """ 逆伝播:形状のややこしい操作があるので親クラスのbackwardを上書き """
@@ -671,7 +662,7 @@ class GetItem(HDFunction):
         self.slices = slices
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = x[self.slices]
         return y
 
@@ -706,7 +697,7 @@ class Reshape(HDFunction):
             self.shape, = shape 
         
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.reshape(x, self.shape)
         return y
 
@@ -769,7 +760,7 @@ class Dot(HDFunction):
         行列積(x.ndim>1, w.ndim>1)->行列
         
         """
-        self.x, self.w = ensure_graph_ready(x), ensure_graph_ready(w)
+        self.x, self.w = x, w
         y = np.dot(x, w)
         return y
 
@@ -826,7 +817,7 @@ def dot(x, w):
 
 class MatMul(HDFunction):
     def __forward__(self, x0, x1):
-        self.x0, self.x1 = ensure_graph_ready(x0), ensure_graph_ready(x1)
+        self.x0, self.x1 = x0, x1
         y = np.matmul(x0, x1)
         return y
 
@@ -854,7 +845,7 @@ class DotLinear(HDFunction):
         行列積(x.ndim>1, w.ndim>1)->行列
         
         """
-        self.x, self.w, self.b = ensure_graph_ready(x), ensure_graph_ready(w), ensure_graph_ready(b)
+        self.x, self.w, self.b = x, w, b
         y = np.dot(x, w)
         self.dot_dim = y.ndim
         y += b
@@ -919,7 +910,7 @@ class DotLinear(HDFunction):
 
 class DotLinearz(HDFunction):
     def __forward__(self, x, w, b):
-        self.x, self.w, self.b = ensure_graph_ready(x), ensure_graph_ready(w), ensure_graph_ready(b)
+        self.x, self.w, self.b = x, w, b
         y = np.dot(x, w) + b
         self.y_shape = np.shape(y)
         return y
@@ -953,7 +944,7 @@ def dot_linear(x, w, b):
 
 class HadamardLinear(HDFunction):
     def __forward__(self, x, w, b):
-        self.x, self.w, self.b = ensure_graph_ready(x), ensure_graph_ready(w), ensure_graph_ready(b)
+        self.x, self.w, self.b = x, w, b
         y = x * w + b
         self.y_shape = np.shape(y)
         return y
@@ -973,7 +964,7 @@ def hadamard_linear(x, w, b):
 class Flatten(HDFunction):
     """ 軸0はバッチとし、それ以下の軸を平坦化 """
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         return np.reshape(x, (x.shape[0], -1))
 
     def __backward__(self, gy):
@@ -1081,7 +1072,7 @@ class Concatenate(HDFunction):
         self.axis = axis
 
     def __forward__(self, *xs):
-        self.xs = tuple(ensure_graph_ready(x) for x in xs)
+        self.xs = tuple(x for x in xs)
         y = snp.concatenate(xs, axis=self.axis)
         self.y_shape = np.shape(y)
         return y
@@ -1197,7 +1188,7 @@ class TakeAlongAxisPrimitive(HDFunction):
         self.axis = axis
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.take_along_axis(x, self.indices, axis=self.axis)
         return y
 
@@ -1224,7 +1215,7 @@ class ScatterAddAlongAxisPrimitive(HDFunction):
         self.axis = axis
 
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = np.zeros(self.output_shape, dtype=Config.dtype)
 
         if x.ndim != y.ndim:
@@ -1356,7 +1347,7 @@ class AddSimple(HDFunction):
 class MulSimple(HDFunction):
     """ デバグ用 """
     def __forward__(self, x0, x1):
-        self.x0, self.x1 = ensure_graph_ready(x0), ensure_graph_ready(x1)
+        self.x0, self.x1 = x0, x1
         y = x0 * x1
         return y
 
@@ -1377,7 +1368,7 @@ class PowSimple(HDFunction):
         self.c = c
     
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = x ** self.c
         return y
 
@@ -1393,7 +1384,7 @@ def pows(x, c):
 class SquareSimple(HDFunction):
     """ デバグ用 """
     def __forward__(self, x):
-        self.x = ensure_graph_ready(x)
+        self.x = x
         y = x ** 2
         return y 
 
@@ -1412,7 +1403,7 @@ class DivSimple(HDFunction):
         self.epsilon = epsilon
         
     def __forward__(self, x0, x1):
-        self.x0, self.x1 = ensure_graph_ready(x0), ensure_graph_ready(x1)
+        self.x0, self.x1 = x0, x1
         y = x0 / (x1 + self.epsilon)
         return y
 
@@ -1603,129 +1594,6 @@ class OverloadContents:
         HDArray.var  = HDArray.original_var
         HDArray.std  = HDArray.original_std
 
-### test sum, mean ###
-if __name__=='__main__':
-    print('\n#### all cast ####')
-    import inspect
-    import sys
-    current_module = sys.modules[__name__]
-    classes = map(lambda x:x[0],inspect.getmembers(current_module,inspect.isclass))
-    classes = list(classes)
-    print(classes)
-    
-    #
-    from pyaino.nucleus import CompositFunction 
-    import matplotlib.pyplot as plt
-    print('基本関数のテスト')
-
-    set_higher_derivative(True)    
-
-    #"""#
-    print('オペランドが１つで１回微分だけの関数')
-    functions = Abs, 
-    x = HDArray(np.linspace(-4, 4))
-
-    for f in functions:
-        func = f()
-        print('test ', func.__class__.__name__)
-        y = func(x)
-        #gx = func.backward()
-        y.backtrace(create_graph=True)
-        gx = x.grad
-        plt.plot(x.tolist(), y.tolist())
-        plt.plot(x.tolist(), gx.tolist())
-        plt.show()
-
-    print('オペランドが１つで高階微分可能な関数')
-    functions = Zeros, Ones, Assign, Sin, Cos, Square, Sqrt, Exp, Pow, Log
-    x = HDArray(np.linspace(-4, 4))
-
-    for f in functions:
-        func = f()
-        print('test ', func.__class__.__name__)
-        y = func(x)
-        #gx = func.backward()
-        y.backtrace(create_graph=True)
-        gx = x.grad
-        gx.backtrace()
-        g2x = x.grad
-        plt.plot(x.tolist(), y.tolist())
-        plt.plot(x.tolist(), gx.tolist())
-        plt.plot(x.tolist(), g2x.tolist())
-        plt.show()
-
-    print('オペランドが１つの関数 拡張')
-    functions = Exp, Pow, Log
-    
-    x = HDArray(np.linspace(-4, 4))
-    a = 3
-
-    for f in functions:
-        func = f(a)
-        print('test ', func.__class__.__name__)
-        y = func(x)
-        y.backtrace(create_graph=True)
-        gx = x.grad
-        gx.backtrace()
-        g2x = x.grad
-        plt.plot(x.tolist(), y.tolist())
-        plt.plot(x.tolist(), gx.tolist())
-        plt.plot(x.tolist(), g2x.tolist())
-        plt.show()
-
-    print('オペランドが2つの関数')
-    functions = Add, Sub, Mul, Div
-    x0 = HDArray(np.linspace(-4, 4)) 
-    x1 = HDArray(np.linspace(4, -4))
-    
-    for f in functions:
-        func = f()
-        print('test ', func.__class__.__name__)
-        y = func(x0, x1)
-
-        y.backtrace(create_graph=True)
-        gx0, gx1 = x0.grad, x1.grad
-        gx0 = x0.grad
-        gx1 = x1.grad
-        gx0.backtrace(create_graph=True)
-        gx0x0 = x0.grad
-        gx0x1 = x1.grad
-        
-        gx1.backtrace(create_graph=True)
-        gx1x0 = x0.grad
-        gx1x1 = x1.grad
-        
-        plt.plot(x0.tolist(), label='x0')
-        plt.plot(x1.tolist(), label='x1')
-        plt.plot(y.tolist(), label='y')
-        plt.plot(gx0.tolist(), label='gx0')
-        plt.plot(gx1.tolist(), label='gx1')
-        plt.plot(gx0x0.tolist(), label='gx0x0')
-        plt.plot(gx0x1.tolist(), label='gx0x1')
-        plt.plot(gx1x0.tolist(), label='gx1x0')
-        plt.plot(gx1x1.tolist(), label='gx1x1')
-        plt.legend()
-        plt.show()
-
-    set_higher_derivative(False)    
-        
-       
-    #"""#
-    print('そのほかの関数のテスト')
-    functions = Transpose, Transpose_s, Flatten, Max, Min
-    x = np.arange(12).reshape(3,4)
-    print(x)
-    for f in functions:
-        func = f()
-        print('test ', func.__class__.__name__)
-        y = func(x)
-        print(y)
-        gx = func.backward()
-        print(gx)
-    #"""#
-        
-    print('そのほかの関数のテスト2')
-    set_higher_derivative(True)
 ### test sum, mean ###
 if __name__=='__main__':
     print('\n#### all cast ####')
@@ -2175,331 +2043,243 @@ if __name__=='__main__':
     print("transpose =", snp.transpose, getattr(snp.transpose, "__module__", None))
     print("broadcast_to =", snp.broadcast_to, getattr(snp.broadcast_to, "__module__", None))
     print("expand_dims  =", snp.expand_dims, getattr(snp.expand_dims, "__module__", None))
-    
-    a = HDArray(np.arange(12).reshape(3,4))
-    print('a =', a)
-
-    print('-- test reshape --')
-    #b = a.reshape(4, 3)
-    b = reshape(a, (4, 3)) 
-    print('b =', b)
-    b.backtrace()
-    print('gb =', b.grad)
-    print('ga =', a.grad)
-
-    print('-- test transpose --')
-    c = transpose(a, (1, 0))
-    print('c = a.T =', c)
-    c.backtrace()
-    print('gc =', c.grad)
-    print('ga =', a.grad)
-    
-    print('-- test var --')
-    b = var(a, axis=1)
-    print('b =', b)
-    b.backtrace()
-    print('gb =', b.grad)
-    print('ga =', a.grad)
-
-    print('-- test normalize --')
-    c = normalize(a, axis=0)
-    print('c =', c)
-    c.backtrace()
-    print('gb =', c.grad)
-    print('ga =', a.grad)
-
-    #'''#
-    a = HDArray(np.arange(12).reshape(3,4))
-    print('a =', a)
-
-    cases = (sum, mean, max, min)
-    for case in cases:
-        print('-- test', case.__name__, '--')
-        b = case(a, axis=1)
-        print('b =', b)
-        b.backtrace()
-        print('gb =', b.grad)
-        print('ga =', a.grad)
-
-
-    #"""#
-    print('基本関数の組み合わせのテスト')
-    set_higher_derivative(False)
-    functions = (Normalize, L2Normalize)
-    x = np.random.rand(10)
-
-    for f in functions:
-        func = f()
-        print('test ', func.__class__.__name__)
-
-        y = func.forward(x)
-        print(x.shape, y.shape)
-        gy = np.arange(0, y.size) #np.random.rand(y.data.size)
-        gy = gy[::-1]
-        gx = func.backward(gy)
-
-        print(type(x), type(y), type(gy), type(gx))
-
-        plt.plot(x.tolist(), y.tolist())
-        plt.plot(x.tolist(), gx.tolist())
-        plt.plot(x.tolist(), gy.tolist())
-        plt.grid()
-        plt.show()
-
-    print('基本関数の組み合わせのテスト2 backtrace')
-    functions = (Normalize, L2Normalize)
-    set_higher_derivative(True)
-
-    for f in functions:
-        func = f()
-        print('test ', func.__class__.__name__)
-
-        y = func.forward(x)
-        print(x.shape, y.shape)
-        gy = np.arange(0, y.size) #np.random.rand(y.data.size)
-        gy = gy[::-1]
-        #func.outputs[0].grad = gy # 対象の出力に勾配を設定
-        y.backtrace(gy)
-        gx = func.inputs[0].grad
-
-        print(type(x), type(y), type(gx))
-
-        plt.plot(x.tolist(), y.tolist())
-        plt.plot(x.tolist(), gx.tolist())
-        plt.plot(x.tolist(), gy.tolist())
-        plt.grid()
-        plt.show()
-
+    Config.enable_debug_print=False
     set_higher_derivative(False)
 
-    print('基本関数でnormalize')
+    
+    
+    print('\n========================================')
+    print('ensure_graph_ready removal test')
+    print('========================================')
+
     set_higher_derivative(True)
-    print('test normalize')
 
-    x = HDArray(np.random.rand(10))
 
-    y = normalize(x)
-    print(x.shape, y.shape)
-    gy = np.arange(0, y.size).astype(Config.dtype) # 20250130AI
-    gy = gy[::-1]
+    # ------------------------------------------------------------
+    # helper
+    # ------------------------------------------------------------
+    def check_close(name, actual, expected, rtol=1e-5, atol=1e-6):
+        ok = np.allclose(actual, expected, rtol=rtol, atol=atol)
+        print(f'{name:32s}:', bool(ok))
+        if not ok:
+            print('  actual  =', actual)
+            print('  expected=', expected)
+        assert ok, name
+
+
+    def check_shape(name, actual, expected):
+        ok = np.shape(actual) == expected
+        print(f'{name:32s}:', ok, np.shape(actual))
+        assert ok, name
+
+
+    # ------------------------------------------------------------
+    # 1. Ones / Zeros
+    #    scalar, 0-dim array, HDArray scalar, vector
+    # ------------------------------------------------------------
+    print('\n--- Ones / Zeros scalar compatibility ---')
+
+    cases = (
+        ('python scalar', 2, ()),
+        ('0-dim array',   np.array(2), ()),
+        ('HDArray scalar', HDArray(np.array(2)), ()),
+        ('vector',        np.arange(3), (3,)),
+    )
+
+    for name, x, shape in cases:
+        y1 = ones(x)
+        y0 = zeros(x)
+
+        check_shape('ones  ' + name, y1, shape)
+        check_shape('zeros ' + name, y0, shape)
+
+        check_close('ones value  ' + name,
+                    y1, np.ones(shape, dtype=Config.dtype))
+        check_close('zeros value ' + name,
+                    y0, np.zeros(shape, dtype=Config.dtype))
+
+
+    # ------------------------------------------------------------
+    # 2. raw scalar operand
+    #    scalar が左右どちら側に入ってもよいこと
+    # ------------------------------------------------------------
+    print('\n--- raw scalar operand / 2nd derivative ---')
+
+    def test_second_derivative(name, make_y, expected_g1, expected_g2):
+        x = HDArray(np.array([-1.5, -0.5, 0.5, 1.5],
+                             dtype=Config.dtype))
+
+        y = make_y(x)
+
+        # first derivative
+        y.backtrace()
+        gx = x.grad
+        check_close(name + ' 1st', gx, expected_g1(x))
+
+        # stale grad を除去して second derivative
+        x.grad = None
+        gx.backtrace()
+        g2x = x.grad
+        check_close(name + ' 2nd', g2x, expected_g2(x))
+
+
+    test_second_derivative(
+        '2 * x',
+        lambda x: 2 * x,
+        lambda x: np.ones_like(x) * 2,
+        lambda x: np.zeros_like(x),
+    )
+
+    test_second_derivative(
+        'x * 2',
+        lambda x: x * 2,
+        lambda x: np.ones_like(x) * 2,
+        lambda x: np.zeros_like(x),
+    )
+
+    test_second_derivative(
+        '2 + x',
+        lambda x: 2 + x,
+        lambda x: np.ones_like(x),
+        lambda x: np.zeros_like(x),
+    )
+
+    test_second_derivative(
+        'x + 2',
+        lambda x: x + 2,
+        lambda x: np.ones_like(x),
+        lambda x: np.zeros_like(x),
+    )
+
+    test_second_derivative(
+        '2 - x',
+        lambda x: 2 - x,
+        lambda x: -np.ones_like(x),
+        lambda x: np.zeros_like(x),
+    )
+
+    test_second_derivative(
+        'x - 2',
+        lambda x: x - 2,
+        lambda x: np.ones_like(x),
+        lambda x: np.zeros_like(x),
+    )
+
+    test_second_derivative(
+        'x / 2',
+        lambda x: x / 2,
+        lambda x: np.ones_like(x) * 0.5,
+        lambda x: np.zeros_like(x),
+    )
+
+
+    # ------------------------------------------------------------
+    # 3. Square
+    # ------------------------------------------------------------
+    print('\n--- Square / higher derivative ---')
+
+    x = HDArray(np.array([-2.0, -1.0, 0.5, 2.0],
+                         dtype=Config.dtype))
+
+    y = square(x)
+
+    y.backtrace()
+    gx = x.grad
+    check_close('Square 1st', gx, 2 * x)
+
+    x.grad = None
+    gx.backtrace()
+    g2x = x.grad
+    check_close('Square 2nd', g2x, np.ones_like(x) * 2)
+
+
+    # ------------------------------------------------------------
+    # 4. Exp
+    #    3階まで確認
+    # ------------------------------------------------------------
+    print('\n--- Exp / 3rd derivative ---')
+
+    x = HDArray(np.array([-1.0, -0.3, 0.2, 1.0],
+                         dtype=Config.dtype))
+
+    y = exp(x)
+    expected = np.exp(x)
+
+    y.backtrace()
+    gx = x.grad
+    check_close('Exp 1st', gx, expected)
+
+    x.grad = None
+    gx.backtrace()
+    g2x = x.grad
+    check_close('Exp 2nd', g2x, expected)
+
+    x.grad = None
+    g2x.backtrace()
+    g3x = x.grad
+    check_close('Exp 3rd', g3x, expected)
+
+
+    # ------------------------------------------------------------
+    # 5. normalize
+    #    値そのものより、2階の graph が正常に辿れることを確認
+    # ------------------------------------------------------------
+    print('\n--- normalize / higher derivative graph ---')
+
+    x = HDArray(
+        np.array([
+            [1.0,  2.0, 3.0],
+            [2.0,  4.0, 5.0],
+            [4.0,  5.0, 9.0],
+        ], dtype=Config.dtype)
+    )
+
+    y = Normalize(axis=0)(x)
+
+    # 対称性で勾配が消えないよう、非一様な gy を使う
+    gy = np.arange(y.size, dtype=Config.dtype).reshape(y.shape) + 1
+
     y.backtrace(gy)
     gx = x.grad
 
-    print(type(x), type(y), type(gx))
+    print('Normalize 1st shape          :', np.shape(gx))
+    assert np.shape(gx) == np.shape(x)
+    assert np.all(np.isfinite(gx))
 
-    plt.plot(x.tolist(), y.tolist())
-    plt.plot(x.tolist(), gx.tolist())
-    plt.plot(x.tolist(), gy.tolist())
-    plt.grid()
-    plt.show()
+    # 二階微分
+    x.grad = None
+
+    gg = np.arange(gx.size, dtype=Config.dtype).reshape(gx.shape) + 1
+    gx.backtrace(gg)
+
+    g2x = x.grad
+
+    print('Normalize 2nd shape          :', np.shape(g2x))
+    assert np.shape(g2x) == np.shape(x)
+    assert np.all(np.isfinite(g2x))
+
+
+    # ------------------------------------------------------------
+    # 6. local state が raw operand のままであること
+    # ------------------------------------------------------------
+    print('\n--- HDF local operand identity ---')
+
+    x = HDArray(np.arange(4, dtype=Config.dtype))
+
+    func = Mul()
+    y = func(x, 2)
+
+    print('func.x0 is x                 :', func.x0 is x)
+    print('func.x1 type                 :', type(func.x1))
+    print('func.x1 value                :', func.x1)
+
+    assert func.x0 is x
+    assert not isinstance(func.x1, HDArray)
+    assert func.x1 == 2
+
 
     set_higher_derivative(False)
 
-    #"""#
-
-    #'''#
-    #'''#
-    print('合成関数の検証(例としてsigmoid関数を取り上げる)')
-    class SigmoidComposit(CompositFunction):
-        def _forward(self, x):
-            y = div(1, add(1, exp(neg(x))))
-            return y
-
-    x = np.linspace(-5, 5, 10)
-
-    sigmoid = SigmoidComposit()
-    y = sigmoid.forward(x)
-    gx = sigmoid.backward()
-
-    plt.plot(x.tolist(), y.tolist())
-    plt.plot(x.tolist(), gx.tolist())
-    plt.show()
-
-    #'''#
-    print('合成関数の検証(例としてsigmoid関数を演算子オーバーロードで)')
-    #'''#
-    #'''#
-    class SigmoidComposit(CompositFunction):
-        def _forward(self, x):
-            y = 1 / (1 + np.e**(-x))            
-            return y
-
-    x = np.linspace(-5, 5, 10)
-
-    sigmoid = SigmoidComposit()
-    y = sigmoid.forward(x)
-    gx = sigmoid.backward(); print(type(gx))
-
-    plt.plot(x.tolist(), y.tolist())
-    plt.plot(x.tolist(), gx.tolist())
-    plt.show()
-
-    #'''#
-    #'''#
-    print('合成関数の検証(例としてtan関数を取り上げる)')
-    class TanComposit(CompositFunction):
-        def _forward(self, x):
-            sinx, cosx = sin_cos(x)
-            return div(sinx, cosx) 
-
-    x = np.linspace(-1, 1, 10)
-
-    tan = TanComposit()
-    y = tan.forward(x)
-    gx = tan.backward()
-             
-    plt.plot(x.tolist(), y.tolist())
-    plt.plot(x.tolist(), gx.tolist())
-    plt.show()
-
-    #'''#
-    #'''#
-    print('合成関数の検証(例としてnormalize関数を取り上げる)')
-    class NormalizeComposit(CompositFunction):
-        def _forward(self, x, axis=None, keepdims=False):
-            mu  = mean(x, axis, keepdims)
-            std = sqrt(var(x, axis, keepdims))
-            std = add(std, 1e-12)
-            y   = div(sub(x, mu), std)
-            return y
-
-    x = np.random.rand(10)
-
-    normalize = NormalizeComposit()
-    y = normalize.forward(x)
-    gy = np.arange(0, y.size) #np.random.rand(y.data.size)
-    gy = gy[::-1]
-    gx = normalize.backward(gy)
-
-    plt.plot(x.tolist(), y.tolist())
-    plt.plot(x.tolist(), gx.tolist())
-    plt.plot(x.tolist(), gy.tolist())
-    plt.grid()
-    plt.show()
-
-    #'''#
-
-    print('追加の検証～演算子オーバーロード')
-
-    set_higher_derivative(True)
-    Config.enable_debug_print=True
-
-    x = HDArray(np.linspace(-2, 2, 5))
-    print(type(x))
-
-    print('うまく行く')
-    y = 3*x**2 + x
-    gy = np.ones_like(y) # gyを明示的に与える
-    y.backtrace(gy)#, create_graph=True)
-   
-    plt.plot(x.tolist(), y.tolist(), label="y=f(x)")
-    plt.plot(x.tolist(), x.grad.tolist(), label="y'")
-    plt.legend()#loc='lower right')
-    plt.show()
-
-    print('これもうまく行く(Funcionsではうまく行かない)')
-    y = 2*x**2 + x
-    y.backtrace()#create_graph=True) # gyを指定しない
-    
-    plt.plot(x.tolist(), y.tolist(), label="y=f(x)")
-    plt.plot(x.tolist(), x.grad.tolist(), label="y'")
-    plt.legend()#loc='lower right')
-    plt.show()
-
-    print('テンソル操作の関数のテスト')
-    x = np.arange(24).reshape(2,3,4)
-    a = (4,2,3)
-    func = Reshape(a)
-    print('test ', func.__class__.__name__, x.shape, '->', a)
-    y = func(x)  
-    gx = func.backward()
-    
-    print(x)
-    print(y)
-    print(gx)
-    
-    func = Reshape(4,2,3)
-    print('test ', func.__class__.__name__, x.shape, '->', a)
-    y = func(x)  
-    gx = func.backward()
-    
-    print(x)
-    print(y)
-    print(gx)
-
-    a = (2,0,1)
-    func = Transpose(a)
-    print('test ', func.__class__.__name__, x.shape, ':', a)
-    y = func(x)  
-    gx = func.backward()
-    
-    print(x)
-    print(y)
-    print(gx)
-
-    func = Transpose(2,0,1)
-    print('test ', func.__class__.__name__, x.shape, ':', a)
-    y = func(x)  
-    gx = func.backward()
-    
-    print(x)
-    print(y)
-    print(gx)
-
-    x = x.reshape(6,4) 
-    func = Transpose()
-    print('test ', func.__class__.__name__, x.shape, ':', a)
-    y = func(x)  
-    gx = func.backward()
-    
-    print(x)
-    print(y)
-    print(gx)
-
-    x0 = np.arange(12).reshape(3, 4)
-    x1 = np.arange(12).reshape(4, 3)
-    func = Dot()
-    print('test ', func.__class__.__name__, x0.shape, x1.shape)
-    y = func(x0, x1)
-    gx0, gx1 = func.backward()
-    
-    print(x0)
-    print(x1)
-    print(y)
-    print(gx0)
-    print(gx1)
-    
-    x0 = np.arange(24).reshape(2, 3, 4)
-    x1 = np.arange(24).reshape(2, 4, 3)
-    func = MatMul()
-    print('test ', func.__class__.__name__, x0.shape, x1.shape)
-    y = func(x0, x1)
-    gx0, gx1 = func.backward()
-    
-    print(x0)
-    print(x1)
-    print(y)
-    print(gx0)
-    print(gx1)
-    
-    print('そのほかの関数のテスト4')
-    func1 = Split(3)
-    print('test ', func1.__class__.__name__)
-    x = np.arange(3*2*4, dtype=np.float32).reshape(3,2,4)
-    ys = func1(x)
-    print(ys)
-    gx = func1.backward()
-    print(gx)
-    func2 = Concatenate()
-    print('test ', func2.__class__.__name__)
-    z = func2(*ys)
-    print(z)
-    gys = func2.backward()
-    print(gys)
-
-
-    print("reshape   =", snp.reshape, getattr(snp.reshape, "__module__", None))
-    print("transpose =", snp.transpose, getattr(snp.transpose, "__module__", None))
-    print("broadcast_to =", snp.broadcast_to, getattr(snp.broadcast_to, "__module__", None))
-    print("expand_dims  =", snp.expand_dims, getattr(snp.expand_dims, "__module__", None))
-    
+    print('\n========================================')
+    print('ALL ensure_graph_ready removal tests PASSED')
+    print('========================================')
