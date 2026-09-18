@@ -5,38 +5,76 @@ pyaino: Define-by-run style automatic differentiation framework
 
 __version__ = "0.1.0"
 
-# 基本モジュールの読み込み × numpy/cupy確定前に読み込むとエラーの原因になる
-#from pyaino import Config
-#from pyaino import nucleus
-#from pyaino import Functions
-#from pyaino import HDFunctions
-#from pyaino import Neuron
-#from pyaino import Activators
-#from pyaino import Optimizers
-#from pyaino import LossFunctions
-#from pyaino import common_function
-#from pyaino import CBOW
-#from pyaino import NN_CNN
-#from pyaino import RNN
-#from pyaino import seq2seq
-#from pyaino import VAE
-#from pyaino import GAN
-
-#from pyaino import MatMath
-#from pyaino import Markov
-#from pyaino import ELCA
-#from pyaino import LCBF
-
-# よく使うクラス・関数をトップレベルに公開
-#from pyaino.nucleus import HDArray, Function, CompositFunction, asndarray
-#from pyaino.Functions import Add, Mul, Exp, MatMul, Mean, Sum, Reshape
-#from pyaino.Config import set_dtype, set_seed, set_np
 
 # 公開APIを制限（必要に応じて）
-'''
-__all__ = [
-    "Variable", "Function", "as_array",
-    "Add", "Mul", "Exp", "MatMul", "Mean", "Sum", "Reshape",
-    "set_backend", "get_backend", "backend_name"
-]
-'''
+__all__ = (
+    'Config',
+    'Functions',
+    'Activators',
+    'Optimizers',
+    'Initializer',
+    'LossFunctions',
+    'Regularizers',
+    'common_function',
+    'Neuron',
+)
+
+# pyaino/__init__.py
+
+# ------------------------------------------------------------
+# Current official modules
+# ------------------------------------------------------------
+# pyaino の現行正式モジュール一覧。
+# 日付付きバックアップ、*_bkup、test_* 等は含めない。
+# 外部ツールはこの一覧を pyaino の正式構成として参照できる。
+
+CURRENT_MODULES = (
+    # core
+    'Config',
+    'nucleus',
+    'Functions',
+    'HDFunctions',
+    'safe_np',
+
+    # basic neural-network components
+    'Activators',
+    'Optimizers',
+    'Initializer',
+    'LossFunctions',
+    'Regularizers',
+    'common_function',
+    'Neuron',
+
+    # model / network structures
+    'NN_CNN',
+    'RNN',
+    'seq2seq',
+    'skeletons',
+    'stems_blocks_heads',
+    'BigramLanguageModel',
+    'BigramLanguageModel2',
+    'Diffuser',
+    'GAN',
+    'VAE',
+    'UNet',
+    'ResNet',
+    'Markov',
+
+    # datasets / data utilities
+    'data_loader',
+    'MNIST',
+    'CIFAR10',
+    'CIFER10',
+    'STL10',
+    'sklearn_datasets',
+    'sklearn_digits',
+    'sklearn_iris',
+    'sklearn_OlivettiFaces',
+
+    # tooling / interoperability
+    'pyaino_to_ufiesia',
+    'onnx_to_pyaino',
+    'pyaino_to_onnx',
+    'torch_bridge',
+)
+

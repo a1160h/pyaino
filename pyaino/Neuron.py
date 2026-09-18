@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260911 A.Inoue
+# 20260918 A.Inoue
 
 import copy
 import warnings
@@ -2722,9 +2722,9 @@ class LatentLayer:
             m, n = configuration
         if len(configuration) == 1:
             m = None; n, = configuration
-        self.proj = NeuonLaye(m, 2*n, **kwargs)  # 線形変換
-        rate      = kwargs.pop('rate', 1.0)      # サンプリングの広がり        
-        r_kl_loss = kwargs.pop('r_kl_loss', 1.0) # kl_lossの混ぜ具合
+        self.proj = NeuronLayer(m, 2*n, **kwargs) # 線形変換
+        rate      = kwargs.pop('rate', 1.0)       # サンプリングの広がり        
+        r_kl_loss = kwargs.pop('r_kl_loss', 1.0)  # kl_lossの混ぜ具合
         self.sampling = LatentSampling(rate=rate, kld=r_kl_loss)
 
     def forward(self, x, train=False, epsilon=None):
