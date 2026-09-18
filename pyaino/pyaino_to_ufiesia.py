@@ -84,15 +84,32 @@ class ConvertResult:
     action: str
     audit: AuditResult | None = None
     notes: list[str] = field(default_factory=list)
+    write_state: str | None = None  # new / update / same
 
 
 def read_source(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
 
-def write_source(path: Path, text: str) -> None:
+def write_source(path: Path, text: str) -> str:
+    """
+    text を path に保存する。
+
+    既存ファイルと内容が同じ場合は書き換えず、更新日時も保持する。
+    戻り値は "new" / "update" / "same" のいずれか。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.exists():
+        old_text = path.read_text(encoding="utf-8-sig")
+        if old_text == text:
+            return "same"
+        state = "update"
+    else:
+        state = "new"
+
     path.write_text(text, encoding="utf-8", newline="\n")
+    return state
 
 
 def dotted_name(node: ast.AST) -> str | None:
@@ -121,21 +138,6 @@ def class_index(tree: ast.AST):
         }
         info[cls.name] = {"node": cls, "bases": bases, "methods": methods}
     return info
-
-
-def compute_descendants(info, root: str) -> set[str]:
-    descendants = set()
-    changed = True
-    while changed:
-        changed = False
-        for name, meta in info.items():
-            if name == root or name in descendants:
-                continue
-            base_names = {b.split(".")[-1] for b in meta["bases"]}
-            if root in base_names or base_names & descendants:
-                descendants.add(name)
-                changed = True
-    return descendants
 
 
 def compute_forwardable_classes(info) -> set[str]:
@@ -336,12 +338,8 @@ def special_ranges(original: str, module_name: str, tree: ast.AST):
             notes.append("ActivatorBase.forward bridge removed")
 
     if module_name == "Neuron":
-        cls = info.get("BaseLayer")
-        if cls and "__init_subclass__" in cls["methods"]:
-            m = cls["methods"]["__init_subclass__"]
-            ranges[m.lineno] = (m.end_lineno, [])
-            notes.append("BaseLayer.__init_subclass__ removed")
-
+        # BaseLayer派生クラスはpyaino側ですでに _forward/_backward を持つ。
+        # 変換器側でのメソッド名の挿げ替えは行わない。
         aliases = {
             "KullbackLeiblerDivergenceNormal2": [
                 "class KullbackLeiblerDivergenceNormal2(KullbackLeiblerDivergenceNormalBasic):",
@@ -366,7 +364,6 @@ def structural_transform(source: str, module_name: str) -> tuple[str, list[str]]
     original = source
     tree = ast.parse(original)
     info = class_index(tree)
-    base_desc = compute_descendants(info, "BaseLayer") if module_name == "Neuron" else set()
 
     # 改行数を変える前に、ASTの位置情報で .forward を挿入する。
     source = insert_forward_calls(source, module_name, tree)
@@ -395,9 +392,9 @@ def structural_transform(source: str, module_name: str) -> tuple[str, list[str]]
             meth_name = meth.name
             new_name = None
             if meth_name == "__forward__":
-                new_name = "_forward" if (module_name == "Neuron" and name in base_desc) else "forward"
+                new_name = "forward"
             elif meth_name == "__backward__":
-                new_name = "_backward" if (module_name == "Neuron" and name in base_desc) else "backward"
+                new_name = "backward"
             elif meth_name.startswith("__forward__"):
                 new_name = "forward" + meth_name[len("__forward__"):]
             elif meth_name.startswith("__backward__"):
@@ -960,9 +957,11 @@ def convert_file(src: Path, dst: Path, module_name: str | None = None) -> Conver
 
     source = read_source(src)
     text, notes = convert_text(source, stem)
-    write_source(dst, text)
+    write_state = write_source(dst, text)
     audit = audit_source(text, str(dst))
-    return ConvertResult(str(src), str(dst), "convert", audit, notes)
+    return ConvertResult(
+        str(src), str(dst), "convert", audit, notes, write_state=write_state
+    )
 
 
 def convert_package(src_dir: Path, dst_dir: Path, clean=False) -> list[ConvertResult]:
@@ -1003,10 +1002,18 @@ def convert_package(src_dir: Path, dst_dir: Path, clean=False) -> list[ConvertRe
         if result.action == "convert":
             converted_modules.append(module)
 
-    write_source(
-        dst_dir / "__init__.py",
-        generated_init_text(src_dir, converted_modules),
-    )
+    init_dst = dst_dir / "__init__.py"
+    init_text = generated_init_text(src_dir, converted_modules)
+    init_state = write_source(init_dst, init_text)
+    init_audit = audit_source(init_text, str(init_dst))
+    results.append(ConvertResult(
+        str(src_dir / "__init__.py"),
+        str(init_dst),
+        "generated",
+        init_audit,
+        notes=["generated package initializer"],
+        write_state=init_state,
+    ))
     return results
 
 
@@ -1027,14 +1034,22 @@ def print_report(results: list[ConvertResult]) -> bool:
                 print("      !", note)
             continue
 
-        status = "OK" if (r.audit and r.audit.ok) else "CHECK"
-        print(f"{status:5s} {Path(r.dst).name}")
+        if r.audit and r.audit.ok:
+            status = {
+                "new": "NEW",
+                "update": "UPDATE",
+                "same": "SAME",
+            }.get(r.write_state, "OK")
+        else:
+            status = "CHECK"
+
+        print(f"{status:6s} {Path(r.dst).name}")
         for note in r.notes:
-            print("      -", note)
+            print("       -", note)
         if r.audit and r.audit.issues:
             ok = False
             for issue in r.audit.issues:
-                print("      !", issue)
+                print("       !", issue)
     print("=== end ===")
     return ok
 
