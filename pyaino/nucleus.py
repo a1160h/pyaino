@@ -1,6 +1,6 @@
 # nucleus
 # define by runによる自動微分の核心モジュール
-# 20260916 A.Inoue
+# 20260919 A.Inoue
 
 from pyaino.Config import *
 import weakref
@@ -84,12 +84,22 @@ class HDArray(np.ndarray):
             if Config.create_graph and not isinstance(grad, HDArray)  else grad
         
     @property
-    def copyz(self): # 仮処置(numpy/cupyと干渉するので除外)
+    def copyzz(self): # 仮処置(numpy/cupyと干渉するので除外)
         """ 属性を継承しながら別のオブジェクト """
         new = np.array(self, dtype=Config.dtype)
         new = HDArray(new)
         new.generation = self.generation
         new.creator = self.creator
+        new.grad = self.grad
+        new.name = self.name
+        return new
+
+    @property
+    def copyz(self):
+        data = np.array(self, copy=True)
+        new = HDArray(data)
+        new.generation = self.generation
+        new.creator = self.creator.copy()
         new.grad = self.grad
         new.name = self.name
         return new
@@ -380,21 +390,31 @@ class Function:
                 x = self.fix_inconsistent_variable(x, seen_var)
                         # xは別物になるため返り値で反映必要                　
 
-            if id(x) in seen_var:
-                x.grad += gx # x.gradのidを変えない
-                             # (この操作で関数の定義次第ではgysが影響を受けるので要注意)
-
+            gx_generation = getattr(gx, 'generation', 0)
+            gx_creator = getattr(gx, 'creator', ())
+            
+            if id(x) not in seen_var:    
                 if Config.create_graph:
-                    self.assert_graph_ready(x.grad)
-                    self.assert_graph_ready(gx)
-                    x.grad.generation = max(x.grad.generation, gx.generation)
-                    x.grad.creator.update(gx.creator)
-                    self.gx_creator_update(x, gx)
-                              # x.gradに併合されたgx側の計算グラフの辻褄合わせ
+                    x.grad = HDArray(gx.copy())
+                    x.grad.generation = gx_generation
+                    x.grad.creator = set(gx_creator)
+                    if gx_creator:
+                        self.gx_creator_update(x, gx)
+                else:
+                    x.grad = gx.copy()
+
+                seen_var.add(id(x))
 
             else:
-                x.grad = gx
-                seen_var.add(id(x))
+                x.grad += gx # x.gradのidを変えない
+                             # (この操作で関数の定義次第ではgysが影響を受けるので要注意)
+                if Config.create_graph:
+                    self.assert_graph_ready(x.grad)
+                    x.grad.generation = max(x.grad.generation, gx_generation)
+                    x.grad.creator.update(gx_creator)
+                    if gx_creator:
+                        self.gx_creator_update(x, gx)
+                        # x.gradに併合されたgx側の計算グラフの辻褄合わせ
 
             if gx is not None: # 勾配が帰らないような引数を持つ関数もありうる
                 if x.grad is None:
@@ -410,6 +430,21 @@ class Function:
             raise RuntimeError(f'{self.__class__.__name__}: '
                                'inconsistent HDArray found during graph construction.')
 
+    def is_graph_ready(self, x):
+        return (isinstance(x, HDArray)
+                and hasattr(x, 'generation')
+                and hasattr(x, 'creator'))
+
+    def assert_graph_ready(self, x):
+        """ 高階微分用のgraph-readyなHDArrayであることを確認する """
+        if not isinstance(x, HDArray):
+            raise TypeError(f'{self.__class__.__name__}: '
+                            f'non HDArray found during graph construction: {type(x)}')
+        if not self.is_graph_ready(x):
+            raise RuntimeError(f'{self.__class__.__name__}: '
+                               'inconsistent HDArray found during graph construction.')
+
+    
     def gx_creator_update(self, x, gx):
         """ gxの生成者の出力==gxそのものをx.gradで置換える(弱参照に注意) """
         for gxc in gx.creator:
@@ -832,7 +867,7 @@ HDFで実行し、そして、その外部とのやり取りに際してndarray�
 
 if __name__=='__main__':
     import matplotlib.pyplot as plt
-    set_higher_derivative(True)    
+    set_derivative(True)    
    
     # メモリリークのテスト
     class Square(Function):
@@ -853,7 +888,11 @@ if __name__=='__main__':
         gx = x.grad
         print(i, y.shape, gx.shape)
 
+    # 通常 Function モードを一度終了
+    set_derivative(False)
     # 基本的な高階微分のテスト
+    set_higher_derivative(True)    
+
     x = np.hdarray(np.linspace(-2, 2))
 
     f1 = lambda x : x + 1
