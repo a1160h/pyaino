@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260918 A.Inoue
+# 20260920 A.Inoue
 
 import copy
 import warnings
@@ -12,7 +12,6 @@ from pyaino import common_function as cf
 from pyaino import LossFunctions as lf
 from pyaino import Functions as F
 from pyaino import safe_np as snp
-from pyaino.nucleus import HDArray
 from pyaino import Regularizers
 from pyaino.Initializer import init_weight
 
@@ -1428,8 +1427,8 @@ class Pooling1dLayer(Function):
             self.fix_configuration(x.shape)
         C, Iw, pool, pad, Ow = self.config
         #B = x.size // (C*Ih*Iw)
-        x = x.reshape(-1, C, Iw)                     # 入力の形状 ex. (C, Iw)に対応   
-        pdw = Ow * pool - Iw - pad                   # サイズの端数に対応
+        x = x.reshape(-1, C, Iw)               # 入力の形状 ex. (C, Iw)に対応   
+        pdw = Ow * pool - Iw - pad             # サイズの端数に対応
         # 画像調整            B      C      Iw左 Iw右　ゼロパディング   
         img_pad = np.pad(x, [(0,0), (0,0), (pad, pdw)], 'constant')
         y, self.max_index = self.pooling(img_pad)
@@ -1439,13 +1438,13 @@ class Pooling1dLayer(Function):
 
     def __backward__(self, grad_y):
         C, Iw, pool, pad, Ow = self.config  
-        B = grad_y.size // (C*Ow)                    # B = grad_y.shape[0] = len(grad_y)
-        self.grad_y = grad_y.reshape(B, C, Ow) #ドロップアウトへの入力形状は順伝播時と同じ
+        B = grad_y.size // (C*Ow)              # B = grad_y.shape[0] = len(grad_y)
+        grad_y = grad_y.reshape(B, C, Ow)      #ドロップアウトへの入力形状は順伝播時と同じ
         if self.DO:
-            self.grad_y = self.DO.backward(self.grad_y)  # ドロップアウト
-        grad_x = self.unpooling(self.grad_y, self.max_index)
+            grad_y = self.DO.backward(grad_y)  # ドロップアウト
+        grad_x = self.unpooling(grad_y, self.max_index)
         # 画像調整 トリミング
-        grad_x = grad_x[:, :, pad:pad+Iw]            # grad_x.shape=(B,C,Iw) 
+        grad_x = grad_x[:, :, pad:pad+Iw]      # grad_x.shape=(B,C,Iw) 
         grad_x = grad_x.reshape(self.x.shape)
         return grad_x
 
@@ -1496,22 +1495,22 @@ class UnPooling1dLayer(Function):
             self.fix_configuration(x.shape)
         C, Iw, pool, pad, Ow = self.config
         #B = x.size // (C*Iw)
-        x = x.reshape(-1, C, Iw)                     # 入力の形状 ex. (C,Ih*Iw)に対応   
+        x = x.reshape(-1, C, Iw)               # 入力の形状 ex. (C,Ih*Iw)に対応   
         #print('img_pad', img_pad.shape, self.config)
         y = self.unpooling(x, max_index)
         # 画像調整 トリミング
-        y = y[:, :, pad:pad+Ow]                      # y.shape=(B,C,Oh,Ow) 
+        y = y[:, :, pad:pad+Ow]                # y.shape=(B,C,Oh,Ow) 
         if self.DO:
             y = self.DO.forward(y, dropout=dropout)  # 形状は(B,C,Oh,Ow)
         return y
 
     def __backward__(self, grad_y):
-        C, Iw, pool, pad, Ow = self.config   # パラメタ
-        B = grad_y.size // (C*Ow)                    # B = grad_y.shape[0] = len(grad_y)
-        grad_y = grad_y.reshape(B, C, Ow)    # ドロップアウトへの入力形状は順伝播時と同じ
+        C, Iw, pool, pad, Ow = self.config     # パラメタ
+        B = grad_y.size // (C*Ow)              # B = grad_y.shape[0] = len(grad_y)
+        grad_y = grad_y.reshape(B, C, Ow)      # ドロップアウトへの入力形状は順伝播時と同じ
         if self.DO:
-            self.grad_y = self.DO.backward(self.grad_y)  # ドロップアウト
-        pdw = Iw*pool - Ow - pad                     # 画像サイズの端数を調整
+            grad_y = self.DO.backward(grad_y)  # ドロップアウト
+        pdw = Iw*pool - Ow - pad               # 画像サイズの端数を調整
         # 画像調整                 B      C     Iw左 Iw右　 ゼロパディング   
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pdw)], 'constant')
         grad_x, _ = self.pooling(grad_y)
@@ -1614,9 +1613,9 @@ class Pooling2dLayer(Function):
             self.fix_configuration(x.shape)
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config
         #B = x.size // (C*Ih*Iw)
-        x = x.reshape(-1, C, Ih, Iw)                 # 入力の形状 ex. (C,Ih*Iw)に対応   
-        pdh = Oh * pool_h - Ih - pad                 # 画像サイズの端数に対応
-        pdw = Ow * pool_w - Iw - pad                 # 画像サイズの端数に対応
+        x = x.reshape(-1, C, Ih, Iw)           # 入力の形状 ex. (C,Ih*Iw)に対応   
+        pdh = Oh * pool_h - Ih - pad           # 画像サイズの端数に対応
+        pdw = Ow * pool_w - Iw - pad           # 画像サイズの端数に対応
         # 画像調整            B      C     Ih上　Ih下   Iw左 Iw右　ゼロパディング   
         img_pad = np.pad(x, [(0,0), (0,0), (pad, pdh), (pad, pdw)], 'constant')
         y, self.max_index = self.pooling(img_pad)
@@ -1626,12 +1625,11 @@ class Pooling2dLayer(Function):
 
     def __backward__(self, grad_y):
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config   # パラメタ
-        B = grad_y.size // (C*Oh*Ow)                 # B = grad_y.shape[0] = len(grad_y)
-        self.grad_y = grad_y.reshape(B, C, Oh, Ow)
-                                             # ドロップアウトへの入力形状は順伝播時と同じ
+        B = grad_y.size // (C*Oh*Ow)           # B = grad_y.shape[0] = len(grad_y)
+        grad_y = grad_y.reshape(B, C, Oh, Ow)  # ドロップアウトへの入力形状は順伝播時と同じ
         if self.DO:
-            self.grad_y = self.DO.backward(self.grad_y)  # ドロップアウト
-        grad_x = self.unpooling(self.grad_y, self.max_index)
+            grad_y = self.DO.backward(grad_y)  # ドロップアウト
+        grad_x = self.unpooling(grad_y, self.max_index)
         # 画像調整 トリミング
         grad_x = grad_x[:, :, pad:pad+Ih, pad:pad+Iw] # grad_x.shape=(B,C,Ih,Iw) 
         grad_x = grad_x.reshape(self.x.shape)
@@ -1697,24 +1695,23 @@ class UnPooling2dLayer(Function):
             self.fix_configuration(x.shape)
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config
         #B = x.size // (C*Ih*Iw)
-        x = x.reshape(-1, C, Ih, Iw)                 # 入力の形状 ex. (C,Ih*Iw)に対応   
+        x = x.reshape(-1, C, Ih, Iw)           # 入力の形状 ex. (C,Ih*Iw)に対応   
         #print('img_pad', img_pad.shape, self.config)
         y = self.unpooling(x, max_index)
         # 画像調整 トリミング
-        y = y[:, :, pad:pad+Oh, pad:pad+Ow]          # y.shape=(B,C,Oh,Ow) 
+        y = y[:, :, pad:pad+Oh, pad:pad+Ow]    # y.shape=(B,C,Oh,Ow) 
         if self.DO:
             y = self.DO.forward(y, dropout=dropout)  # 形状は(B,C,Oh,Ow)
         return y
 
     def __backward__(self, grad_y):
         C, Ih, Iw, pool_h, pool_w, pad, Oh, Ow = self.config   # パラメタ
-        B = grad_y.size // (C*Oh*Ow)                 # B = grad_y.shape[0] = len(grad_y)
-        grad_y = grad_y.reshape(B, C, Oh, Ow)
-                                            # ドロップアウトへの入力形状は順伝播時と同じ
+        B = grad_y.size // (C*Oh*Ow)           # B = grad_y.shape[0] = len(grad_y)
+        grad_y = grad_y.reshape(B, C, Oh, Ow)  # ドロップアウトへの入力形状は順伝播時と同じ
         if self.DO:
-            self.grad_y = self.DO.backward(self.grad_y)  # ドロップアウト
-        pdh = Ih*pool_h - Oh - pad                   # 画像サイズの端数を調整
-        pdw = Iw*pool_w - Ow - pad                   # 画像サイズの端数を調整
+            grad_y = self.DO.backward(grad_y)  # ドロップアウト
+        pdh = Ih*pool_h - Oh - pad             # 画像サイズの端数を調整
+        pdw = Iw*pool_w - Ow - pad             # 画像サイズの端数を調整
         # 画像調整            B      C     Ih上　Ih下   Iw左 Iw右　ゼロパディング   
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pdh), (pad, pdw)], 'constant')
         grad_x, _ = self.pooling(grad_y)
@@ -2376,7 +2373,7 @@ class LatentSampling(Function):
 
         if self.mil:
             gz0, gmu0, glog_var0 = self.mil.backward(gmi * self.r_mil)
-            gz += gz0
+            gz = gz + gz0
             gmu += gmu0
             glog_var += glog_var0
 
@@ -2456,7 +2453,7 @@ class LatentSampling_bkup(Function):
 
         if self.mil:
             gz0, gmu0, glog_var0 = self.mil.backward(gmi * self.r_mil)
-            gz += gz0
+            gz = gz + gz0
             gmu += gmu0
             glog_var += glog_var0
 
@@ -2717,9 +2714,10 @@ class LatentLayer:
         z = self.sampling(y, epsilon=epsilon)
         return z # (z, kll, mil)の場合もある
        
-    def backward(self, gz=1, gkll=1, gmil=1, flush=True):
-        grad_y = self.sampling.backward(gz, gkll=gkll, gmil=gmil)
+    def backward(self, gz=1, gkll=1, gmi=1, flush=True):
+        grad_y = self.sampling.backward(gz, gkll=gkll, gmi=gmi)
         grad_x = self.proj.backward(grad_y, flush=flush)
+        return grad_x
 
     def update(self, eta=0.001, **kwargs):
         self.proj.update(eta=eta, **kwargs)
@@ -3334,9 +3332,8 @@ class Embedding(Function):
 
     def __backward__(self, gy):
         x = self.x
-        if self.mask is not None:
-            gy *= self.mask
-        self.parameters.set_gradient(x, gy)
+        gx = gy if self.mask is None else gy * self.mask
+        self.parameters.set_gradient(x, gx)
             
         
 #### 位置符号化 ####################################################　   
@@ -3768,7 +3765,6 @@ class AttentionUnit(Function):
                            + self.__class__.__name__)
        
         a = self.softmax(a)
-        self.softmax.inputs = None     # backwardに不要なscoreへの参照を破棄
         
         if self.regularizer is not None: 
             self.loss = self.regularizer.forward(a)
