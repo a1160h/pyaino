@@ -525,14 +525,16 @@ def transform_config(text: str, notes: list[str]) -> str:
     ufiesia の Config は define-and-run 用の最小構成に固定する。
 
     pyaino 側の Config から nucleus / define-by-run / automatic-differentiation
-    関連設定を選別して残すのではなく、ufiesia0.Config と同等の内容を生成する。
+    関連設定を選別して残すのではなく、ufiesia0.Config を基本とし、
+    通常モジュールから使われる汎用 debug_print 機能だけを加えた内容を生成する。
     """
-    notes.append("Config replaced with minimal ufiesia0-compatible definition")
+    notes.append("Config replaced with minimal ufiesia definition + debug_print")
 
     return """class Config:
     np    = None
     dtype = 'f4'
     seed  = None
+    enable_debug_print = False
 
 
 def set_dtype(value):
@@ -569,6 +571,11 @@ def set_np(value=None):
         #np.seterr(over='raise')
 
     setattr(Config, 'np', np)
+
+
+def debug_print(*text, **end):
+    if Config.enable_debug_print:
+        print(*text, end=end.get('end'))
 
 
 set_np()
