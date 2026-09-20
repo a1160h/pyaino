@@ -1,10 +1,9 @@
-﻿# Functions 順伝播逆伝播双方に対応した関数
-# 20260916 A.Inoue
+# Functions 順伝播逆伝播双方に対応した関数
+# 20260920 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function, HDArray
 from pyaino import safe_np as snp
-import copy
 from functools import reduce
 import itertools
 
@@ -32,7 +31,7 @@ class Branch(Function):
         x = self.x
         if self.gx is None or flush: 
             self.gx = np.zeros_like(x)
-        self.gx += assign(gy)     
+        self.gx += gy             
         return self.gx
     
 def bracch(x):
@@ -93,7 +92,7 @@ class Sqrt(Function):
         return gx
     
 def sqrt(x):
-    return SquareRoot()(x)
+    return Sqrt()(x)
 
 class Exp(Function):
     """ 指数関数(底を指定可能) """
@@ -190,34 +189,31 @@ class Erf(Function):
     """ 誤差関数(ガウスの誤差関数) """
     def __init__(self):
         super().__init__()
-        
-        try:        # cupy
-            #raise Exception() # for debug 
-            from np._cupyx.scipy.special import erf #as cupy_erf
-            self.erf = z.erf
-            print('Use cupyx.scipy.special for erf.')
-        except:     # numpy
-            try:    # scipy
-                #raise Exception() # for debug 
+
+        if np.__name__ == 'cupy':
+            from cupyx.scipy.special import erf
+            self.erf = erf
+        else:
+            try:
                 from scipy.special import erf
                 self.erf = erf
-                print('Use scipy for erf.')
-            except: # Abramowitz–Stegunの有理近似
-                def AbramowitzStegun(x):
-                    a1 = 0.254829592
-                    a2 = -0.284496736
-                    a3 = 1.421413741
-                    a4 = -1.453152027
-                    a5 = 1.061405429
-                    p  = 0.3275911
-                    sign = np.sign(x)
-                    ax = np.abs(x)
-                    t = 1.0 / (1.0 + p * ax)
-                    poly = (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t
-                    y = 1.0 - poly * np.exp(-ax * ax)
-                    return sign * y
-                self.erf = AbramowitzStegun
-                print('Use Abramowitz Stegun approximation for erf.')
+            except ImportError:
+                self.erf = self.AbramowitzStegun
+
+    @staticmethod
+    def AbramowitzStegun(x):
+        a1 = 0.254829592
+        a2 = -0.284496736
+        a3 = 1.421413741
+        a4 = -1.453152027
+        a5 = 1.061405429
+        p  = 0.3275911
+        sign = np.sign(x)
+        ax = np.abs(x)
+        t = 1.0 / (1.0 + p * ax)
+        poly = (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t
+        y = 1.0 - poly * np.exp(-ax * ax)
+        return sign * y
 
     def __forward__(self, x):
         self.x = x
@@ -238,8 +234,8 @@ class Add(Function):
         x0, x1 = self.x0, self.x1
         y_shape = self.y_shape
         x0_shape, x1_shape = np.shape(x0), np.shape(x1)
-        gx0 = assign(gy) if y_shape==x0_shape else SumTo(x0_shape)(gy)
-        gx1 = assign(gy) if y_shape==x1_shape else SumTo(x1_shape)(gy)
+        gx0 = gy if y_shape==x0_shape else SumTo(x0_shape)(gy)
+        gx1 = gy if y_shape==x1_shape else SumTo(x1_shape)(gy)
         return gx0, gx1
 
 def add(x0, x1):
@@ -256,7 +252,7 @@ class Sub(Function):
         x0, x1 = self.x0, self.x1
         y_shape = self.y_shape
         x0_shape, x1_shape = np.shape(x0), np.shape(x1)
-        gx0 =  assign(gy) if y_shape==x0_shape else SumTo(x0_shape)(gy)
+        gx0 =  gy         if y_shape==x0_shape else SumTo(x0_shape)(gy)
         gx1 = -gy         if y_shape==x1_shape else SumTo(x1_shape)(-gy)
         return gx0, gx1
 
@@ -562,10 +558,10 @@ class VariadicBase:
         elif len(xs)==1 and all(isinstance(x, (tuple, list)) for x in xs):
             xs, = xs
             y = self.func(*xs)
-            self.pcked_in_one =True
+            self.packed_in_one = True
             
         elif len(xs)==1 and all(isinstance(x, type((i for i in []))) for x in xs):
-            y = self.func(tuple(xs[0]))
+            y = self.func(*tuple(xs[0]))
             self.packed_in_one = True
         else:
             raise Exception('Non-compliant input data.')
@@ -1172,9 +1168,10 @@ class L2Normalize(Function):
 class Normalize_bkup(Function):
     """ 平均0標準偏差1にする標準化(正規化の一種) """
     def __init__(self, axis=None):
+        super().__init__()
         self.axis = axis
         
-    def forward(self, x):
+    def __forward__(self, x):
         self.x = x
         mu =  snp.mean(x, axis=self.axis, keepdims=True)
         std = snp.std(x, axis=self.axis, keepdims=True)
@@ -1184,7 +1181,7 @@ class Normalize_bkup(Function):
         self.y = y
         return y
     
-    def backward(self, gy=1):
+    def __backward__(self, gy):
         istd = 1/self.std
         iN = self.mu.size / self.x.size # muおよびstdを求める際に畳んだ大きさ
         xc = self.x - self.mu
@@ -1200,7 +1197,7 @@ class L2Normalize_bkup(Function):
         super().__init__()
         self.axis = axis
     
-    def forward(self, x):
+    def __forward__(self, x):
         x = np.array(x)
         l2n = snp.sum(x**2, axis=self.axis, keepdims=True)**0.5
         y = x / l2n
@@ -1208,7 +1205,7 @@ class L2Normalize_bkup(Function):
         self.l2n = l2n
         return y
    
-    def backward(self, gy=1):
+    def __backward__(self, gy):
         x = self.x
         l2n = self.l2n
         gx = gy * (1 - x * x.sum(axis=self.axis, keepdims=True) / l2n**2) / l2n
@@ -1505,14 +1502,14 @@ class Pairwise_bkup(Function):
             p, q = snp.broadcast_arrays(p, q)
         if self.mask:
             self.ne = ~np.eye(x.shape[self.axis], dtype=bool)
-            p *= self.ne
-            q *= self.ne
+            p = p * self.ne
+            q = q * self.ne
         return p, q
 
     def __backward__(self, gp, gq):
         if self.mask:
-            gp *= self.ne
-            gq *= self.ne
+            gp = gp * self.ne
+            gq = gq * self.ne
         gxp = snp.sum(gp, axis=self.axis)
         gxq = snp.sum(gq, axis=self.axis-1)
         gx = gxp + gxq
@@ -1802,6 +1799,7 @@ class Softmax(Function):
         sumgx = snp.sum(gx, axis=-1, keepdims=True)
         gx -= y * sumgx
         return gx
+
 
 #######################################################
 # OperatorOverload

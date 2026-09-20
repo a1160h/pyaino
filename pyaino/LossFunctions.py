@@ -1,5 +1,5 @@
 ﻿# LossFunctions
-# 2026.09.11 A.Inoue
+# 2026.09.20 A.Inoue
 from pyaino.Config import *
 from pyaino import nucleus
 from pyaino import safe_np as snp
@@ -262,7 +262,7 @@ class PairwiseGap(nucleus.Function):
         self.diffs = d
 
         if gap is not None: # forwardの際に指定した場合
-            self.gap = gap
+            self.target_gap = gap
 
         # マスク：対角成分を無視（== 0）
         eye = np.eye(n, dtype=bool)
