@@ -13,6 +13,8 @@
 #   LossFunctions / Regularizers / Neuron / common_function
 #
 # nucleus / HDFunctions / safe_np は ufiesia には持ち込まない。
+# Config は ufiesia0 相当の最小構成を生成する。
+# `from ufiesia.Config import *` 後の `np = Config.np` は自動挿入しない。
 
 from __future__ import annotations
 
@@ -371,6 +373,25 @@ def structural_transform(source: str, module_name: str) -> tuple[str, list[str]]
     ranges, notes = special_ranges(original, module_name, tree)
 
     method_rename: dict[int, str] = {}
+    method_add_kwargs: set[int] = set()
+
+    # Activators では、pyaino の ActivatorBase.forward(x, **kwargs) が担っていた
+    # 「共通インターフェース由来の余分な kwargs を吸収する」規律を、
+    # ufiesia 側では各 Activator の forward(x, **kwargs) に展開する。
+    # 直接派生だけでなく、中間基底クラスを挟んだ派生も対象にする。
+    activator_classes: set[str] = set()
+    if module_name == "Activators" and "ActivatorBase" in info:
+        activator_classes.add("ActivatorBase")
+        changed = True
+        while changed:
+            changed = False
+            for cls_name, meta in info.items():
+                if cls_name in activator_classes:
+                    continue
+                base_names = {b.split(".")[-1] for b in meta["bases"]}
+                if base_names & activator_classes:
+                    activator_classes.add(cls_name)
+                    changed = True
 
     # 同名classが複数あっても落とさないよう、辞書ではなく全ClassDefを走査する。
     # line_direct_function[n] は、その行が「Functionだけを直接の親に持つclass」内かを示す。
@@ -390,6 +411,16 @@ def structural_transform(source: str, module_name: str) -> tuple[str, list[str]]
             if not isinstance(meth, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             meth_name = meth.name
+
+            if (
+                module_name == "Activators"
+                and name in activator_classes
+                and name != "ActivatorBase"
+                and meth_name == "__forward__"
+                and meth.args.kwarg is None
+            ):
+                method_add_kwargs.add(meth.lineno)
+
             new_name = None
             if meth_name == "__forward__":
                 new_name = "forward"
@@ -435,17 +466,30 @@ def structural_transform(source: str, module_name: str) -> tuple[str, list[str]]
             new_name = method_rename[i]
             line = re.sub(r"(\bdef\s+)[A-Za-z_]\w*(\s*\()", rf"\1{new_name}\2", line, count=1)
 
-        if line_direct_function.get(i, False) and "super().__init__(" in line:
-            i += 1
-            continue
+        if i in method_add_kwargs:
+            # 現行 Activators の __forward__ は1行シグネチャ。
+            # 既存の引数はそのままに、末尾へ **kwargs だけを追加する。
+            close = line.rfind(")")
+            if close < 0:
+                raise RuntimeError(
+                    f"multiline Activator __forward__ signature is not supported at line {i}"
+                )
+            line = line[:close] + ", **kwargs" + line[close:]
 
-        # Function 継承を外した後に残る明示的な初期化も不要。
+        # Function 継承を外した後の初期化呼出しは実行しない。
+        # 行そのものを削除すると、それが唯一の文だった __init__ や if 節が
+        # 空になって SyntaxError になるため、同じインデントの pass に置換する。
+        if line_direct_function.get(i, False) and "super().__init__(" in line:
+            indent = re.match(r"^(\s*)", line).group(1)
+            line = indent + "pass  # Function.__init__ is not needed in ufiesia"
+
+        # Function 継承を外した後に残る明示的な初期化も同様に pass 化する。
         if re.match(
             r"^\s*nucleus\.(?:Function|CompositFunction)\.__init__\(self\)\s*$",
             line,
         ):
-            i += 1
-            continue
+            indent = re.match(r"^(\s*)", line).group(1)
+            line = indent + "pass  # Function.__init__ is not needed in ufiesia"
 
         line = line.replace("super().__forward__(", "super().forward(")
         line = line.replace("super().__backward__(", "super().backward(")
@@ -455,6 +499,11 @@ def structural_transform(source: str, module_name: str) -> tuple[str, list[str]]
 
         out.append(line)
         i += 1
+
+    if method_add_kwargs:
+        notes.append(
+            f"Activator forward **kwargs compatibility added: {len(method_add_kwargs)}"
+        )
 
     return "\n".join(out) + "\n", notes
 
@@ -473,55 +522,64 @@ def replace_class_block(text: str, class_name: str, replacement: str) -> str:
 
 def transform_config(text: str, notes: list[str]) -> str:
     """
-    ufiesia では nucleus / automatic-differentiation 制御機能を持たない。
-    まず nucleus に直接つながる関数群だけを除去する。
-    Config class 内の互換用フラグはこの段階では残す。
+    ufiesia の Config は define-and-run 用の最小構成に固定する。
+
+    pyaino 側の Config から nucleus / define-by-run / automatic-differentiation
+    関連設定を選別して残すのではなく、ufiesia0.Config と同等の内容を生成する。
     """
-    tree = ast.parse(text)
+    notes.append("Config replaced with minimal ufiesia0-compatible definition")
 
-    remove_functions = {
-        "set_create_graph",
-        "numpy_overload",
-        "set_derivative",
-        "set_higher_derivative",
-    }
+    return """class Config:
+    np    = None
+    dtype = 'f4'
+    seed  = None
 
-    ranges = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                and node.name in remove_functions:
-            start = node.lineno
-            if node.decorator_list:
-                start = min(d.lineno for d in node.decorator_list)
-            ranges.append((start, node.end_lineno, node.name))
 
-    lines = text.splitlines()
-    remove_lines = set()
-    removed_names = []
+def set_dtype(value):
+    #print('old_value =', getattr(Config, 'dtype'))
+    setattr(Config, 'dtype', value)
+    print('Config.dtype is set to', Config.dtype)
 
-    for start, end, name in ranges:
-        remove_lines.update(range(start, end + 1))
-        removed_names.append(name)
 
-    # import後の案内表示から autodiff/HDF 専用の2行を除去。
-    for i, line in enumerate(lines, start=1):
-        stripped = line.strip()
-        if stripped == "print('Config.create_graph =', Config.create_graph)":
-            remove_lines.add(i)
-        elif "set_create_graph(True)" in stripped:
-            remove_lines.add(i)
+def set_seed(value):
+    #print('old_value =', getattr(Config, 'seed'))
+    setattr(Config, 'seed', value)
+    np.random.seed(seed=Config.seed)
+    print('random.seed', Config.seed, 'is set for', np.__name__)
 
-    out = [
-        line for i, line in enumerate(lines, start=1)
-        if i not in remove_lines
-    ]
 
-    if removed_names:
-        notes.append(
-            "Config autodiff controls removed: " + ", ".join(removed_names)
-        )
+def set_np(value=None):
+    global np
+    #print('Config.np old_value =', getattr(Config, 'np'))
 
-    return "\n".join(out) + "\n"
+    if value is None:
+        try:
+            import cupy as np
+        except:
+            import numpy as np
+    elif value == 'numpy':
+        import numpy as np
+    elif value == 'cupy':
+        import cupy as np
+    else:
+        raise Exception("Invalid library specified. Specify either 'numpy' or 'cupy'.")
+
+    if np.__name__ == 'numpy':
+        np.seterr(divide='raise') # 割算例外でnanで続行せずに例外処理させる
+        #np.seterr(over='raise')
+
+    setattr(Config, 'np', np)
+
+
+set_np()
+
+print(np.__name__, 'is running in', __file__, np.random.rand(1))
+print('Config.dtype =', Config.dtype)
+print('Config.seed =', Config.seed)
+print("If you want to change np, run 'set_np('numpy' or 'cupy'); np = Config.np.'")
+print("If you want to change Config.dtype, run 'set_dtype('value')'")
+print("If you want to set seed for np.random, run set_seed(number)")
+"""
 
 def transform_functions(text: str, notes: list[str]) -> str:
     erf = '''class Erf:
@@ -752,19 +810,6 @@ MODULE_HOOKS = {
 }
 
 
-def ensure_config_np_binding(text: str) -> str:
-    if "from ufiesia.Config import *" not in text:
-        return text
-    if re.search(r"(?m)^\s*np\s*=\s*Config\.np\s*$", text):
-        return text
-    lines = text.splitlines()
-    for i, line in enumerate(lines):
-        if line.strip() == "from ufiesia.Config import *":
-            lines.insert(i + 1, "np = Config.np")
-            return "\n".join(lines) + "\n"
-    return text
-
-
 def convert_text(source: str, module_name: str) -> tuple[str, list[str]]:
     notes = []
     text, more = structural_transform(source, module_name)
@@ -773,9 +818,6 @@ def convert_text(source: str, module_name: str) -> tuple[str, list[str]]:
     hook = MODULE_HOOKS.get(module_name)
     if hook:
         text = hook(text, notes)
-
-    if module_name != "Config":
-        text = ensure_config_np_binding(text)
 
     return text, notes
 
