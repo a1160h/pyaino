@@ -1,20 +1,14 @@
 ﻿# Activators
-# 2026.09.11 A.Inoue
+# 2026.09.20 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
 from pyaino import safe_np as snp # GELUで使うerfをnumpy/cupy両方で提供
-import copy
 
 #### 活性化関数 ######################################################
 class ActivatorBase(Function):
-    def __init__(self, preserve_attr=False, **kwargs):
-        """
-         Neuron内で後に続く処理がinplace演算の場合に出力が書き換えられても
-         self.yを壊されないようにpreserve_attr=Trueを指定
-
-        """
-        super().__init__(preserve_attr=preserve_attr)
+    def __init__(self, **kwargs):
+        super().__init__()
 
     def forward(self, x, **kwargs):
         return super().forward(x)     # kwargsは無視する
@@ -185,29 +179,21 @@ def elu(x, c=1.0):
     return ELU(c=c)(x)
 
 class Swish(ActivatorBase):
-    def __init__(self, eps=1e-7, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__()
         self.beta = kwargs.pop('beta', 1.0)
-        self.eps = eps
         
     def __forward__(self, x):
         self.x = x
         beta_x = self.beta * x
         s = 1 / (1 + np.exp(-beta_x)) # sigmoid
         y = x * s
-        self.y = y
         return y
 
     def __backward__(self, gy):
         x = self.x
-        y = self.y
-        gx = gy * (1 + self.beta * x - self.beta * y) * y / (x + self.eps)
-        return gx
-
-    def __backward__bkup(self, gy):
-        s = self.s
-        beta_x = self.beta_x
-        gx = gy * (1 + beta_x - beta_x * s) * s
+        s = 1 / (1 + np.exp(-self.beta * x))
+        gx = gy * (s + self.beta * x * s * (1 - s))
         return gx
 
 def swish(x, beta=1.0):
@@ -228,23 +214,17 @@ def softplus(x):
     return Softplus()(x)
     
 class Mish(ActivatorBase):
-    def __init__(self, eps=1e-7, **kwargs):
-        super().__init__()
-        self.eps = eps
-
     def __forward__(self, x):
         self.x = x
         ts = np.tanh(np.log(1 + np.exp(x)))
         y = x * ts
-        self.y = y
-        #self.ts = ts
         return y
 
     def __backward__(self, gy):
         x = self.x
-        y = self.y
-        ts = y / (x + self.eps)
-        gx = gy * (ts + (1 - np.square(ts)) * x / (1 + np.exp(-x))) 
+        s = 1 / (1 + np.exp(-x))
+        ts = np.tanh(np.log(1 + np.exp(x)))
+        gx = gy * (ts + (1 - ts**2) * x * s)
         return gx
 
 def mish(x):
@@ -254,19 +234,16 @@ class GELU(ActivatorBase):
     """ GELU "erf"(exact). """
     # erf は「誤差関数（Error Function）」を計算する NumPy の関数で、
     # 主に正規分布の確率計算・統計・物理シミュレーションで使われる特別関数
-    def __init__(self, eps=1e-7, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__()
         # 定数を用意
         self.c = np.array(np.sqrt(2.0 / np.pi), dtype=Config.dtype)   # √(2/π)
         self.inv_sqrt2 = np.array(1.0 / np.sqrt(2.0), dtype=Config.dtype)
-        self.eps = eps
 
     def __forward__(self, x):
         self.x = x
         z = snp.erf(x * self.inv_sqrt2)
         y = 0.5 * x * (1.0 + z)
-        self.y = y
-        #self.z = z
         return y
 
     def erf_backward(self, gy):
@@ -275,53 +252,34 @@ class GELU(ActivatorBase):
 
     def __backward__(self, gy):
         x = self.x
-        y = self.y
-        z = 2.0 * (y / (x + self.eps)) - 1.0
-        #z = self.z
+        z = snp.erf(x * self.inv_sqrt2)
         pdf = self.c * np.exp(-0.5 * x**2)
         dgelu_dx = 0.5 * (1.0 + z) + 0.5 * x * pdf
         return gy * dgelu_dx
-
-    def __backward__2(self, gy):
-        x = self.x
-        y = self.y
-        
-        Phi = np.where(np.abs(x) > self.eps, y / x, 0.5)
-        
-        # 閉形式の勾配で高速に
-        #Phi = 0.5 * (1.0 + snp.erf(x / np.sqrt(2.0)))
-        
-        phi = np.exp(-0.5 * x * x) * self.inv_sqrt2
-        gx  = gy * (Phi + x * phi)
-        return gx
 
 def gelu(x):
     return GELU()(x)
 
 class GELUap(ActivatorBase):
     """ GELUap  "tanh" (Hendrycks & Gimpel approx) """
-    def __init__(self, eps=1e-7, **kwargs):
+    def __init__(self, **kwargs):
         super().__init__()
 
         # 定数を dtype 付きで確定
         self.c = np.array(np.sqrt(2.0 / np.pi), dtype=Config.dtype)   # √(2/π)
         self.k = np.array(0.044715, dtype=Config.dtype)
-        self.eps = eps
 
     def __forward__(self, x):
         self.x = x
         u = self.c * (x + self.k * x**3)
         t = np.tanh(u)
         y = 0.5 * x * (1.0 + t)
-        self.y = y
-        #self.t = t
         return y
 
     def __backward__(self, gy):
         x = self.x
-        y = self.y
-        t =  2.0 * (y / (x + self.eps)) - 1.0 
-        #t  = self.t
+        u = self.c * (x + self.k * x**3)
+        t = np.tanh(u)
         du_dx = self.c * (1.0 + 3.0 * self.k * x**2)
         dt_dx = (1.0 - t**2) * du_dx
         dgelu_dx = 0.5 * (1.0 + t) + 0.5 * x * dt_dx
@@ -397,9 +355,9 @@ class TargetSelector:
         y = x.reshape(-1, x.shape[-1])[*self.indices]
         return y.reshape(self.t.shape)
 
-    def scatter(self, x, delta=-1.0, inplace=True):
+    def scatter(self, x, delta=-1.0):
         """ tが指すxの要素にdeltaを加える(戻り値はxと同形) """
-        y = x if inplace else x.copy()
+        y = x.copy()
         y = y.reshape(-1, x.shape[-1])
         y[*self.indices] += delta
         return y.reshape(x.shape)
@@ -426,7 +384,7 @@ class SoftmaxCrossEntropy(Function):
         zt = self.selector.gather(z)
         log_sum_exp += m     # expzを求める際に最大値を引いた分を戻す
         l = np.squeeze(log_sum_exp, axis=-1) - zt
-        self.k = len(l)
+        self.k = l.size
         l = np.mean(l)
         self.l = l
         return y, l
@@ -434,8 +392,7 @@ class SoftmaxCrossEntropy(Function):
     def __backward__(self, *args): # argsは使わない
         y, l = self.y, self.l
         z, t = self.z, self.t
-        gz = y.copy() 
-        gz = self.selector.scatter(gz) # gz[t]
+        gz = self.selector.scatter(y) 
         return gz / self.k
     
 
@@ -460,7 +417,7 @@ class SoftmaxWithLoss(ActivatorBase):
         else:
             t = np.array(t, dtype=int)
         #N = y.size // vr        # N=B*T
-        dx = copy.deepcopy(y)    
+        dx = y.copy()    
         dx = dx.reshape(-1, vr)       # reshapeしても元の変数を参照
         t = t.reshape(-1)
         dx[np.arange(len(t)), t] -= 1 # tの指す所を-1 yも更新されることに注意　
@@ -489,7 +446,7 @@ class SoftmaxWithLossMasked(ActivatorBase):
         else:
             t = np.array(t, dtype=int)
         #N = y.size // vr        # N=B*T
-        dx = copy.deepcopy(y)    
+        dx = y.copy()    
         dx = dx.reshape(-1, vr)
         t = t.reshape(-1)
         mask = (t != self.ignore_label).reshape(-1)
@@ -518,10 +475,11 @@ class SoftmaxWithLoss2(ActivatorBase):
     def __backward__(self, t): # クロスエントロピー誤差との組合わせでの逆伝播(gyには正解値)
         y = self.y
         if t.shape != y.shape:  # tがone-hotベクトルでない場合
-            t = cf.convert_one_hot(t, y.shape[-1])
+            t = np.eye(y.shape[-1], dtype=Config.dtype)[t]
         y = self.y
         gx = y - t
-        return gx / len(t) if not self.sumup else gx
+        size = t.size // t.shape[-1]
+        return gx / size if not self.sumup else gx
 
 
 if __name__=='__main__':
@@ -529,7 +487,8 @@ if __name__=='__main__':
 
     Funcs = [Identity, Step, Sigmoid, Tanh, ReLU, LReLU, ELU, Softmax]
     Funcs += [Swish, Softplus, Mish, GELU, GELUap]
-    Funcs += [SigmoidOut, SigmoidWithLoss, SoftmaxWithLoss, SoftmaxWithLossMasked] 
+    Funcs += [SigmoidOut, SigmoidWithLoss]
+    Funcs += [SoftmaxWithLoss, SoftmaxWithLoss2, SoftmaxWithLossMasked] 
 
     x = np.linspace(-5, 5, 100) # 値の範囲を指定
 
