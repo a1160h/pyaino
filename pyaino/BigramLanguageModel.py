@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20260903 A.Inoue
+# 20260921 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -62,6 +62,56 @@ class ModelBase:
         if len(self.memory) > memory_size:
             self.memory = self.memory[-memory_size:]
         gen_data = seed.copy()
+
+        for i in range(max_tokens - len(seed)):
+            if self.unify:
+                max_index, _ = self.forward(self.memory[-block_size:].reshape(1,-1)) 
+                next_idx = max_index[:,-1] # 末尾を選ぶ
+            else:
+                logits = self.forward(self.memory[-block_size:].reshape(1,-1)) # バッチ軸追加して順伝播
+                # 次の単語の予測確率を得る
+                probs = self.softmax(logits[:, -1, :]) # (B, C)
+                # 上記確率にもとづいて次のidxをサンプリング
+                probs = probs.reshape(-1)
+                
+                # skip_idsの指すものを選択候補から除外
+                if skip_ids is not None: 
+                    probs[skip_ids] = 0
+                    probs /= probs.sum()
+
+                next_idx = cf.select_category(probs, stochastic, beta)
+            gen_data    = np.concatenate((gen_data,    next_idx)) 
+            self.memory = np.concatenate((self.memory, next_idx))
+            if end_id is not None and next_idx==end_id: # end_idが出現したら打切り　
+                break
+
+        return gen_data
+
+
+    def generate_bkup(self, seed, max_tokens=1000,
+                 stochastic=False, beta=2, skip_ids=None, end_id=None,
+                 memory_size=1000, flush=True):
+        """
+        入力されたidx列の末尾のblock_size長を入力してその次idxを得、
+        それを結合したidx列からまたその末尾を繰り返してそのまた次、
+        というようにして、入力されたidx列に続くidx列を生成する
+
+        """
+        block_size = self.block_size
+        if not isinstance(self.memory, np.ndarray):
+            self.memory = np.array(self.memory, dtype='int32')
+        if not isinstance(seed, np.ndarray):
+            seed = np.array(seed)
+        if flush:
+            self.memory = seed.copy()
+        else:    
+            self.memory = np.concatenate((self.memory, seed))
+        if len(self.memory) > memory_size:
+            self.memory = self.memory[-memory_size:]
+        gen_data = seed.copy()
+
+        skip_count = 0 ### 
+        
         for i in range(max_tokens - len(seed)):
             if self.unify:
                 max_index, _ = self.forward(self.memory[-block_size:].reshape(1,-1)) 
@@ -75,12 +125,22 @@ class ModelBase:
                 next_idx = cf.select_category(probs, stochastic, beta)
                 
             if skip_ids is not None and next_idx in skip_ids:
+
+                skip_count += 1 ###
+                
                 continue
             gen_data    = np.concatenate((gen_data,    next_idx)) 
             self.memory = np.concatenate((self.memory, next_idx))
             if end_id is not None and next_idx==end_id: # end_idが出現したら打切り　
                 break
+
+        print('generate loop =', i + 1, 'skip count =', skip_count) ###            
+            
         return gen_data
+   
+    
+
+    
    
     def get_sa_records(self, flatten=True):
         layer_records = []
