@@ -1,5 +1,5 @@
 # HDFunctions 
-# 20260917 A.Inoue
+# 20260922 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import HDArray, HDFunction
@@ -10,6 +10,8 @@ import copy
 """
 ここで定義される関数の一群は高階微分をサポートする
 このためには、逆伝播の際に行う演算も、HD関数で行ってグラフ生成する必要がある
+導関数が定数となる場合も、元の変数との微分経路を ones(x) / zeros(x) 等
+によって明示的に順伝播の引数からのグラフを保持する
 
 """
 
@@ -53,7 +55,7 @@ class Assign(HDFunction):
         x = self.x
         gx = gy * ones(x)     # gx=gy*dydx 
         return gx
-   
+
 def assign(x):
     return Assign()(x)
 
@@ -290,6 +292,7 @@ class Div(HDFunction):
 
     def __backward__(self, gy):
         x0, x1 = self.x0, self.x1
+        x1 = x1 + self.epsilon
         gx0 = sum_to(gy * ones(x0) / x1, np.shape(x0))
         gx1 = sum_to(- gy * x0 * x1 ** -2, np.shape(x1))
         return gx0, gx1
@@ -336,7 +339,7 @@ class SumTo(HDFunction):
         x = self.x
         gx = gy.reshape(self.gy_shape)          # 先ずは次元数を合わせる
         gx = broadcast_to(gx, np.shape(x))      # それから所望のbroadcast
-        return gx
+        return gx * ones(x)
 
 def sum_to(x, shape):
     return SumTo(shape)(x)
@@ -354,7 +357,7 @@ class BroadcastTo(HDFunction):
     def __backward__(self, gy):
         x = self.x
         gx = sum_to(gy, np.shape(x))
-        return gx
+        return gx * ones(x)
 
 def broadcast_to(x, shape):
     return BroadcastTo(shape)(x)
@@ -469,7 +472,7 @@ class SumMeanVar(HDFunction):
             self.last_x_shape = x_shape
         gy = gy.reshape(self.gy_shape)          # gyは次元を合わせる
         gy = broadcast_to(gy, x_shape)          # 畳まれた分をbroadcastして元に戻す
-        return gy
+        return gy * ones(x)
 
 class Sum(SumMeanVar):
     """ 和 """
@@ -629,15 +632,16 @@ class MaxMin(HDFunction):
 
     def __backward__(self, gy):
         """ 逆伝播は共通 """
-        #gy = gy if isinstance(gy, np.ndarray) else np.array(gy, dtype=Config.dtype) 
+        x = self.x
         gy = broadcast_to(gy, self.y_shape)   # 先ずはyの形状に合わせる
         gy = gy.reshape(self.z_shape)            # 次にxに次元を揃える(keepdimsの形状)
         gx = gy * self.cond                      # yに抽出されたところにgyを入れる
-        return gx
+        return gx * ones(x)
 
 class Max(MaxMin):
     """ 最大値を抽出 """
     def __forward__(self, x):
+        self.x = x
         y = np.max(x, axis=self.axis, keepdims=self.keepdims)
         self.condition(x, y, self.axis)
         return y
@@ -645,6 +649,7 @@ class Max(MaxMin):
 class Min(MaxMin):
     """ 最小値を抽出 """
     def __forward__(self, x):
+        self.x = x
         y = np.min(x, axis=self.axis, keepdims=self.keepdims)
         self.condition(x, y, self.axis)
         return y
@@ -669,7 +674,7 @@ class GetItem(HDFunction):
     def __backward__(self, gy):
         x = self.x
         f = GetItemGrad(self.slices, x.shape)
-        return f(gy)
+        return f(gy) * ones(x)
 
 class GetItemGrad(HDFunction):
     def __init__(self, slices, in_shape):
@@ -678,12 +683,14 @@ class GetItemGrad(HDFunction):
         self.in_shape = in_shape
 
     def __forward__(self, gy):
+        self.gy = gy
         gx = np.zeros(self.in_shape, dtype=gy.dtype)
         snp.add_at(gx, self.slices, gy) # gyをgxのslices位置に埋める
         return gx
 
     def __backward__(self, ggx):
-        return getitem(ggx, self.slices)
+        gy = self.gy
+        return getitem(ggx, self.slices) * ones(gy)
 
 def getitem(x, slices):
     return GetItem(slices)(x)
@@ -704,7 +711,7 @@ class Reshape(HDFunction):
     def __backward__(self, gy):
         x = self.x
         gx = reshape(gy, np.shape(x))
-        return gx
+        return gx * ones(x)
 
 def reshape(x, *shape):
     return Reshape(*shape)(x)
@@ -726,12 +733,14 @@ class Transpose(HDFunction):
         self.raxes = np.argsort(np.array(self.axes)).tolist() # cupy対応
         
     def __forward__(self, x):
+        self.x = x
         y = np.transpose(x, self.axes)
         return y
 
     def __backward__(self, gy):
+        x = self.x
         gx = transpose(gy, self.raxes)                
-        return gx
+        return gx * ones(x)
 
 def transpose(x, *axes):
     return Transpose(*axes)(x)
@@ -739,12 +748,14 @@ def transpose(x, *axes):
 class Transpose_s(HDFunction):
     """ nucleusと自身でVariable.Tに使う """
     def __forward__(self, x):
+        self.x = x
         y = np.transpose(x)
         return y
 
     def __backward__(self, gy):
+        x = self.x
         gx = transpose_s(gy)
-        return gx
+        return gx * ones(x)
 
 def transpose_s(x):
     return Transpose_s()(x)
@@ -771,45 +782,45 @@ class Dot(HDFunction):
         if x.ndim>1 and w.ndim>1:
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim>1 and w.ndim==1:
             w  = w.reshape(-1, 1)
             gy = gy.reshape(-1, 1)
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
             gw = gw.reshape(*w_shape)
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim>1 and w.ndim==0:
             gx = gy * w
             gw = dot(x.reshape(-1), gy.reshape(-1))
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim==1 and w.ndim>1:
             x  = x.reshape(1, -1)
             gy = gy.reshape(1, -1)
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
             gx = gx.reshape(*x_shape)
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim==1 and w.ndim==1:
             gx = dot(gy, w)
             gw = dot(x, gy)
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim==1 and w.ndim==0:
             gx = gy * w
             gw = dot(x, gy)
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim==0 and w.ndim>1:
             gx = dot(gy.reshape(-1), w.reshape(-1))
             gw = x * gy
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim==0 and w.ndim==1:
             gx = dot(gy, w)
             gw = x * gy
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         if x.ndim==0 and w.ndim==0:
             gx = gy * w
             gw = x * gy
-            return gx, gw
+            return gx * ones(self.x), gw * ones(self.w)
         raise Exception('Cant handle the case.')
 
 def dot(x, w):
@@ -829,7 +840,7 @@ class MatMul(HDFunction):
               else transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
         gx0 = matmul(gy, x1T)
         gx1 = matmul(x0T, gy)
-        return gx0, gx1
+        return gx0 * ones(x0), gx1 * ones(x1)
      
 def matmul(x0, x1):
     return MatMul()(x0, x1)
@@ -863,48 +874,48 @@ class DotLinear(HDFunction):
         if x.ndim>1 and w.ndim>1:
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim>1 and w.ndim==1:
             w  = w.reshape(-1, 1)
             gy = gy.reshape(-1, 1)
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
             gw = gw.reshape(*w_shape)
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim>1 and w.ndim==0:
             gx = gy * w
             gw = dot(x.reshape(-1), gy.reshape(-1))
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim==1 and w.ndim>1:
             x  = x.reshape(1, -1)
             gy = gy.reshape(1, -1)
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
             gx = gx.reshape(*x_shape)
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim==1 and w.ndim==1:
             if self.dot_dim < len(y_shape) and len(y_shape)==1 and y_shape[0]==1:
                 # forwardの際に+bでスカラがarrayになった場合
                 gy = gy[0]
             gx = dot(gy, w)
             gw = dot(x, gy)
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim==1 and w.ndim==0:
             gx = gy * w
             gw = dot(x, gy)
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim==0 and w.ndim>1:
             gx = dot(gy.reshape(-1), w.reshape(-1))
             gw = x * gy
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim==0 and w.ndim==1:
             gx = dot(gy, w)
             gw = x * gy
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         if x.ndim==0 and w.ndim==0:
             gx = gy * w
             gw = x * gy
-            return gx, gw, gb
+            return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
         raise Exception('Cant handle the case.')
         
 
@@ -937,7 +948,7 @@ class DotLinearz(HDFunction):
             gw = gw[0, 0]
         b_shape = np.shape(b)
         gb = gy if y_shape==b_shape else SumTo(b_shape)(gy)
-        return gx, gw, gb
+        return gx * ones(self.x), gw * ones(self.w), gb * ones(self.b)
 
 def dot_linear(x, w, b):
     return DotLinear()(x, w, b)
@@ -956,7 +967,7 @@ class HadamardLinear(HDFunction):
         gw = gy * x
         b_shape = np.shape(b)
         gb = gy if y_shape==b_shape else SumTo(b_shape)(gy)
-        return gx, gw, gb
+        return gx * ones(x), gw * ones(w), gb * ones(b)
 
 def hadamard_linear(x, w, b):
     return HadamardLinear()(x, w, b)
@@ -969,8 +980,8 @@ class Flatten(HDFunction):
 
     def __backward__(self, gy):
         x = self.x
-        return gy.reshape(np.shape(x))
-
+        gx = gy.reshape(np.shape(x))
+        return gx * ones(x)
 
 def normalize(x, axis=None, eps=1e-12):
     mu = mean(x, axis=axis, keepdims=True)
@@ -1039,32 +1050,6 @@ class L2Normalize(HDFunction):
         gx = gx0 + gx1
         return gx
 
-class Normalize_bkup(HDFunction):
-    """ 平均0標準偏差1にする標準化(正規化の一種) """
-    def __init__(self, axis=None):
-        self.axis = axis
-        
-    def forward(self, x):
-        self.x = x
-        mu =  np.mean(x, axis=self.axis, keepdims=True)
-        std = np.std(x, axis=self.axis, keepdims=True)
-        self.mu   = mu
-        self.std  = std
-        y = (x - mu) / (std + 1e-12)
-        self.y = y
-        return y
-    
-    def backward(self, gy=1):
-        istd = 1/self.std
-        iN = self.mu.size / self.x.size # muおよびstdを求める際に畳んだ大きさ
-        xc = self.x - self.mu
-        gy_sum = np.sum(gy * xc, axis=self.axis, keepdims=True)
-        gz = (gy - (self.y * gy_sum * istd * iN)) * istd
-        gz_sum = np.sum(gz, axis=self.axis, keepdims=True)
-        gx = gz - (gz_sum * iN)
-        return gx
-
-
 class Concatenate(HDFunction):
     """ 複数の入力を、既存の指定軸に沿って結合する """
     def __init__(self, axis=0):
@@ -1089,8 +1074,8 @@ class Concatenate(HDFunction):
             stop += x.shape[axis]
             sections.append(stop)
 
-        return tuple(split(gy, sections, axis=axis))
-
+        gxs = split(gy, sections, axis=axis)
+        return tuple(gx * ones(x) for gx, x in zip(gxs, self.xs))
 
 def concatenate(xs, axis=0):
     return Concatenate(axis)(*xs)
@@ -1104,10 +1089,12 @@ class Split(HDFunction):
         self.axis = axis
 
     def __forward__(self, x):
+        self.x = x
         return snp.split(x, self.indices_or_sections, axis=self.axis)
 
     def __backward__(self, *gys):
-        return concatenate(gys, axis=self.axis)
+        x = self.x
+        return concatenate(gys, axis=self.axis) * ones(x)
 
 
 def split(x, indices_or_sections, axis=0):
@@ -1121,10 +1108,12 @@ class Stack(HDFunction):
         self.axis = axis
 
     def __forward__(self, *xs):
+        self.xs = tuple(xs)
         return snp.stack(xs, axis=self.axis)
 
     def __backward__(self, gy):
-        return tuple(unstack(gy, axis=self.axis))
+        gxs = unstack(gy, axis=self.axis)
+        return tuple(gx * ones(x) for gx, x in zip(gxs, self.xs))
 
 
 def stack(xs, axis=0):
@@ -1138,10 +1127,12 @@ class Unstack(HDFunction):
         self.axis = axis
 
     def __forward__(self, x):
+        self.x = x
         return tuple(snp.moveaxis(x, self.axis, 0))
 
     def __backward__(self, *gys):
-        return stack(gys, axis=self.axis)
+        x = self.x
+        return stack(gys, axis=self.axis) * ones(x)
 
 
 def unstack(x, axis=0):
@@ -1198,7 +1189,7 @@ class TakeAlongAxisPrimitive(HDFunction):
         if axis < 0:
             axis += x.ndim
         gx = ScatterAddAlongAxisPrimitive(self.indices, x.shape, axis=axis)(gy)
-        return gx
+        return gx * ones(x)
 
 class ScatterAddAlongAxisPrimitive(HDFunction):
     """
@@ -1248,7 +1239,7 @@ class ScatterAddAlongAxisPrimitive(HDFunction):
         x = self.x
         indices = snp.broadcast_to(self.indices, x.shape)
         gx = TakeAlongAxisPrimitive(indices, axis=self.axis)(gy)
-        return gx
+        return gx * ones(x)
 
 
 class TakeAlongAxis:
@@ -1531,7 +1522,7 @@ class OverloadContents:
         HDArray.original_getitem = HDArray.__getitem__
         HDArray.original_equal = HDArray.__eq__
         HDArray.original_gt    = HDArray.__gt__
-        HDArray.original_ge    = HDArray.__gt__
+        HDArray.original_ge    = HDArray.__ge__
         HDArray.original_lt    = HDArray.__lt__
         HDArray.original_le    = HDArray.__le__
 
@@ -1571,11 +1562,11 @@ class OverloadContents:
     def recover(self):
         HDArray.__neg__  = HDArray.original_neg 
         HDArray.__add__  = HDArray.original_add 
-        HDArray.__radd__ = HDArray.original_add
+        HDArray.__radd__ = HDArray.original_radd
         HDArray.__sub__  = HDArray.original_sub
         HDArray.__rsub__ = HDArray.original_rsub
         HDArray.__mul__  = HDArray.original_mul
-        HDArray.__rmul__ = HDArray.original_mul 
+        HDArray.__rmul__ = HDArray.original_rmul 
         HDArray.__truediv__  = HDArray.original_div
         HDArray.__rtruediv__ = HDArray.original_rdiv
         HDArray.__pow__  = HDArray.original_pow
