@@ -1,5 +1,5 @@
 # HDFunctions 
-# 20260922 A.Inoue
+# 20260923 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import HDArray, HDFunction
@@ -779,22 +779,22 @@ class Dot(HDFunction):
         x, w = self.x, self.w
         x_shape = np.shape(x)
         w_shape = np.shape(w)
-        if x.ndim>1 and w.ndim>1:
+        if x.ndim==2 and w.ndim==2:
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
             return gx * ones(self.x), gw * ones(self.w)
-        if x.ndim>1 and w.ndim==1:
+        if x.ndim==2 and w.ndim==1:
             w  = w.reshape(-1, 1)
             gy = gy.reshape(-1, 1)
             gx = dot(gy, w.transpose())
             gw = dot(x.transpose(), gy)
             gw = gw.reshape(*w_shape)
             return gx * ones(self.x), gw * ones(self.w)
-        if x.ndim>1 and w.ndim==0:
+        if x.ndim==2 and w.ndim==0:
             gx = gy * w
             gw = dot(x.reshape(-1), gy.reshape(-1))
             return gx * ones(self.x), gw * ones(self.w)
-        if x.ndim==1 and w.ndim>1:
+        if x.ndim==1 and w.ndim==2:
             x  = x.reshape(1, -1)
             gy = gy.reshape(1, -1)
             gx = dot(gy, w.transpose())
@@ -809,7 +809,7 @@ class Dot(HDFunction):
             gx = gy * w
             gw = dot(x, gy)
             return gx * ones(self.x), gw * ones(self.w)
-        if x.ndim==0 and w.ndim>1:
+        if x.ndim==0 and w.ndim==2:
             gx = dot(gy.reshape(-1), w.reshape(-1))
             gw = x * gy
             return gx * ones(self.x), gw * ones(self.w)
@@ -821,11 +821,16 @@ class Dot(HDFunction):
             gx = gy * w
             gw = x * gy
             return gx * ones(self.x), gw * ones(self.w)
-        raise Exception('Cant handle the case.')
+
+        raise ValueError(
+            f'Unsupported dimensions for Dot backward: '
+            f'x.shape={x.shape}, w.shape={w.shape}'
+        )
 
 def dot(x, w):
     return Dot()(x, w)
 
+           
 class MatMul(HDFunction):
     def __forward__(self, x0, x1):
         self.x0, self.x1 = x0, x1
@@ -834,13 +839,69 @@ class MatMul(HDFunction):
 
     def __backward__(self, gy):
         x0, x1 = self.x0, self.x1
-        x0T = transpose_s(x0) if x0.ndim <= 2 \
-              else transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
-        x1T = transpose_s(x1) if x1.ndim <= 2 \
-              else transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
-        gx0 = matmul(gy, x1T)
-        gx1 = matmul(x0T, gy)
-        return gx0 * ones(x0), gx1 * ones(x1)
+
+        # matrix @ matrix
+        if x0.ndim > 1 and x1.ndim > 1:
+            x0T = transpose_s(x0) if x0.ndim <= 2 \
+                  else transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
+            x1T = transpose_s(x1) if x1.ndim <= 2 \
+                  else transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
+
+            gx0 = matmul(gy, x1T)
+            gx1 = matmul(x0T, gy)
+
+            gx0 = sum_to(gx0, np.shape(x0)) * ones(x0)
+            gx1 = sum_to(gx1, np.shape(x1)) * ones(x1)
+            return gx0, gx1
+
+        # vector @ vector
+        if x0.ndim == 1 and x1.ndim == 1:
+            gx0 = gy * x1
+            gx1 = gy * x0
+            return gx0 * ones(x0), gx1 * ones(x1)
+
+        # vector @ matrix
+        if x0.ndim == 1 and x1.ndim > 1:
+            x0r = x0.reshape(1, -1)
+
+            x1T = transpose_s(x1) if x1.ndim <= 2 \
+                  else transpose(x1, (*range(x1.ndim)[:-2], -1, -2))
+
+            # (..., M) -> (..., 1, M)
+            gy_r = gy.reshape(*gy.shape[:-1], 1, gy.shape[-1])
+
+            gx0 = matmul(gy_r, x1T)       # (..., 1, K)
+            gx0 = gx0.reshape(*gx0.shape[:-2], gx0.shape[-1])
+
+            gx1 = matmul(x0r.transpose(), gy_r)  # (..., K, M)
+
+            gx0 = sum_to(gx0, np.shape(x0)) * ones(x0)
+            gx1 = sum_to(gx1, np.shape(x1)) * ones(x1)
+            return gx0, gx1
+
+        # matrix @ vector
+        if x0.ndim > 1 and x1.ndim == 1:
+            x0T = transpose_s(x0) if x0.ndim <= 2 \
+                  else transpose(x0, (*range(x0.ndim)[:-2], -1, -2))
+
+            x1r = x1.reshape(1, -1)
+
+            # (..., N) -> (..., N, 1)
+            gy_r = gy.reshape(*gy.shape, 1)
+
+            gx0 = matmul(gy_r, x1r)       # (..., N, K)
+
+            gx1 = matmul(x0T, gy_r)       # (..., K, 1)
+            gx1 = gx1.reshape(*gx1.shape[:-1])
+
+            gx0 = sum_to(gx0, np.shape(x0)) * ones(x0)
+            gx1 = sum_to(gx1, np.shape(x1)) * ones(x1)
+            return gx0, gx1
+
+        raise ValueError(
+            f'Unsupported dimensions for MatMul backward: '
+            f'x0.shape={x0.shape}, x1.shape={x1.shape}'
+        )
      
 def matmul(x0, x1):
     return MatMul()(x0, x1)
