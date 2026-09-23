@@ -1,5 +1,5 @@
 # common_function
-# 20260823 A.Inoue 
+# 20260923 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -755,7 +755,7 @@ def c2n_dictionary(parameters):
             if isinstance(x, np.ndarray): # 現npに合致=numpy配列　
                 pass
             elif x is not None:           # 現npとは違うcupy配列
-                x = np.array(x.tolist(), dtype=Config.dtype)
+                x = x.get()
         return x        
     for k, p in parameters.items():
         parameters[k] = conv(p)
@@ -769,20 +769,41 @@ def n2c_dictionary(parameters):
             if isinstance(x, np.ndarray): # 現npに合致=cupy配列
                 pass
             elif x is not None:           # 現npとは違う=numpy配列
-                x = np.array(x, dtype=Config.dtype)
+                x = np.array(x)
         else:                   # numpy環境
-            pass # numpy環境では何もしない
+            pass                          # numpy環境では何もしない
         return x        
     for k, p in parameters.items():
         parameters[k] = conv(p)
     return parameters    
 
+def astype_dictionary(parameters, dtype=None):
+    """ 辞書に登録された浮動小数点配列を指定dtypeに変換する """
+
+    dtype = Config.dtype if dtype is None else dtype
+
+    if np.dtype(dtype).kind != 'f': # 浮動小数点型以外が指定された
+        raise TypeError(f'must be floating point, but {dtype} was given.')
+
+    for k, p in parameters.items():
+        if p is None:
+            continue
+        if not hasattr(p, 'dtype'):
+            raise TypeError(f'{k} has no dtype: {type(p)}')
+        if p.dtype.kind != 'f':
+            raise TypeError(f'{k} must be floating point, but dtype={p.dtype}')
+
+        parameters[k] = p.astype(dtype)
+
+    return parameters
+
 
 # -- 学習結果の保存(辞書形式) --
-def save_parameters(file_name, model, numpy=True, verbose=False):
+def save_parameters(file_name, model, numpy=True, dtype=None, verbose=False):
     params = export_parameters(model)
     if numpy:
         params = c2n_dictionary(params)
+    params = astype_dictionary(params, dtype=dtype)
     if verbose:
         print(f'file = {file_name}')
         print(f'model = {model.__class__.__name__}')
@@ -794,7 +815,7 @@ def save_parameters(file_name, model, numpy=True, verbose=False):
     print(model.__class__.__name__, 'モデルのパラメータをファイルに記録しました=>', file_name)    
 
 # -- 学習結果の継承(辞書形式) --
-def load_parameters(file_name, model, verbose=False):
+def load_parameters(file_name, model, dtype=None, verbose=False):
     with open(file_name, 'rb') as f:
         params = pickle.load(f)
     print('load_parameters called on np =', np.__name__)    
@@ -802,6 +823,7 @@ def load_parameters(file_name, model, verbose=False):
         params = n2c_dictionary(params)
     if np.__name__=='numpy':
         params = c2n_dictionary(params)
+    params = astype_dictionary(params, dtype=dtype)    
     if verbose:
         print(f'file = {file_name}')
         print(f'model = {model.__class__.__name__}')
