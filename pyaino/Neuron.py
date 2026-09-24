@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260921 A.Inoue
+# 20260925 A.Inoue
 
 import copy
 import warnings
@@ -3407,6 +3407,7 @@ class PositionalEncoding:
     def forward(self, positions, **kwargs): # kwargsは使わない
         return self.__call__(positions)
 
+
 class PositionalEmbedding2: # 逆伝播が書けない
     """ 入力の値に対する埋め込みと、その位置インデクスに対する埋め込みを合せて出力する """
     def __init__(self, vocab_size=10000, block_size=500, dimension=64, **kwargs):
@@ -3589,6 +3590,115 @@ class Unpatchfy(Function):
     def update(self, eta=0.001, **kwargs):
         self.linear.update(eta=eta, **kwargs)
 
+
+class RoPE(Function):
+    """
+    Rotary Positional Embedding
+
+    q, k shape:
+        (..., sequence_length, head_dim)
+
+    head_dim must be even.
+    RoPE has no trainable parameters and keeps no forward input.
+    """
+
+    def __init__(self, base=10000.0):
+        super().__init__()
+        self.base = base
+
+
+    def _make_cos_sin(self, x):
+        seq_len = x.shape[-2]
+        dim = x.shape[-1]
+
+        if dim % 2 != 0:
+            raise ValueError(
+                f"RoPE requires even head_dim, but got {dim}"
+            )
+
+        # 各2次元ペアに対する回転周波数
+        i = np.arange(dim // 2, dtype=x.dtype)
+        inv_freq = self.base ** (-2.0 * i / dim)
+
+        # position = 0, 1, 2, ...
+        position = np.arange(seq_len, dtype=x.dtype)
+
+        theta = position[:, None] * inv_freq[None, :]
+
+        cos = np.cos(theta)
+        sin = np.sin(theta)
+
+        # (..., sequence_length, head_dim/2) に broadcast
+        shape = (1,) * (x.ndim - 2) + (seq_len, dim // 2)
+
+        cos = cos.reshape(shape)
+        sin = sin.reshape(shape)
+
+        return cos, sin
+
+
+    def _rotate(self, x, cos, sin):
+        x0 = x[..., 0::2]
+        x1 = x[..., 1::2]
+
+        y = np.empty_like(x)
+
+        y[..., 0::2] = x0 * cos - x1 * sin
+        y[..., 1::2] = x0 * sin + x1 * cos
+
+        return y
+
+
+    def _rotate_backward(self, gy, cos, sin):
+        """
+        forward:
+            y = R x
+
+        backward:
+            gx = R^T gy = R(-theta) gy
+        """
+        gy0 = gy[..., 0::2]
+        gy1 = gy[..., 1::2]
+
+        gx = np.empty_like(gy)
+
+        gx[..., 0::2] =  gy0 * cos + gy1 * sin
+        gx[..., 1::2] = -gy0 * sin + gy1 * cos
+
+        return gx
+
+
+    def __forward__(self, q, k):
+        if q.shape != k.shape:
+            raise ValueError(
+                f"RoPE requires q and k to have the same shape: "
+                f"q={q.shape}, k={k.shape}"
+            )
+
+        cos, sin = self._make_cos_sin(q)
+
+        q = self._rotate(q, cos, sin)
+        k = self._rotate(k, cos, sin)
+
+        return q, k
+
+
+    def __backward__(self, grad_q, grad_k):
+        if grad_q.shape != grad_k.shape:
+            raise ValueError(
+                f"RoPE requires grad_q and grad_k to have the same shape: "
+                f"grad_q={grad_q.shape}, grad_k={grad_k.shape}"
+            )
+
+        cos, sin = self._make_cos_sin(grad_q)
+
+        grad_q = self._rotate_backward(grad_q, cos, sin)
+        grad_k = self._rotate_backward(grad_k, cos, sin)
+
+        return grad_q, grad_k
+
+
+
 #### Attention機構 #################################################
 # v:入力 value、k:入力 key、q:入力 query、y:出力、a:attention_weight
 # query に一致する key を探して、その key に対応する value を出力する
@@ -3714,7 +3824,8 @@ class AttentionUnit(Function):
         super().__init__()
         print('Initialize', self.__class__.__name__, 'head =', head, kwargs)
         self.head = head
-        causality   = kwargs.pop('causality',  False)     # 時系列の前後関係 
+        causality   = kwargs.pop('causality',  False) # 時系列の前後関係 
+        rope        = kwargs.pop('rope',       False) # Rotary Positional Embedding
         self.scale  = kwargs.pop('scale',       True)
         temperature = kwargs.pop('temperature',  1.0)  
         regularizer = kwargs.pop('regularizer', None)
@@ -3725,6 +3836,7 @@ class AttentionUnit(Function):
             self.regularizer = copy.deepcopy(regularizer) # インスタンス分離のために必須
 
         self.causality = causality
+        self.rope = RoPE() if rope else None
         self.softmax = Activators.Softmax(temperature=temperature)
         self.DO = Dropout()
         self.iter = 0
@@ -3741,6 +3853,10 @@ class AttentionUnit(Function):
         q = q.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
         k = k.reshape(B,Tk,h,H).transpose(0,2,1,3) # (B,Tk,C)->(B,h,Tk,H)
         v = v.reshape(B,Tv,h,H).transpose(0,2,1,3) # (B,Tv,C)->(B,h,Tv,H)
+
+        if self.rope is not None:
+            q, k = self.rope(q, k)  
+        
         a = np.matmul(q, k.transpose(0,1,3,2))     # (B,h,Tq,H)@(B,h,H,Tk)->(B,h,Tq,Tk)
         if self.scale:
             a *= np.array(H ** -0.5, dtype=a.dtype)
@@ -3812,7 +3928,10 @@ class AttentionUnit(Function):
 
         gq = np.matmul(ga, k)                      # (B,h,Tq,Tk)@(B,h,Tk,H)->(B,h,Tq,H)
         gk = np.matmul(ga.transpose(0,1,3,2), q)   # (B,h,Tk,Tq)@(B,h,Tq,H)->(B,h,Tk,H)
-        #gk = np.matmul(q.transpose(0,1,3,2), ga)  # <-これはNG 20250525AI
+
+        if self.rope is not None:
+            gq, gk = self.rope.backward(gq, gk)  
+
         gq = gq.transpose(0,2,1,3).reshape(B,Tq,C) # (B,h,Tq,H)->(B,Tq,C)
         gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)
         gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
@@ -3860,6 +3979,9 @@ class QueryChunkAttentionUnit(AttentionUnit):
         q = q.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
         k = k.reshape(B,Tk,h,H).transpose(0,2,1,3) # (B,Tk,C)->(B,h,Tk,H)
         v = v.reshape(B,Tv,h,H).transpose(0,2,1,3) # (B,Tv,C)->(B,h,Tv,H)
+
+        if self.rope is not None:
+            q, k = self.rope(q, k)        
 
         kt = k.transpose(0,1,3,2)
         chunk_size = Tq if self.chunk_size is None else self.chunk_size
@@ -4009,6 +4131,9 @@ class QueryChunkAttentionUnit(AttentionUnit):
 
             gq[:, :, i:j, :] = np.matmul(ga_chunk, k)
             gk += np.matmul(ga_chunk.transpose(0,1,3,2), q[:, :, i:j, :])
+
+        if self.rope is not None:
+            gq, gk = self.rope.backward(gq, gk)
 
         gq = gq.transpose(0,2,1,3).reshape(B,Tq,C) # (B,h,Tq,H)->(B,Tq,C)
         gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)

@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20260921 A.Inoue
+# 20260925 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -15,22 +15,34 @@ import matplotlib.pyplot as plt
 class ModelBase:
     """ 共通ベース """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, unify=False,
-                 expansion=4, rms=False, optimize='AdamT', w_decay=0.001, ignore=-1, **kwargs):
+                 expansion=4, rms=False, optimize='AdamT', w_decay=0.001, ignore=-1,
+                 positional_embedding=True, rope=False, **kwargs):
 
         kwargs['optimize']  = optimize
         #kwargs['decayrate'] = decayrate
         kwargs['w_decay']   = w_decay
         chunk_size = kwargs.pop('chunk_size', None) # Attention用
-        self.embed = Neuron.PositionalEmbedding(
-            vocab_size, block_size, emb_dim, **kwargs)
+
+
+        # -- Embedding -------------------------------------------------
+        if positional_embedding:
+            self.embed = Neuron.PositionalEmbedding(
+                vocab_size, block_size, emb_dim, **kwargs)
+        else:
+            self.embed = Neuron.Embedding(
+                vocab_size, emb_dim, **kwargs)
+        
+        # -- Transformer blocks ----------------------------------------
         self.blocks = Neuron.Sequential(
             *[sbh.TransformerBlock(
-                emb_dim, n_head, 'tri', False, expansion, rms, chunk_size=chunk_size, **kwargs)
+                emb_dim, n_head, 'tri', False, expansion, rms,
+                chunk_size=chunk_size, rope=rope, **kwargs)
               for _ in range(n_layer)]
             )
         matmul = True                   
         tile_size = 1000 if vocab_size > 1000 else None 
-        self.lm_head = sbh.LmHead(emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)
+        self.lm_head = sbh.LmHead(
+            emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)
 
         if not unify: # 以下2項は明示的に見せる必要がある
             self.softmax = Activators.Softmax()
@@ -378,12 +390,14 @@ if __name__=='__main__':
 
     # -- 各層の初期化 --
     model = BigramLanguageModel2(vocab_size, block_size, emb_dim, n_layer, n_head,
-                                #unify=True,
-                                rms=True,
-                                optimize='AdamT',
-                                regularizer='AttentionRegularizer()',
-                                w_decay=0.01,
-                                )
+                                 #unify=True,
+                                 rms=True,
+                                 optimize='AdamT',
+                                 regularizer='AttentionRegularizer()',
+                                 positional_embedding=False,
+                                 rope=True,
+                                 w_decay=0.01,
+                                 )
     cf.get_obj_info(model)
 
     error_record = []
