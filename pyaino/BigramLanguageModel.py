@@ -23,7 +23,6 @@ class ModelBase:
         kwargs['w_decay']   = w_decay
         chunk_size = kwargs.pop('chunk_size', None) # Attention用
 
-
         # -- Embedding -------------------------------------------------
         if positional_embedding:
             self.embed = Neuron.PositionalEmbedding(
@@ -39,6 +38,8 @@ class ModelBase:
                 chunk_size=chunk_size, rope=rope, **kwargs)
               for _ in range(n_layer)]
             )
+
+        # -- Lm Head ---------------------------------------------------
         matmul = True                   
         tile_size = 1000 if vocab_size > 1000 else None 
         self.lm_head = sbh.LmHead(
@@ -48,7 +49,8 @@ class ModelBase:
             self.softmax = Activators.Softmax()
             self.loss_function = self.lm_head.loss_function
         self.unify = unify
-
+        
+        # -- others ---------------------------------------------------
         self.block_size = block_size
         self.vocab_size = vocab_size
         self.memory = []
@@ -149,11 +151,7 @@ class ModelBase:
         print('generate loop =', i + 1, 'skip count =', skip_count) ###            
             
         return gen_data
-   
-    
-
-    
-   
+  
     def get_sa_records(self, flatten=True):
         layer_records = []
         for bl in self.blocks.layers:
