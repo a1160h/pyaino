@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260925 A.Inoue
+# 20260930 A.Inoue
 
 import copy
 import warnings
@@ -3590,8 +3590,108 @@ class Unpatchfy(Function):
     def update(self, eta=0.001, **kwargs):
         self.linear.update(eta=eta, **kwargs)
 
+class RotaryTransform(Function):
+    def __init__(self, cos, sin):
+        super().__init__()
+        self.cos = cos
+        self.sin = sin
+        
+    def __forward__(self, x):
+        cos = self.cos
+        sin = self.sin
+        x0 = x[..., 0::2]
+        x1 = x[..., 1::2]
+        y = np.empty_like(x, dtype=Config.dtype)
+        y[..., 0::2] = x0 * cos - x1 * sin
+        y[..., 1::2] = x0 * sin + x1 * cos
+        return y
+
+    def __backward__(self, gy):
+        cos = self.cos
+        sin = self.sin
+        gy0 = gy[..., 0::2]
+        gy1 = gy[..., 1::2]
+        gx = np.empty_like(gy, dtype=Config.dtype)
+        gx[..., 0::2] =  gy0 * cos + gy1 * sin
+        gx[..., 1::2] = -gy0 * sin + gy1 * cos
+        return gx
+
 
 class RoPE(Function):
+    """
+    Rotary Positional Embedding
+
+    q, k shape:
+        (..., sequence_length, head_dim)
+
+    head_dim must be even.
+    RoPE has no trainable parameters and keeps no forward input.
+    """
+
+    def __init__(self, base=10000.0):
+        super().__init__()
+        self.base = base
+        self.inv_freq = None # 周期
+        self.cos_sin = None
+
+
+    def get_cos_sin(self, x):
+        T = x.shape[-2]
+        H = x.shape[-1]
+
+        if self.inv_freq is None:
+            if H % 2 != 0:
+                raise ValueError(
+                    f"RoPE requires even head_dim, but got {H}"
+                )
+
+            i = np.arange(H // 2, dtype=x.dtype)
+            self.inv_freq = self.base ** (-2.0 * i / H)
+
+        if self.cos_sin is None or len(self.cos_sin) < T:
+            position = np.arange(T, dtype=x.dtype)
+            theta = position[:, None] * self.inv_freq[None, :]
+            self.cos_sin = np.stack(
+                (np.cos(theta), np.sin(theta)), axis=-1
+            )
+
+        cos = self.cos_sin[:T, :, 0]
+        sin = self.cos_sin[:T, :, 1]
+
+        shape = (1,) * (x.ndim - 2) + (T, H // 2)
+
+        cos = cos.reshape(shape)
+        sin = sin.reshape(shape)
+
+        return cos, sin
+
+    def __forward__(self, q, k):
+        if q.shape != k.shape:
+            raise ValueError(
+                f"RoPE requires q and k to have the same shape: "
+                f"q={q.shape}, k={k.shape}"
+            )
+        cos, sin = self.get_cos_sin(q)
+        self.rotateq = RotaryTransform(cos, sin)
+        self.rotatek = RotaryTransform(cos, sin)
+        q = self.rotateq(q)
+        k = self.rotatek(k)
+        return q, k
+
+
+    def __backward__(self, grad_q, grad_k):
+        if grad_q.shape != grad_k.shape:
+            raise ValueError(
+                f"RoPE requires grad_q and grad_k to have the same shape: "
+                f"grad_q={grad_q.shape}, grad_k={grad_k.shape}"
+            )
+        grad_q = self.rotateq.backward(grad_q)
+        grad_k = self.rotatek.backward(grad_k)
+        return grad_q, grad_k
+
+
+
+class RoPE_bkup(Function):
     """
     Rotary Positional Embedding
 
