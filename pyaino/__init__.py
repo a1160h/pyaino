@@ -53,6 +53,7 @@ CURRENT_MODULES = (
     'stems_blocks_heads',
     'BigramLanguageModel',
     'BigramLanguageModel2',
+    'RnnLanguageModel',
     'Diffuser',
     'GAN',
     'VAE',
