@@ -1,5 +1,5 @@
 # common_function
-# 20260923 A.Inoue 
+# 20261004 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -2779,16 +2779,17 @@ def arrange_mini_batch_old2(data, batch_size=100, time_size=35, CPT=None, step=N
           .format(iters, batch_size, time_size))
     return xs, ts, iters
 
-def arrange_mini_batch_old(x, t, batch_size=100, time_size=35):
+def arrange_recurrent_batch(x, t, batch_size=100, time_size=35):
     data_size = len(x)
-    iters = data_size // (batch_size * time_size)  # 展開数(整数)
-    available_length = batch_size*time_size*iters  # 有効な長さ
-    xs = x[0 : available_length]                   # 端数切捨て
-    ts = t[0 : available_length]                   # 端数切捨て　
-    xs = xs.reshape(batch_size, iters, time_size).transpose(1, 0, 2) 
-    ts = ts.reshape(batch_size, iters, time_size).transpose(1, 0, 2)
-    print('展開数{:5d}, バッチサイズ{:5d}, 時系列長{:3d}に整形しました' \
-          .format(iters, batch_size, time_size))
+    iters = data_size // (batch_size * time_size)
+    if iters == 0:
+        raise ValueError('データ長に対して batch_size × time_size が大きすぎます')
+    available_length = batch_size * time_size * iters
+    xs = x[:available_length]
+    ts = t[:available_length]
+    xs = xs.reshape(batch_size, iters, time_size).transpose(1, 0, 2).copy()
+    ts = ts.reshape(batch_size, iters, time_size).transpose(1, 0, 2).copy()
+    print(f'展開数{iters:5d} バッチサイズ{batch_size:5d} 時系列長{time_size:3d}に整形しました')
     return xs, ts, iters
 
 # -- 文章などの一続きの学習データを入力データと正解データとして切り出す ------------ 
