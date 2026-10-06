@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20260930 A.Inoue
+# 20261006 A.Inoue
 
 import copy
 import warnings
@@ -3666,29 +3666,18 @@ class RoPE(Function):
         return cos, sin
 
     def __forward__(self, q, k):
-        if q.shape != k.shape:
-            raise ValueError(
-                f"RoPE requires q and k to have the same shape: "
-                f"q={q.shape}, k={k.shape}"
-            )
-        cos, sin = self.get_cos_sin(q)
-        self.rotateq = RotaryTransform(cos, sin)
-        self.rotatek = RotaryTransform(cos, sin)
+        cos_q, sin_q = self.get_cos_sin(q)
+        cos_k, sin_k = self.get_cos_sin(k)
+        self.rotateq = RotaryTransform(cos_q, sin_q)
+        self.rotatek = RotaryTransform(cos_k, sin_k)
         q = self.rotateq(q)
         k = self.rotatek(k)
         return q, k
 
-
     def __backward__(self, grad_q, grad_k):
-        if grad_q.shape != grad_k.shape:
-            raise ValueError(
-                f"RoPE requires grad_q and grad_k to have the same shape: "
-                f"grad_q={grad_q.shape}, grad_k={grad_k.shape}"
-            )
         grad_q = self.rotateq.backward(grad_q)
         grad_k = self.rotatek.backward(grad_k)
         return grad_q, grad_k
-
 
 
 class RoPE_bkup(Function):
@@ -3923,7 +3912,17 @@ class AttentionUnit(Function):
     def __init__(self, head=1, **kwargs): 
         super().__init__()
         print('Initialize', self.__class__.__name__, 'head =', head, kwargs)
-        self.head = head
+
+        if isinstance(head, int):
+            self.head = head, head, head
+        elif isinstance(head, (tuple, list)) and len(head) == 2:
+            self.head = head[0], head[1], head[1] 
+        elif isinstance(head, (tuple, list)) and len(head) == 3:
+            self.head = head[0], head[1], head[2] 
+        else:
+            raise ValueError(
+                "head must be int or (q_head, kv_head) or (q_head, k_head, v_head)")
+
         causality   = kwargs.pop('causality',  False) # 時系列の前後関係 
         rope        = kwargs.pop('rope',       False) # Rotary Positional Embedding
         self.scale  = kwargs.pop('scale',       True)
@@ -3945,21 +3944,39 @@ class AttentionUnit(Function):
         self.mask = None # 無効トークンのマスク
        
     def __forward__(self, q, k, v, *, mask=None, dropout=0.0):
-        B,Tq,C = q.shape
-        B,Tk,C = k.shape
-        B,Tv,C = v.shape
-        h = self.head
-        H = C // h
-        q = q.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
-        k = k.reshape(B,Tk,h,H).transpose(0,2,1,3) # (B,Tk,C)->(B,h,Tk,H)
-        v = v.reshape(B,Tv,h,H).transpose(0,2,1,3) # (B,Tv,C)->(B,h,Tv,H)
+        self.q = q                                   # query
+        self.k = k                                   # key
+        self.v = v                                   # value
+        B,Tq,Cq = q.shape
+        B,Tk,Ck = k.shape
+        B,Tv,Cv = v.shape
+        hq, hk, hv = self.head
+        Hq = Cq // hq
+        Hk = Ck // hk
+        Hv = Cv // hv
+        q = q.reshape(B,Tq,hq,Hq).transpose(0,2,1,3) # (B,Tq,Cq)->(B,hq,Tq,Hq)
+        k = k.reshape(B,Tk,hk,Hk).transpose(0,2,1,3) # (B,Tk,Ck)->(B,hk,Tk,Hk)
+        v = v.reshape(B,Tv,hv,Hv).transpose(0,2,1,3) # (B,Tv,Cv)->(B,hv,Tv,Hv)
 
         if self.rope is not None:
             q, k = self.rope(q, k)  
         
-        a = np.matmul(q, k.transpose(0,1,3,2))     # (B,h,Tq,H)@(B,h,H,Tk)->(B,h,Tq,Tk)
+        if Hq != Hk:
+            raise ValueError(f"q and k head_dim must be equal: Hq={Hq}, Hk={Hk}")
+
+        if hq % hk != 0:
+            raise ValueError(
+                f"q_head must be divisible by k_head: q_head={hq}, k_head={hk}")
+        if hq % hv != 0:
+            raise ValueError(
+                f"q_head must be divisible by v_head: q_head={hq}, v_head={hv}")
+
+        a = np.matmul(
+            q.reshape(B,hk,hq//hk,Tq,Hq), k.transpose(0,1,3,2)[:,:,None,:,:])
+        a = a.reshape(B,hq,Tq,Tk)   # (B,hk,hq//hk,Tq,Tk)->(B,hq,Tq,Tk)
+
         if self.scale:
-            a *= np.array(H ** -0.5, dtype=a.dtype)
+            a *= np.array(Hk ** -0.5, dtype=a.dtype) # Hk==Hq
 
         if self.causality: # 時間の前後関係の保証
             if self.tril is not None and self.tril.shape[-2:]==(Tq,Tk):
@@ -3988,35 +4005,49 @@ class AttentionUnit(Function):
         self.iter += 1 
 
         a = self.DO.forward(a, dropout=dropout)
-        y = np.matmul(a, v)            # (B,h,Tq,Tk)@(B,h,Tv,H)->(B,h,Tq,H), Tv=Tk
-        y = y.transpose(0,2,1,3).reshape(B,Tq,C)     # (B,h,Tq,H)->(B,Tq,C)
-        self.q = q                                   # query
-        self.k = k                                   # key
-        self.v = v                                   # value
+
+        y = np.matmul(a.reshape(B,hv,hq//hv,Tq,Tk) , v[:,:,None,:,:])
+        y = y.reshape(B,hq,Tq,Hv)    # (B,hv,hq//hv,Tq,Hv) -> (B,hq,Tq,Hv)
+
+        y = y.transpose(0,2,1,3).reshape(B,Tq,hq*Hv) # (B,hq,Tq,Hv)->(B,Tq,hq*Hv)
         self.a = a                                   # attention_weight
-        self.y = y
-        return y                                     # (B,Tq,C)
+        #self.y = y                                   # (B,Tq,hq*Hv)
+        return y                                     
 
     def __backward__(self, gy):
         q = self.q
         k = self.k
         v = self.v
         a = self.a
-        B, h, Tq, H = q.shape
-        B, h, Tk, H = k.shape
-        B, h, Tv, H = v.shape
-        C = h * H
-        gy = gy.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
-        ga = np.matmul(gy, v.transpose(0,1,3,2))
-                                            # (B,h,Tq,H)@(B,h,H,Tv)->(B,h,Tq,Tv) Tv=Tk
-        gv = np.matmul(a.transpose(0,1,3,2), gy)
-                                            # (B,h,Tk,Tq)@(B,h,Tq,H)->(B,h,Tk,H) tk=Tv
+        B,Tq,Cq = q.shape
+        B,Tk,Ck = k.shape
+        B,Tv,Cv = v.shape
+        hq, hk, hv = self.head
+        Hq = Cq // hq
+        Hk = Ck // hk
+        Hv = Cv // hv
+        q = q.reshape(B,Tq,hq,Hq).transpose(0,2,1,3) # (B,Tq,Cq)->(B,hq,Tq,Hq)
+        k = k.reshape(B,Tk,hk,Hk).transpose(0,2,1,3) # (B,Tk,Ck)->(B,hk,Tk,Hk)
+        v = v.reshape(B,Tv,hv,Hv).transpose(0,2,1,3) # (B,Tv,Cv)->(B,hv,Tv,Hv)
 
+        if self.rope is not None:
+            q, k = self.rope(q, k)  
+
+        gy = gy.reshape(B,Tq,hq,Hv).transpose(0,2,1,3) # (B,Tq,hq*Hv)->(B,hq,Tq,Hv)
+
+        ga = np.matmul(
+            gy.reshape(B,hv,hq//hv,Tq,Hv), v.transpose(0,1,3,2)[:,:,None,:,:])             
+        ga = ga.reshape(B,hq,Tq,Tk)   # (B,hv,hq//hv,Tq,Tk) -> (B,hq,Tq,Tk)
+        
+        gv = np.matmul(
+            a.reshape(B,hv,hq//hv,Tq,Tk).transpose(0,1,2,4,3), gy.reshape(B,hv,hq//hv,Tq,Hv))
+        gv = np.sum(gv, axis=2)       # goup方向(hq//hv)を加算
+ 
         ga = self.DO.backward(ga)
 
         if self.regularizer is not None:          
             ga2 = self.regularizer.backward()
-            ga += ga2                                # 勾配加算率はregularizer側に設定
+            ga += ga2                 # 勾配加算率はregularizer側に設定
         
         ga = self.softmax.backward(ga)
         if self.mask is not None:
@@ -4024,17 +4055,21 @@ class AttentionUnit(Function):
         if self.causality:    
             ga *= self.tril
         if self.scale:
-            ga *= np.array(H ** -0.5, dtype=ga.dtype)
+            ga *= np.array(Hk ** -0.5, dtype=ga.dtype)
 
-        gq = np.matmul(ga, k)                      # (B,h,Tq,Tk)@(B,h,Tk,H)->(B,h,Tq,H)
-        gk = np.matmul(ga.transpose(0,1,3,2), q)   # (B,h,Tk,Tq)@(B,h,Tq,H)->(B,h,Tk,H)
+        gq = np.matmul(ga.reshape(B,hk,hq//hk,Tq,Tk), k[:,:,None,:,:])
+        gq = gq.reshape(B,hq,Tq,Hq)   # (B,hk,hq//hk,Tq,Hq) -> (B,hq,Tq,Hq)
+
+        gk = np.matmul(
+            ga.reshape(B,hk,hq//hk,Tq,Tk).transpose(0,1,2,4,3), q.reshape(B,hk,hq//hk,Tq,Hq))
+        gk = np.sum(gk, axis=2)       # goup方向(hq//hk)を加算  
 
         if self.rope is not None:
             gq, gk = self.rope.backward(gq, gk)  
 
-        gq = gq.transpose(0,2,1,3).reshape(B,Tq,C) # (B,h,Tq,H)->(B,Tq,C)
-        gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)
-        gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
+        gq = gq.transpose(0,2,1,3).reshape(B,Tq,Cq) # (B,hq,Tq,Hq)->(B,Tq,Cq)
+        gk = gk.transpose(0,2,1,3).reshape(B,Tk,Ck) # (B,hk,Tk,Hk)->(B,Tk,Ck)
+        gv = gv.transpose(0,2,1,3).reshape(B,Tv,Cv) # (B,hv,Tv,Hv)->(B,Tv,Cv)
         return gq, gk, gv
 
 
@@ -4071,32 +4106,49 @@ class QueryChunkAttentionUnit(AttentionUnit):
         self.DO = StatelessDropout()
        
     def __forward__(self, q, k, v, *, mask=None, dropout=0.0):
-        B,Tq,C = q.shape
-        B,Tk,C = k.shape
-        B,Tv,C = v.shape
-        h = self.head
-        H = C // h
-        q = q.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
-        k = k.reshape(B,Tk,h,H).transpose(0,2,1,3) # (B,Tk,C)->(B,h,Tk,H)
-        v = v.reshape(B,Tv,h,H).transpose(0,2,1,3) # (B,Tv,C)->(B,h,Tv,H)
+        self.q = q                                   # query
+        self.k = k                                   # key
+        self.v = v                                   # value
+        B,Tq,Cq = q.shape
+        B,Tk,Ck = k.shape
+        B,Tv,Cv = v.shape
+        hq, hk, hv = self.head
+        Hq = Cq // hq
+        Hk = Ck // hk
+        Hv = Cv // hv
+        q = q.reshape(B,Tq,hq,Hq).transpose(0,2,1,3) # (B,Tq,Cq)->(B,hq,Tq,Hq)
+        k = k.reshape(B,Tk,hk,Hk).transpose(0,2,1,3) # (B,Tk,Ck)->(B,hk,Tk,Hk)
+        v = v.reshape(B,Tv,hv,Hv).transpose(0,2,1,3) # (B,Tv,Cv)->(B,hv,Tv,Hv)
 
         if self.rope is not None:
-            q, k = self.rope(q, k)        
+            q, k = self.rope(q, k)  
 
-        kt = k.transpose(0,1,3,2)
+        if Hq != Hk:
+            raise ValueError(f"q and k head_dim must be equal: Hq={Hq}, Hk={Hk}")
+
+        if hq % hk != 0:
+            raise ValueError(
+                f"q_head must be divisible by k_head: q_head={hq}, k_head={hk}")
+        if hq % hv != 0:
+            raise ValueError(
+                f"q_head must be divisible by v_head: q_head={hq}, v_head={hv}")
+
+        q = q.reshape(B,hk,hq//hk,Tq,Hq)
+        kt = k.transpose(0,1,3,2)[:,:,None,:,:]
+
         chunk_size = Tq if self.chunk_size is None else self.chunk_size
-        invrootH = np.array(H ** -0.5, dtype=Config.dtype)
+        invrootH = np.array(Hk ** -0.5, dtype=Config.dtype)
 
         if self.causality:
             if Tq != Tk:
                 raise Exception(
                     f"causality cannot be applied" + self.__class__.__name__)
-            self.tril = np.empty((1, 1, Tq, Tk), dtype=Config.dtype)
+            self.tril = np.empty((1,1,Tq,Tk), dtype=Config.dtype)
     
         if mask is None:   # 無効トークンの処理
             self.mask = None
         elif mask.shape == (B, Tk):
-            self.mask = mask.astype(q.dtype)[:, None, None, :] # (B,1,1,Tk)
+            self.mask = mask.astype(q.dtype)[:,None,None,:] # (B,1,1,Tk)
         else:
             raise ValueError(
                 f"Mask shape {mask.shape} must be ({B}, {Tk})"
@@ -4104,26 +4156,27 @@ class QueryChunkAttentionUnit(AttentionUnit):
 
         dropout_mx = 1
         if dropout > 0:
-            dropout_mx = np.random.rand(B,h,Tq,Tk) > dropout
+            dropout_mx = np.random.rand(B,hq,Tq,Tk) > dropout
         self.dropout = dropout
         self.dropout_mx = dropout_mx
 
         if self.regularizer is not None:
-            a_soft = np.empty((B, h, Tq, Tk), dtype=q.dtype)
+            a_soft = np.empty((B,hq,Tq,Tk), dtype=Config.dtype)
         else:
             a_soft = None
 
-        y = np.empty((B, h, Tq, H), dtype=v.dtype)
+        y = np.empty((B,hq,Tq,Hv), dtype=Config.dtype)
         for i in range(0, Tq, chunk_size):
             j = min(i + chunk_size, Tq)
-            a_chunk = np.matmul(q[:, :, i:j, :], kt)
+            a_chunk = np.matmul(q[:,:,:,i:j,:], kt)
+            a_chunk = a_chunk.reshape(B,hq,j-i,Tk)
 
             if self.scale:
                 a_chunk *= invrootH
 
             if self.causality:
                 tril_chunk = np.tri(j-i, Tk, k=i, dtype=Config.dtype)[None, None, :, :]
-                self.tril[:, :, i:j, :] = tril_chunk
+                self.tril[:,:,i:j,:] = tril_chunk
                 a_chunk += (tril_chunk - 1.0) * Config.inf
                 
             if self.mask is not None:
@@ -4132,45 +4185,56 @@ class QueryChunkAttentionUnit(AttentionUnit):
             a_soft_chunk = self.softmax(a_chunk)
 
             if self.regularizer is not None:
-                a_soft[:, :, i:j, :] = a_soft_chunk
+                a_soft[:,:,i:j,:] = a_soft_chunk
 
             if dropout > 0:
-                dropout_mx_chunk = dropout_mx[:, :, i:j, :]
+                dropout_mx_chunk = dropout_mx[:,:,i:j,:]
             else:
                 dropout_mx_chunk = 1
                 
             a_drop_chunk = self.DO.forward(
                 a_soft_chunk, dropout_mx_chunk, dropout=dropout)
 
-            y_chunk = np.matmul(a_drop_chunk, v)
+            y_chunk = np.matmul(a_drop_chunk.reshape(B,hv,hq//hv,j-i,Tk), v[:,:,None,:,:])
+            y_chunk = y_chunk.reshape(B,hq,j-i,Hv)
 
-            y[:, :, i:j, :] = y_chunk
+            y[:,:,i:j,:] = y_chunk
 
         if self.regularizer is not None:
             self.loss = self.regularizer.forward(a_soft)
 
         self.iter += 1
-        y = y.transpose(0,2,1,3).reshape(B,Tq,C)     # (B,h,Tq,H)->(B,Tq,C)
-        self.q = q                                   # query
-        self.k = k                                   # key
-        self.v = v                                   # value
-        self.y = y
-        return y                                     # (B,Tq,C)
+        y = y.transpose(0,2,1,3).reshape(B,Tq,hq*Hv)  # (B,hq,Tq,Hv)->(B,Tq,hq*Hv)
+        #self.y = y
+        return y                                      # (B,Tq,hq*Hv)
 
     def __backward__(self, gy):
-        dropout = self.dropout
-        dropout_mx = self.dropout_mx
         q = self.q
         k = self.k
         v = self.v
-        kt = k.transpose(0,1,3,2)
-        B, h, Tq, H = q.shape
-        B, h, Tk, H = k.shape
-        B, h, Tv, H = v.shape
-        C = h * H
-        gy = gy.reshape(B,Tq,h,H).transpose(0,2,1,3) # (B,Tq,C)->(B,h,Tq,H)
+        #a = self.a
+        B,Tq,Cq = q.shape
+        B,Tk,Ck = k.shape
+        B,Tv,Cv = v.shape
+        hq, hk, hv = self.head
+        Hq = Cq // hq
+        Hk = Ck // hk
+        Hv = Cv // hv
+        q = q.reshape(B,Tq,hq,Hq).transpose(0,2,1,3) # (B,Tq,Cq)->(B,hq,Tq,Hq)
+        k = k.reshape(B,Tk,hk,Hk).transpose(0,2,1,3) # (B,Tk,Ck)->(B,hk,Tk,Hk)
+        v = v.reshape(B,Tv,hv,Hv).transpose(0,2,1,3) # (B,Tv,Cv)->(B,hv,Tv,Hv)
 
-        invrootH = np.array(H ** -0.5, dtype=Config.dtype)
+        if self.rope is not None:
+            q, k = self.rope(q, k)  
+
+        kt = k.transpose(0,1,3,2)[:,:,None,:,:]
+
+        dropout = self.dropout
+        dropout_mx = self.dropout_mx
+
+        gy = gy.reshape(B,Tq,hq,Hv).transpose(0,2,1,3) # (B,Tq,hq*Hv)->(B,hq,Tq,Hv)
+
+        invrootH = np.array(Hk ** -0.5, dtype=Config.dtype)
         chunk_size = Tq if self.chunk_size is None else self.chunk_size
 
         gq = np.empty_like(q)
@@ -4186,14 +4250,15 @@ class QueryChunkAttentionUnit(AttentionUnit):
         for i in range(0, Tq, chunk_size):
             j = min(i + chunk_size, Tq)
             # -- 順伝播再計算 --
-            a_chunk = np.matmul(q[:, :, i:j, :], kt)
+            a_chunk = np.matmul(q.reshape(B,hk,hq//hk,Tq,Hq)[:,:,:,i:j,:], kt)
+            a_chunk = a_chunk.reshape(B,hq,j-i,Tk)
 
             if self.scale:
                 a_chunk *= invrootH
 
             if self.causality:
-                tril_chunk = np.tri(j-i, Tk, k=i, dtype=Config.dtype)[None, None, :, :]
-                self.tril[:, :, i:j, :] = tril_chunk
+                tril_chunk = np.tri(j-i, Tk, k=i, dtype=Config.dtype)[None,None,:,:]
+                self.tril[:,:,i:j,:] = tril_chunk
                 a_chunk += (tril_chunk - 1.0) * Config.inf
                 
             if self.mask is not None:
@@ -4202,22 +4267,28 @@ class QueryChunkAttentionUnit(AttentionUnit):
             a_soft_chunk = self.softmax(a_chunk)
 
             if dropout > 0:
-                dropout_mx_chunk = dropout_mx[:, :, i:j, :]
+                dropout_mx_chunk = dropout_mx[:,:,i:j,:]
             else:
                 dropout_mx_chunk = 1
 
             a_drop_chunk = self.DO.forward(a_soft_chunk, dropout_mx_chunk, dropout=dropout)
 
             # -- 以下、逆伝播の計算 --
-            gy_chunk = gy[:, :, i:j, :]
-            ga_chunk = np.matmul(gy_chunk, v.transpose(0,1,3,2))
+            gy_chunk = gy[:,:,i:j,:]
+            ga_chunk = np.matmul(
+                gy_chunk.reshape(B,hv,hq//hv,j-i,Hv), v.transpose(0,1,3,2)[:,:,None,:,:])
+            ga_chunk = ga_chunk.reshape(B,hq,j-i,Tk)
 
-            gv += np.matmul(a_drop_chunk.transpose(0,1,3,2), gy_chunk)
+            gv_chunk = np.matmul(
+                a_drop_chunk.reshape(B,hv,hq//hv,j-i,Tk).transpose(0,1,2,4,3),
+                gy_chunk.reshape(B,hv,hq//hv,j-i,Hv))
+                                 
+            gv += np.sum(gv_chunk, axis=2)
 
             ga_chunk = self.DO.backward(ga_chunk, dropout_mx_chunk, dropout=dropout)
 
             if ga2 is not None:
-                ga_chunk += ga2[:, :, i:j, :]
+                ga_chunk += ga2[:,:,i:j,:]
 
             ga_chunk = self.softmax.backward(ga_chunk, a_soft_chunk)
 
@@ -4229,15 +4300,19 @@ class QueryChunkAttentionUnit(AttentionUnit):
             if self.scale:
                 ga_chunk *= invrootH
 
-            gq[:, :, i:j, :] = np.matmul(ga_chunk, k)
-            gk += np.matmul(ga_chunk.transpose(0,1,3,2), q[:, :, i:j, :])
+            gq_chunk = np.matmul(ga_chunk.reshape(B,hk,hq//hk,j-i,Tk), k[:,:,None,:,:])
+            gq[:,:,i:j,:] = gq_chunk.reshape(B,hq,j-i,Hq)
+            
+            gk_chunk = np.matmul(ga_chunk.reshape(B,hk,hq//hk,j-i,Tk).transpose(0,1,2,4,3),
+                                 q.reshape(B,hk,hq//hk,Tq,Hq)[:,:,:,i:j,:])
+            gk += np.sum(gk_chunk, axis=2) 
 
         if self.rope is not None:
             gq, gk = self.rope.backward(gq, gk)
 
-        gq = gq.transpose(0,2,1,3).reshape(B,Tq,C) # (B,h,Tq,H)->(B,Tq,C)
-        gk = gk.transpose(0,2,1,3).reshape(B,Tk,C) # (B,h,Tk,H)->(B,Tk,C)
-        gv = gv.transpose(0,2,1,3).reshape(B,Tv,C) # (B,h,Tv,H)->(B,Tv,C)
+        gq = gq.transpose(0,2,1,3).reshape(B,Tq,Cq) # (B,hq,Tq,Hq)->(B,Tq,Cq)
+        gk = gk.transpose(0,2,1,3).reshape(B,Tk,Ck) # (B,hk,Tk,Hk)->(B,Tk,Ck)
+        gv = gv.transpose(0,2,1,3).reshape(B,Tv,Cv) # (B,hv,Tv,Hv)->(B,Tv,Cv)
         return gq, gk, gv
 
 #### 時系列データをまとめて処理する Attention層 ############################
@@ -4267,18 +4342,32 @@ class SimpleAttentionLayer(Function):
         grad_x = grad_k + grad_v          # keyとvalueに同じものを与えたことに対応
         return grad_x, grad_q
 
+
 class SelfAttention(Function):
     """ multiple heads of self_attention in parallel """
     def __init__(self, emb_dim=None, head_dim=None, n_head=1,
                  #scale=True, temperature=1.0, entropy_decay=True,
                  **kwargs):
         super().__init__()
-        if emb_dim is not None and head_dim is None:
-            head_dim = emb_dim // n_head
+
+        if isinstance(n_head, int):
+            n_head = n_head, n_head, n_head
+        elif isinstance(n_head, (tuple, list)) and len(n_head) == 2:
+            n_head = n_head[0], n_head[1], n_head[1] 
+        else:
+            raise ValueError("n_head must be int or (q_head, kv_head)")
+        hq, hk, hv = n_head
+        if hq % hk != 0:
+            raise ValueError(
+                f"q_head must be divisible by kv_head: q_head={hq}, kv_head={hk}")
+
+        # head_dimはfix_configurationでq_headを基準に確定する
         self.config = emb_dim, head_dim, n_head
         print('Initialize', self.__class__.__name__, self.config, kwargs)
-        optimize = kwargs.pop('optimize',   'Adam') 
+
+        optimize = kwargs.pop('optimize',   'Adam')
         chunk_size = kwargs.pop('chunk_size', None)
+
         # linear_iとlinear_oのconfigはfix_configurationで設定
         self.linear_i = LinearLayer(matmul=True, bias=False,
                                     #scale=True,
@@ -4289,39 +4378,66 @@ class SelfAttention(Function):
         causality = kwargs.pop('causality', False)
 
         if chunk_size is None:
-            self.attention = AttentionUnit(head=n_head, causality=causality, **kwargs)
+            self.attention = AttentionUnit(
+                head=n_head, causality=causality, **kwargs)
         else:
             self.attention = QueryChunkAttentionUnit(
-                head=n_head, causality=causality, chunk_size=chunk_size, **kwargs)
-                     #scale=scale, temperature=temperature, entropy_decay=entropy_decay)
+                head=n_head, causality=causality,
+                chunk_size=chunk_size, **kwargs)
+                     #scale=scale, temperature=temperature,
+                     #entropy_decay=entropy_decay)
+
         self.linear_o = LinearLayer(matmul=True, bias=True,
-                                    #scale=True, 
+                                    #scale=True,
                                     optimize=optimize,
                                     #spctrnorm=1,
                                     **kwargs)
+
         self.DO = Dropout()
         self.step = 0
-        
+
+
     def fix_configuration(self, shape):
         emb_dim, head_dim, n_head = self.config
+        hq, hk, hv = n_head
+
         if emb_dim is None:
             emb_dim = shape[-1]
-        elif emb_dim != shape[-1]: # 予め与えられたemb_dimがデータと合わない
-            raise Exception('Data shape mismatch with configuration.',
-                                                      self.__class__.__name__)
+        elif emb_dim != shape[-1]:
+            raise Exception(
+                'Data shape mismatch with configuration.',
+                self.__class__.__name__
+            )
+
         if head_dim is None:
-            head_dim = emb_dim // n_head
-        self.config = emb_dim, head_dim, n_head    
-        self.linear_i.config = emb_dim, emb_dim*3 
+            if emb_dim % hq != 0:
+                raise ValueError(
+                    f"emb_dim must be divisible by q_head: "
+                    f"emb_dim={emb_dim}, q_head={hq}"
+                )
+            head_dim = emb_dim // hq
+
+        elif hq * head_dim != emb_dim:
+            raise ValueError(
+                f"head_dim mismatch: "
+                f"emb_dim={emb_dim}, q_head={hq}, head_dim={head_dim}"
+            )
+
+        self.config = emb_dim, head_dim, n_head
+        self.linear_i.config = emb_dim, (hq + hk + hv) * head_dim
         self.linear_o.config = emb_dim, emb_dim
-        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
+
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config,
+              'qkv =', tuple(h * head_dim for h in n_head))
 
     def __forward__(self, x, *, mask=None, dropout=0.0):
         if None in (*self.config, *self.linear_i.config, *self.linear_o.config):
-            #print(self.__class__.__name__, 'input.shape', x.shape)
             self.fix_configuration(x.shape)
+        emb_dim, head_dim, n_head = self.config
+        hq, hk, hv = n_head
         z = self.linear_i.forward(x)
-        query, key, value = np.split(z, 3, axis=-1)
+        # zをhq*head_dimと(hq+hk)*head_dimの2か所で切って3分割する
+        query, key, value = np.split(z, [hq*head_dim, (hq+hk)*head_dim], axis=-1) 
         y = self.attention.forward(query, key, value, mask=mask, dropout=dropout)
         y = self.linear_o.forward(y)
         y = self.DO.forward(y, dropout=dropout)
@@ -4329,7 +4445,7 @@ class SelfAttention(Function):
         return y
 
     def __backward__(self, gy):
-        gx = self.DO.backward(gy)    
+        gx = self.DO.backward(gy)
         gx = self.linear_o.backward(gx)
         gq, gk, gv = self.attention.backward(gx)
         gz = np.concatenate([gq, gk, gv], axis=-1)
@@ -4339,9 +4455,10 @@ class SelfAttention(Function):
     def update(self, eta=0.001, **kwargs):
         self.linear_i.update(eta=eta, **kwargs)
         self.linear_o.update(eta=eta, **kwargs)
-        
+
     def entropy(self):
         return self.attention.entropy
+
 
 class MultiHeadSelfAttention(SelfAttention):
     """ multiple heads of self_attention in parallel """
