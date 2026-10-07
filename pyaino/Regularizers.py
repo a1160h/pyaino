@@ -1,5 +1,5 @@
 # Regularizers
-# 20260911 A.Inoue
+# 20261007 A.Inoue
 from pyaino.Config import *
 from pyaino.nucleus import Function
 from pyaino import common_function as cf
@@ -544,6 +544,9 @@ class AttentionRegularizer(Function):
             self._record_result(setting)
 
         if all(setting['regularize'] is None for setting in self.settings):
+            for setting in self.settings:
+                if setting['round_robin']:
+                    setting['divergence'].index = setting['record_rr_index']
             return 0
 
         ga = 0
@@ -558,6 +561,8 @@ class AttentionRegularizer(Function):
                 eta = eta * scheduler(self.iter)
 
             if regularize is None or eta == 0:
+                if setting['round_robin']:
+                    divergence.index = setting['record_rr_index']
                 continue
 
             gy = regularize.backward(gl)

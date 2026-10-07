@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20260911 A.Inoue
+# 20261006 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -9,7 +9,7 @@ from pyaino import Activators as A
 from pyaino import LossFunctions as lf
 from pyaino import common_function as cf
 
-class FeedForward: 
+class FeedForward_bkup: 
     """ a simple linear layer followed bu a non-linearity """
 
     def __init__(self, emb_dim=64, expansion=4, activate='Mish', **kwargs):
@@ -34,17 +34,134 @@ class FeedForward:
     def update(self, **kwargs):
         self.net.update(**kwargs)
 
+class FeedForward(nucleus.Function): 
+    """ 遅延初期化対応 FFN (a simple linear layer followed by a non-linearity) """
+    def __init__(self, emb_dim=None, intermediate=None, expansion=4,
+                 activate='Mish', **kwargs):
+        super().__init__()
+        self.config = emb_dim, intermediate, int(expansion)
+        self.linear_i = nn.LinearLayer(matmul=True, **kwargs)
+        self.linear_o = nn.LinearLayer(matmul=True, **kwargs)
+        if emb_dim is not None and intermediate is not None:
+            self.linear_i.config = emb_dim, intermediate
+            self.linear_o.config = intermediate, emb_dim
+        self.act = cf.eval_in_module(activate, A)
+        self.DO = nn.Dropout()
+
+    def fix_configuration(self, shape):
+        emb_dim, intermediate, expansion = self.config
+        if emb_dim is None:
+            emb_dim = shape[-1]
+        elif emb_dim != shape[-1]:
+            raise Exception(
+                'Data shape mismatch with configuration.', self.__class__.__name__)
+        if intermediate is None:
+            intermediate = emb_dim * expansion
+        self.config = emb_dim, intermediate, expansion
+        self.linear_i.config = emb_dim, intermediate
+        self.linear_o.config = intermediate, emb_dim
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
+
+    def __forward__(self, x, *, dropout=0.0):
+        if None in self.config:
+            self.fix_configuration(x.shape)
+        y = self.linear_i.forward(x)
+        y = self.act.forward(y)
+        y = self.linear_o.forward(y)
+        y = self.DO.forward(y, dropout=dropout)
+        return y
+        
+    def __backward__(self, gy):
+        gx = self.DO.backward(gy)
+        gx = self.linear_o.backward(gx)
+        gx = self.act.backward(gx)
+        gx = self.linear_i.backward(gx)
+        return gx
+
+    def update(self, **kwargs):
+        self.linear_i.update(**kwargs)
+        self.linear_o.update(**kwargs)
+
+class SwiGLU(nucleus.Function):
+    """
+    ゲート付き FFN(Llama/QwenのMLP) y = down(SiLU(gate(x)) * up(x))
+    
+    遅延初期化対応
+    """
+
+    def __init__(self, emb_dim=None, intermediate=None, expansion=4, **kwargs):
+        super().__init__()
+        self.config = emb_dim, intermediate, int(expansion)
+        kwargs.setdefault('optimize', 'AdamT')
+        print('Initialize', self.__class__.__name__, self.config, kwargs)
+        self.linear_g = nn.LinearLayer(matmul=True, bias=False, **kwargs)
+        self.linear_i = nn.LinearLayer(matmul=True, bias=False, **kwargs)
+        self.linear_o = nn.LinearLayer(matmul=True, bias=False, **kwargs)
+        if emb_dim is not None and intermediate is not None:
+            self.linear_g.config = emb_dim, intermediate
+            self.linear_i.config = emb_dim, intermediate
+            self.linear_o.config = intermediate, emb_dim
+        self.act = A.Swish()
+        self.DO = nn.Dropout()
+
+    def fix_configuration(self, shape):
+        emb_dim, intermediate, expansion = self.config
+        if emb_dim is None:
+            emb_dim = shape[-1]
+        elif emb_dim != shape[-1]:
+            raise Exception('Data shape mismatch with configuration.',
+                            self.__class__.__name__)
+        if intermediate is None:
+            intermediate = emb_dim * expansion
+        self.config = emb_dim, intermediate, expansion
+        self.linear_g.config = emb_dim, intermediate
+        self.linear_i.config = emb_dim, intermediate
+        self.linear_o.config = intermediate, emb_dim
+        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
+
+    def __forward__(self, x, *, dropout=0.0, **kwargs):
+        if None in self.config or None in self.linear_g.config:
+            self.fix_configuration(x.shape)
+        gate = self.act.forward(self.linear_g.forward(x))
+        up = self.linear_i.forward(x)
+        self.gate = gate
+        self.up = up
+        y = self.linear_o.forward(gate * up)
+        y = self.DO.forward(y, dropout=dropout)
+        return y
+
+    def __backward__(self, gy):
+        gy = self.DO.backward(gy)
+        gprod = self.linear_o.backward(gy)
+        ggate = gprod * self.up
+        gup = gprod * self.gate
+        gx = self.linear_i.backward(gup)
+        ggate = self.act.backward(ggate)
+        gx = gx + self.linear_g.backward(ggate)
+        return gx
+
+    def update(self, **kwargs):
+        self.linear_g.update(**kwargs)
+        self.linear_i.update(**kwargs)
+        self.linear_o.update(**kwargs)
+
+
 class TransformerBlock(nucleus.Function):
     """ Transformer block: communication followed by computation """
 
-    def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False,
-                 expansion=4, rms=False, activate='Mish',
+    def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False, swiglu=False,
+                 intermediate=None, expansion=4, rms=False, activate='Mish',
                  chunk_size=None, **kwargs):
         super().__init__()
         self.sa = nn.MultiHeadSelfAttention(
             emb_dim, emb_dim//n_head, n_head, causality=causality, chunk_size=chunk_size,
             **kwargs) # entropy制御はkwargsで指定
-        self.ffwd = FeedForward(emb_dim, expansion, activate=activate, **kwargs)
+
+        if swiglu:
+            self.ffwd = SwiGLU(emb_dim, intermediate, expansion, activate=activate, **kwargs)
+        else:   
+            self.ffwd = FeedForward(emb_dim, intermediate, expansion, activate=activate, **kwargs)
+
         Norm = nn.RMSNormalization if rms else nn.LayerNormalization
         self.ln1 = Norm(**kwargs)
         self.ln2 = Norm(**kwargs)
@@ -582,4 +699,7 @@ class TransformerBlock_bkup: # 使わなくなった20260616AI
         self.ffwd.update(**kwargs)
         self.ln1.update(**kwargs)
         self.ln2.update(**kwargs)
+
+
+
 

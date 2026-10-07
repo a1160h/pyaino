@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20260925 A.Inoue
+# 20261007 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -15,7 +15,8 @@ import matplotlib.pyplot as plt
 class ModelBase:
     """ 共通ベース """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, unify=False,
-                 expansion=4, rms=False, optimize='AdamT', w_decay=0.001, ignore=-1,
+                 swiglu=False, intermediate=None, expansion=4,
+                 rms=False, optimize='AdamT', w_decay=0.001, ignore=-1,
                  positional_embedding=True, rope=False, **kwargs):
 
         kwargs['optimize']  = optimize
@@ -34,8 +35,8 @@ class ModelBase:
         # -- Transformer blocks ----------------------------------------
         self.blocks = Neuron.Sequential(
             *[sbh.TransformerBlock(
-                emb_dim, n_head, 'tri', False, expansion, rms,
-                chunk_size=chunk_size, rope=rope, **kwargs)
+                emb_dim, n_head, 'tri', False, swiglu, intermediate, expansion,
+                rms, chunk_size=chunk_size, rope=rope, **kwargs)
               for _ in range(n_layer)]
             )
 
