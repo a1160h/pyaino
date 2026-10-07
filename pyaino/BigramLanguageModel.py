@@ -214,20 +214,20 @@ class BigramLanguageModel(ModelBase):
 class BigramLanguageModel2(ModelBase):
     """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 expansion=4, **kwargs):
+                 intermediate=None, expansion=4, **kwargs):
 
         rms      = kwargs.pop('rms',        False)
         optimize = kwargs.pop('optimize', 'AdamT')
         w_decay  = kwargs.pop('w_decay',     0.01)
 
         super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                         expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+                         intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
         
         if rms:
             self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
         else:    
             self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
-        self.pffwd = sbh.FeedForward(emb_dim, expansion, optimize=optimize, w_decay=w_decay, **kwargs)
+        self.pffwd = sbh.FeedForward(emb_dim, intermediate, expansion, optimize=optimize, w_decay=w_decay, **kwargs)
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
@@ -256,14 +256,14 @@ class BigramLanguageModel2(ModelBase):
 class BigramLanguageModel3(BigramLanguageModel2):
     """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 expansion=4, **kwargs):
+                 intermediate=None, expansion=4, **kwargs):
 
         rms      = kwargs.pop('rms',        False)
         optimize = kwargs.pop('optimize', 'AdamT')
         w_decay  = kwargs.pop('w_decay',     0.01)
 
         ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                           expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+                           intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
         
         if rms:
             self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
@@ -275,14 +275,14 @@ class BigramLanguageModel3(BigramLanguageModel2):
 class BigramLanguageModel4(BigramLanguageModel2):
     """ GPT4：Embedding と最初の Block の間に 簡易LN + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 expansion=4, **kwargs):
+                 intermediate=None, expansion=4, **kwargs):
 
         rms      = kwargs.pop('rms',        False)
         optimize = kwargs.pop('optimize', 'AdamT')
         w_decay  = kwargs.pop('w_decay',     0.01)
 
         ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                           expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+                           intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
         
         self.ln_pf = Neuron.Normalization(axis=-1)
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
@@ -291,14 +291,14 @@ class BigramLanguageModel4(BigramLanguageModel2):
 class BigramLanguageModel5(ModelBase):
     """ GPT5：Embedding と最初の Block の間に単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 expansion=4, **kwargs):
+                 intermediate=None, expansion=4, **kwargs):
 
         rms      = kwargs.pop('rms',        False)
         optimize = kwargs.pop('optimize', 'AdamT')
         w_decay  = kwargs.pop('w_decay',     0.01)
 
         super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                         expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+                         intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
         
         self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
                                         matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
