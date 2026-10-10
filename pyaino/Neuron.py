@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20261006 A.Inoue
+# 20261010 A.Inoue
 
 import copy
 import warnings
@@ -614,7 +614,9 @@ class BaseLayer(Function):
     def resolve_categories(cls, namespace):
         """ 文字列 → クラスオブジェクトに変換 """
         for typeid, names in cls.category_names.items():
-            cls.categories[typeid] = tuple(namespace[name] for name in names)
+            cls.categories[typeid] = tuple(
+                namespace[name] for name in names if name in namespace
+                )
 
     def __init__(self, **kwargs):
         super().__init__()
@@ -650,8 +652,19 @@ class BaseLayer(Function):
         self.prephase   = PrePhase(self,  activate=activate_pre,  **kwargs) 
         self.postphase  = PostPhase(self, activate=activate_post, **kwargs)
 
+        # サブクラス側で確定したself.configによる
+        if self.typeid == 0:
+            shape = self.config[:1]
+        elif self.typeid == 1:
+            shape = self.config[:2]
+        elif self.typeid == 2:
+            shape = self.config[:3]
+        else:
+            raise ValueError(f'Bad typeid {self.typeid}')
+        # この層が内部で扱うxの形状を指定した場合にその情報を保持
+        self.canonical_x_shape = (-1,) + shape if None not in shape else None
+
         self.original_x_shape  = None # この層が受け取るxの元の形状
-        self.canonical_x_shape = None # この層が内部で扱う正準なxの形状
         self.canonical_y_shape = None # この層で処理したままのyの内部的な形状
         self.final_y_shape     = None # この層が外部に出す最終的なyの形状
         self.did_reshape_x = None
@@ -680,23 +693,12 @@ class BaseLayer(Function):
         if None in self.config:
             self.fix_configuration(x.shape)
 
-        if self.canonical_x_shape is None:
-            if self.typeid == 0:  
-                c_shape = (-1,) + self.config[0:1] # (m,n)の(m,)
-            elif self.typeid == 1:
-                c_shape = (-1,) + self.config[0:2] # (C,Iw, ...)の(C,Iw)
-            elif self.typeid == 2:
-                c_shape = (-1,) + self.config[0:3] # (C,Ih,Iw,...)の(C,Ih,Iw) 
-            else:
-                raise ValueError(f'Bad typeid {self.typeid}')
-            self.canonical_x_shape = c_shape
-
-        self.did_reshape_x = False
-        self.feature_axis_preserved = None # 元の最後の軸がそのまま特徴次元か？
-
-        if x.shape[1:] == self.canonical_x_shape[1:]:
+        if self.canonical_x_shape is None \
+           or x.shape[1:] == self.canonical_x_shape[1:]:
+            self.did_reshape_x = False
             self.feature_axis_preserved = True
             return x
+
         self.did_reshape_x = True
         self.feature_axis_preserved = (x.shape[-1]==self.config[0]) # True/False
         return x.reshape(*self.canonical_x_shape)   # (-1,m)
@@ -964,8 +966,7 @@ class Conv1dLayer(BaseLayer):
         if len(configuration) == 1:
             M, = configuration
         self.config = C, Iw, M, Fw, stride, pad, Ow
-        self.vec2col = None
-        self.col2vec = None
+        self.vc = None
         super().__init__(**kwargs)
         
     def fix_configuration(self, shape):
@@ -978,9 +979,7 @@ class Conv1dLayer(BaseLayer):
            
         Ow = (Iw - Fw + 2*pad) // stride + 1   # 出力幅
         self.config = C, Iw, M, Fw, stride, pad, Ow
-        self.vec2col = Vec2col(C, Iw+2*pad, Fw, stride, Ow)
-        self.col2vec = Col2vec(C, Ow, Fw, stride, Iw+2*pad)
-        print(self.__class__.__name__, 'fix_configuration', shape, self.config)
+        self.vc = VecCol(Fw, stride)
 
     def get_parameter_size(self):
         C, Iw, M, Fw, stride, pad, Ow = self.config
@@ -989,27 +988,32 @@ class Conv1dLayer(BaseLayer):
         return m, n
 
     def _forward(self, x):
+        B, C, Iw = x.shape
+        self.x_shape = x.shape
         w, b, gamma = self.parameters()    
-        C, Iw, M, Fw, stride, pad, Ow = self.config
+        #C, Iw, M, Fw, stride, pad, Ow = self.config
+        _, _, M, Fw, stride, pad, _ = self.config
+        Ow = (Iw - Fw + 2*pad) // stride + 1   # 出力幅
         #x = x.reshape(-1, C, Iw)    # (B,C,Iw)  
         # '0'パディング B軸    C軸  Iw左Iw右
         x = np.pad(x, [(0,0),(0,0),(pad,pad)])
         self.vec_shape = x.shape # パディング後の形状
         # 入力画像を行列に変換 (B,C,Iw+2*pad)->(C*Fw,B*Ow)
-        cols = self.vec2col(x)
+        cols = self.vc.vec2col(x)
         # linear変換: (B*Ow,C*Fw)×(C*Fw,M)->(B*Ow,M)
         y = self.dot_linear.forward(cols, w, b, gamma)
-        y = y.reshape(-1, Ow, M).transpose(0, 2, 1)       # u.shape=(B,M,Ow) 
+        y = y.reshape(B, Ow, M).transpose(0, 2, 1)       # u.shape=(B,M,Ow) 
         return y
     
     def _backward(self, grad_y, flush=True):
-        C, Iw, M, Fw, stride, pad, Ow = self.config
+        _, _, M, Fw, stride, pad, _ = self.config
+        B, C, Iw = self.x_shape 
         #grad_y = grad_y.reshape(-1, M, Ow)               # grad_y.shape=(B,M,Ow)
         grad_y = grad_y.transpose(0, 2, 1).reshape(-1, M) #grad_y.shape=(B*Ow,M)
         # linearの逆伝播 grad_cols.shape=(B*Ow,C*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         # 行列を画像に変換 (B*Ow,C*Fw)->(B,C,Iw)
-        grad_x = self.col2vec(grad_cols)
+        grad_x = self.vc.col2vec(grad_cols)
         # パディング分を外して元の画像データに戻す        
         grad_x = grad_x[:,:,pad:pad+Iw]
         #grad_x = grad_x.reshape(self.inputs[0].shape)
@@ -1037,8 +1041,7 @@ class Conv1dTransposeLayer(BaseLayer):
         if len(configuration) == 1:
             M, = configuration
         self.config = C, Iw, M, Fw, stride, pad, Ow
-        self.col2vec = None
-        self.vec2col = None
+        self.vc = None
         super().__init__(**kwargs)
         
 
@@ -1051,8 +1054,7 @@ class Conv1dTransposeLayer(BaseLayer):
             raise Exception(self.__class__.__name__ + ' cannot fix configuration.')
         Ow = (Iw - 1) * stride + Fw - 2 * pad  # 出力幅
         self.config = C, Iw, M, Fw, stride, pad, Ow
-        self.col2vec = Col2vec(M, Iw, Fw, stride, Ow+2*pad)
-        self.vec2col = Vec2col(M, Ow+2*pad, Fw, stride, Iw)
+        self.vc = VecCol(Fw, stride)
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
 
@@ -1063,29 +1065,31 @@ class Conv1dTransposeLayer(BaseLayer):
         return m, n
 
     def _forward(self, x):
+        B, C, Iw = x.shape
+        self.x_shape = x.shape
         w, b, gamma = self.parameters()    
-        C, Iw, M, Fw, stride, pad, Ow = self.config
-        #x = x.reshape(-1, C, Iw).transpose(0,2,1).reshape(-1,C) # (B*Iw,C)  
+        _, _, M, Fw, stride, pad, _ = self.config
+        Ow = (Iw - 1) * stride + Fw - 2 * pad  # 出力幅
         x = x.transpose(0, 2, 1).reshape(-1, C) # (B*Iw,C)  
         # linear変換 (B*Iw,C)×(C,M*Fw)->(B*Iw,M*Fw)   
         cols = self.dot_linear.forward(x, w, b, gamma)
-        # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)  　
-        y = self.col2vec(cols)
+        # 行列を画像に変換 cols.T:(M*Fw,B*Iw)->(B,M,Ow)
+        y = self.vc.col2vec(cols, B)
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Ow]                     # y.shape=(B,M,Ow)
         return y
 
+
     def _backward(self, grad_y, flush=True):
-        C, Iw, M, Fw, stride, pad, Ow = self.config
-        #grad_y = grad_y.reshape(-1, M, Ow)       # grad_y.shape=(B,M,Ow)
+        _, _, M, Fw, stride, pad, _ = self.config
+        B, C, Iw = self.x_shape 
         #  '0'パディング
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad)])
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fw,B*Iw)に変換
-        grad_y = self.vec2col(grad_y)
+        grad_y = self.vc.vec2col(grad_y)
         # linearの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        grad_x = grad_x.reshape(-1, Iw, C).transpose(0, 2, 1) # (B,C,Iw)
-        #grad_x = grad_x.reshape(self.inputs[0].shape)
+        grad_x = grad_x.reshape(B, Iw, C).transpose(0, 2, 1) # (B,C,Iw)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
@@ -1099,6 +1103,91 @@ class DeConv1dLayer(Conv1dTransposeLayer):
         print(msg)
         super().__init__(*args, **kwargs)
 
+class VecCol:
+    """
+    vec.shape = (B, C, W)
+        <->
+    col.shape = (B*N, C*Fw)
+
+    W  : vec側の幅
+    N  : 窓の個数
+    Fw : フィルタ幅
+    """
+
+    def __init__(self, Fw, stride=1):
+        self.Fw = Fw
+        self.stride = stride
+
+        # 直前に扱った形状
+        self.B = None
+        self.C = None
+        self.W = None
+        self.N = None
+
+    def vec2col(self, vec):
+        B, C, W = vec.shape
+        Fw = self.Fw
+        stride = self.stride
+
+        # 窓の個数
+        N = (W - Fw) // stride + 1
+
+        # 形状を記憶
+        self.B = B
+        self.C = C
+        self.W = W
+        self.N = N
+
+        col = np.empty((B, C, Fw, N), dtype=Config.dtype)
+
+        # vecからstride毎に窓を取り出す
+        for fw in range(Fw):
+            w_lim = fw + stride * N
+            col[:, :, fw, :] = vec[:, :, fw:w_lim:stride]
+
+        # (B,C,Fw,N) -> (B,N,C,Fw) -> (B*N,C*Fw)
+        col = col.transpose(0, 3, 1, 2).reshape(B * N, C * Fw)
+
+        return col
+
+    def col2vec(self, col, B=None):
+        Fw = self.Fw
+        stride = self.stride
+
+        # vec2colを先に通っていれば、そのBを使える
+        if B is None:
+            B = self.B
+
+        # col2vecを先に使う場合はBだけ必要
+        if B is None:
+            raise Exception(
+                self.__class__.__name__
+                + '.col2vec requires B when called first.')
+
+        # col.shape = (B*N, C*Fw) から N,C を求める
+        N = col.shape[0] // B
+        C = col.shape[1] // Fw
+
+        # vec側の幅
+        W = (N - 1) * stride + Fw
+
+        # 形状を記憶
+        self.B = B
+        self.C = C
+        self.W = W
+        self.N = N
+
+        # (B*N,C*Fw) -> (B,N,C,Fw) -> (B,C,Fw,N)
+        col = col.reshape(B, N, C, Fw).transpose(0, 2, 3, 1)
+
+        vec = np.zeros((B, C, W), dtype=Config.dtype)
+
+        # 重なる部分は加算して戻す
+        for fw in range(Fw):
+            w_lim = fw + stride * N
+            vec[:, :, fw:w_lim:stride] += col[:, :, fw, :]
+
+        return vec
 
 class Vec2col:
     """ vec.shape = (B, C, Iw) -> col.shape = (B*Ow, C*Fw) """
@@ -1174,8 +1263,9 @@ class Conv2dLayer(BaseLayer):
                              else (kernel_size, kernel_size)
         Sh, Sw = stride if isinstance(stride, (tuple, list)) else (stride, stride)
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
-        self.im2col = None
-        self.col2im = None
+        #self.im2col = None
+        #self.col2im = None
+        self.imcol = None
         super().__init__(**kwargs)
         
     def fix_configuration(self, shape):
@@ -1190,8 +1280,7 @@ class Conv2dLayer(BaseLayer):
         Oh = (Ih - Fh + 2*pad) // Sh + 1   # 出力高さ
         Ow = (Iw - Fw + 2*pad) // Sw + 1   # 出力幅
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
-        self.im2col = Im2col(C, Ih+2*pad, Iw+2*pad, Fh, Fw, Sh, Sw, Oh, Ow)
-        self.col2im = Col2im(C, Oh, Ow, Fh, Fw, Sh, Sw, Ih+2*pad, Iw+2*pad)
+        self.ic = ImCol(Fh, Fw, Sh, Sw)
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def get_parameter_size(self):
@@ -1201,29 +1290,31 @@ class Conv2dLayer(BaseLayer):
         return m, n
 
     def _forward(self, x):
+        B, C, Ih, Iw = x.shape
+        self.x_shape = x.shape
         w, b, gamma = self.parameters()    
-        C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
-        #x = x.reshape(-1, C, Ih, Iw)    # (B,C,Ih,Iw)  
+        _, _, _, M, Fh, Fw, Sh, Sw, pad, _, _ = self.config
+        Oh = (Ih - Fh + 2*pad) // Sh + 1   # 出力高さ
+        Ow = (Iw - Fw + 2*pad) // Sw + 1   # 出力幅
         # '0'パディング
         x = np.pad(x, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 入力画像を行列に変換 (B,C,Ih+2*pad,Iw+2*pad)->(C*Fh*Fw,B*Oh*Ow) 
-        cols = self.im2col(x)
+        cols = self.ic.im2col(x)
         # linear変換: (B*Oh*Ow,C*Fh*Fw)×(C*Fh*Fw,M)->(B*Oh*Ow,M)
         y = self.dot_linear.forward(cols, w, b, gamma)
-        y = y.reshape(-1, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
+        y = y.reshape(B, Oh, Ow, M).transpose(0, 3, 1, 2) # u.shape=(B,M,Oh,Ow) 
         return y
     
     def _backward(self, grad_y, flush=True):
-        C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
-        #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
+        _, _, _, M, Fh, Fw, Sh, Sw, pad, _, _ = self.config
+        B, C, Ih, Iw = self.x_shape
         grad_y = grad_y.transpose(0, 2, 3, 1).reshape(-1, M) # grad_y.shape=(B*Oh*Ow,M)
         # linearの逆伝播 grad_cols.shape=(B*Oh*Ow,C*Fh*Fw)
         grad_cols, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
         # 行列を画像に変換 (B*Oh*Ow,C*Fh*Fw)->(B,C,Ih,Iw)
-        grad_x = self.col2im(grad_cols)
+        grad_x = self.ic.col2im(grad_cols)
         # パディング分を外して元の画像データに戻す
         grad_x = grad_x[:,:,pad:pad+Ih,pad:pad+Iw]
-        #grad_x = grad_x.reshape(self.inputs[0].shape)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
@@ -1258,8 +1349,7 @@ class Conv2dTransposeLayer(BaseLayer):
                              else (kernel_size, kernel_size)
         Sh, Sw = stride if isinstance(stride, (tuple, list)) else (stride, stride)
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
-        self.col2im = None
-        self.im2col = None
+        self.ic = None
         super().__init__(**kwargs)
 
     def fix_configuration(self, shape):
@@ -1273,8 +1363,7 @@ class Conv2dTransposeLayer(BaseLayer):
         Oh = (Ih - 1) * Sh + Fh - 2 * pad  # 出力高さ
         Ow = (Iw - 1) * Sw + Fw - 2 * pad  # 出力幅
         self.config = C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow
-        self.col2im = Col2im(M, Ih, Iw, Fh, Fw, Sh, Sw, Oh+2*pad, Ow+2*pad)
-        self.im2col = Im2col(M, Oh+2*pad, Ow+2*pad, Fh, Fw, Sh, Sw, Ih, Iw)
+        self.ic = ImCol(Fh, Fw, Sh, Sw)
         print(self.__class__.__name__, 'fix_configuration', shape, self.config)
 
     def get_parameter_size(self):
@@ -1284,29 +1373,31 @@ class Conv2dTransposeLayer(BaseLayer):
         return m, n
 
     def _forward(self, x):
+        B, C, Ih, Iw = x.shape
+        self.x_shape = x.shape
         w, b, gamma = self.parameters()    
-        C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
-        #x = x.reshape(-1, C, Ih, Iw).transpose(0,2,3,1).reshape(-1,C) # (B*Ih*Iw,C)  
+        _, _, _, M, Fh, Fw, Sh, Sw, pad, _, _ = self.config
+        Oh = (Ih - 1) * Sh + Fh - 2 * pad  # 出力高さ
+        Ow = (Iw - 1) * Sw + Fw - 2 * pad  # 出力幅
         x = x.transpose(0, 2, 3, 1).reshape(-1, C) # (B,C,Ih,Iw)->(B*Ih*Iw,C)  
         # linear変換 (B*Ih*Iw,C)×(C,M*Fh*Fw)->(B*Ih*Iw,M*Fh*Fw)
         cols = self.dot_linear.forward(x, w, b, gamma)
         # 行列を画像に変換 cols.T:(M*Fh*Fw,B*Ih*Iw)->(B,M,Oh,Ow)  　
-        y = self.col2im(cols) # 20251107AI
+        y = self.ic.col2im(cols, (B, Ih, Iw)) # 20251107AI
         # 画像調整 トリミング
         y = y[:,:,pad:pad+Oh,pad:pad+Ow]              # y.shape=(B,M,Oh,Ow)
         return y
 
     def _backward(self, grad_y, flush=True):
-        C, Ih, Iw, M, Fh, Fw, Sh, Sw, pad, Oh, Ow = self.config
-        #grad_y = grad_y.reshape(-1, M, Oh, Ow)       # grad_y.shape=(B,M,Oh,Ow)
+        _, _, _, M, Fh, Fw, Sh, Sw, pad, _, _ = self.config
+        B, C, Ih, Iw = self.x_shape
         #  '0'パディング
         grad_y = np.pad(grad_y, [(0,0), (0,0), (pad, pad), (pad, pad)], 'constant')
         # 画像の勾配を行列に変換 grad_y.shape=(M*Fh*Fw,B*Ih*Iw)に変換
-        grad_y = self.im2col(grad_y)
+        grad_y = self.ic.im2col(grad_y)
         # linearの逆伝播
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        grad_x = grad_x.reshape(-1,Ih,Iw,C).transpose(0,3,1,2) # (B,C,Ih,Iw)
-        #grad_x = grad_x.reshape(self.inputs[0].shape)
+        grad_x = grad_x.reshape(B,Ih,Iw,C).transpose(0,3,1,2) # (B,C,Ih,Iw)
         self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
         return grad_x
 
@@ -1322,6 +1413,117 @@ class DeConv2dLayer(Conv2dTransposeLayer):
 class DeConvLayer(DeConv2dLayer):
     pass
 
+
+class ImCol:
+    """ img.shape = (B, C, H, W) <-> col.shape = (B*Nh*Nw, C*Fh*Fw)
+
+    H, W   : img側の高さ・幅
+    Nh, Nw : 窓の配置数
+    Fh, Fw : フィルタ高さ・幅
+    Sh, Sw : stride
+    """
+
+    def __init__(self, Fh, Fw, Sh=1, Sw=1):
+        self.Fh = Fh
+        self.Fw = Fw
+        self.Sh = Sh
+        self.Sw = Sw
+        self.B = None
+        self.C = None
+        self.H = None
+        self.W = None
+        self.Nh = None
+        self.Nw = None
+
+    def im2col(self, img):
+        B, C, H, W = img.shape
+        Fh, Fw = self.Fh, self.Fw
+        Sh, Sw = self.Sh, self.Sw
+
+        # 窓の配置数
+        Nh = (H - Fh) // Sh + 1
+        Nw = (W - Fw) // Sw + 1
+
+        # 形状を記憶
+        self.B = B
+        self.C = C
+        self.H = H
+        self.W = W
+        self.Nh = Nh
+        self.Nw = Nw
+
+        col = np.empty((B, C, Fh, Fw, Nh, Nw), dtype=Config.dtype)
+
+        # imgから各窓位置のデータを取り出す
+        for fh in range(Fh):
+            h_lim = fh + Sh * Nh
+            for fw in range(Fw):
+                w_lim = fw + Sw * Nw
+                col[:, :, fh, fw, :, :] = img[:, :, fh:h_lim:Sh, fw:w_lim:Sw]
+
+        # (B,C,Fh,Fw,Nh,Nw)
+        #      -> (B,Nh,Nw,C,Fh,Fw)
+        #      -> (B*Nh*Nw,C*Fh*Fw)
+        col = col.transpose(0, 4, 5, 1, 2, 3).reshape(B * Nh * Nw, C * Fh * Fw)
+
+        return col
+
+    def col2im(self, col, grid=None):
+        Fh, Fw = self.Fh, self.Fw
+        Sh, Sw = self.Sh, self.Sw
+
+        # im2colを先に通っていれば、その配置情報を使える
+        if grid is None:
+            B = self.B
+            Nh = self.Nh
+            Nw = self.Nw
+
+            if B is None or Nh is None or Nw is None:
+                raise Exception(self.__class__.__name__
+                    + '.col2im requires grid=(B, Nh, Nw) when called first.')
+
+            # im2col時の元画像サイズをそのまま使う
+            H = self.H
+            W = self.W
+
+        else:
+            # col2imを先に呼ぶ場合
+            # col.shape[0] = B*Nh*Nw の分解情報
+            B, Nh, Nw = grid
+
+            # 復元される自然な画像サイズ
+            H = (Nh - 1) * Sh + Fh
+            W = (Nw - 1) * Sw + Fw
+
+        # col.shape[1] = C*Fh*Fw から C を求める
+        C = col.shape[1] // (Fh * Fw)
+
+        if col.shape[0] != B * Nh * Nw:
+            raise Exception(self.__class__.__name__ + ' col shape mismatch.')
+
+        # 形状を記憶
+        self.B = B
+        self.C = C
+        self.H = H
+        self.W = W
+        self.Nh = Nh
+        self.Nw = Nw
+
+        # (B*Nh*Nw,C*Fh*Fw)
+        #      -> (B,Nh,Nw,C,Fh,Fw)
+        #      -> (B,C,Fh,Fw,Nh,Nw)
+        col = col.reshape(B, Nh, Nw, C, Fh, Fw).transpose(0, 3, 4, 5, 1, 2)
+        img = np.zeros((B, C, H, W), dtype=Config.dtype)
+
+        # 重なる部分は加算して戻す
+        for fh in range(Fh):
+            h_lim = fh + Sh * Nh
+            for fw in range(Fw):
+                w_lim = fw + Sw * Nw
+                img[:, :, fh:h_lim:Sh, fw:w_lim:Sw] += col[:, :, fh, fw, :, :]
+
+        return img
+    
 class Im2col:
     """
     img.shape=(B,C,Ih,Iw) → cols.shape=(B,C,Fh,Fw,Oh,Ow) -> (B*Oh*Ow, C*Fh*Fw)
@@ -3616,7 +3818,34 @@ class RotaryTransform(Function):
         gx[..., 1::2] = -gy0 * sin + gy1 * cos
         return gx
 
+class RotaryTransformHalf(Function):
+    def __init__(self, cos, sin):
+        super().__init__()
+        self.cos = cos
+        self.sin = sin
 
+    def __forward__(self, x):
+        cos = self.cos
+        sin = self.sin
+        d = x.shape[-1] // 2
+        x0 = x[..., :d]
+        x1 = x[..., d:]
+        y = np.empty_like(x, dtype=Config.dtype)
+        y[..., :d] = x0 * cos - x1 * sin
+        y[..., d:] = x0 * sin + x1 * cos
+        return y
+
+    def __backward__(self, gy):
+        cos = self.cos
+        sin = self.sin
+        d = gy.shape[-1] // 2
+        gy0 = gy[..., :d]
+        gy1 = gy[..., d:]
+        gx = np.empty_like(gy, dtype=Config.dtype)
+        gx[..., :d] =  gy0 * cos + gy1 * sin
+        gx[..., d:] = -gy0 * sin + gy1 * cos
+        return gx
+    
 class RoPE(Function):
     """
     Rotary Positional Embedding
@@ -3628,12 +3857,18 @@ class RoPE(Function):
     RoPE has no trainable parameters and keeps no forward input.
     """
 
-    def __init__(self, base=10000.0):
+    def __init__(self, base=10000.0, mode='interleaved'):
         super().__init__()
         self.base = base
         self.inv_freq = None # 周期
         self.cos_sin = None
-
+        self.mode = mode
+        if   mode == 'interleaved':
+            self.RT = RotaryTransform
+        elif self.mode == 'half':
+            self.RT = RotaryTransformHalf
+        else:
+            raise NotImplementedError()
 
     def get_cos_sin(self, x):
         T = x.shape[-2]
@@ -3668,8 +3903,8 @@ class RoPE(Function):
     def __forward__(self, q, k):
         cos_q, sin_q = self.get_cos_sin(q)
         cos_k, sin_k = self.get_cos_sin(k)
-        self.rotateq = RotaryTransform(cos_q, sin_q)
-        self.rotatek = RotaryTransform(cos_k, sin_k)
+        self.rotateq = self.RT(cos_q, sin_q)
+        self.rotatek = self.RT(cos_k, sin_k)
         q = self.rotateq(q)
         k = self.rotatek(k)
         return q, k

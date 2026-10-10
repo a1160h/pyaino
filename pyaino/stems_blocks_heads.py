@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20261006 A.Inoue
+# 20261010 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -41,11 +41,11 @@ class FeedForward(nucleus.Function):
         super().__init__()
         self.config = emb_dim, intermediate, expansion
         self.linear_i = nn.LinearLayer(matmul=True, **kwargs)
+        self.act = cf.eval_in_module(activate, A)
         self.linear_o = nn.LinearLayer(matmul=True, **kwargs)
         if emb_dim is not None and intermediate is not None:
             self.linear_i.config = emb_dim, intermediate
             self.linear_o.config = intermediate, emb_dim
-        self.act = cf.eval_in_module(activate, A)
         self.DO = nn.Dropout()
 
     def fix_configuration(self, shape):
@@ -145,11 +145,87 @@ class SwiGLU(nucleus.Function):
         self.linear_i.update(**kwargs)
         self.linear_o.update(**kwargs)
 
+class CausalConvFeedForward(nucleus.Function):
+    """ Causal Conv をボトルネック部に持つ FeedForward """
+
+    def __init__(self, emb_dim=None, intermediate=None, expansion=4,
+                 kernel_size=3, activate='Mish', **kwargs):
+        super().__init__()
+        self.config = emb_dim, intermediate, expansion
+        self.kernel_size = kernel_size
+        self.linear_i = nn.LinearLayer(matmul=True, **kwargs)
+        self.act = cf.eval_in_module(activate, A)
+        # Conv1dLayer(M, Fw, stride, pad)causal padding は外側で左側だけに行うので pad=0
+        self.conv = nn.Conv1dLayer(intermediate, kernel_size, 1, 0, **kwargs)
+        self.linear_o = nn.LinearLayer(matmul=True, **kwargs)
+        self.DO = nn.Dropout()
+        if emb_dim is not None and intermediate is not None:
+            self.linear_i.config = emb_dim, intermediate
+            self.linear_o.config = intermediate, emb_dim
+            #self.conv.config = None, None, intermediate, kernel_size, 1, 0, None
+
+    def fix_configuration(self, shape):
+        emb_dim, intermediate, expansion = self.config
+        if emb_dim is None:
+            emb_dim = shape[-1]
+        elif emb_dim != shape[-1]:
+            raise Exception(
+                'Data shape mismatch with configuration.', self.__class__.__name__)
+        if intermediate is None:
+            intermediate = int(emb_dim * expansion)
+
+        self.config = emb_dim, intermediate, expansion
+        self.linear_i.config = emb_dim, intermediate
+        # C は Conv1dLayer.fix_configuration() が入力 shape=(B,C,T) から決める
+        self.conv.config = None, None, intermediate, self.kernel_size, 1, 0, None
+        self.linear_o.config = intermediate, emb_dim
+
+        print(self.__class__.__name__,
+            'fix_configuration', shape, self.config, 'kernel_size', self.kernel_size)
+
+    def __forward__(self, x, *, dropout=0.0):
+        if None in self.config:
+            self.fix_configuration(x.shape)
+        y = self.linear_i.forward(x)    # (B,T,H) -> (B,T,I)
+        y = self.act.forward(y)
+
+        y = y.transpose(0, 2, 1)        # (B,T,I) -> (B,I,T)
+        pad = self.kernel_size - 1      # causal padding
+        if pad > 0:
+            y = np.pad(y, ((0, 0), (0, 0), (pad, 0)))
+        y = self.conv.forward(y)        # (B,I,T+pad) -> (B,I,T)
+        y = y.transpose(0, 2, 1)        # (B,I,T) -> (B,T,I)
+
+        y = self.linear_o.forward(y)    # (B,T,I) -> (B,T,H)
+        y = self.DO.forward(y, dropout=dropout)
+        return y
+
+
+    def __backward__(self, gy):
+        gx = self.DO.backward(gy)
+        gx = self.linear_o.backward(gx) # (B,T,H) -> (B,T,I)
+        
+        gx = gx.transpose(0, 2, 1)      # (B,T,I) -> (B,I,T) 
+        gx = self.conv.backward(gx)     # (B,I,T) -> (B,I,T+pad)
+        pad = self.kernel_size - 1
+        if pad > 0:
+            gx = gx[:, :, pad:]
+        gx = gx.transpose(0, 2, 1)      # (B,I,T) -> (B,T,I)
+
+        gx = self.act.backward(gx)
+        gx = self.linear_i.backward(gx)
+        return gx
+
+    def update(self, **kwargs):
+        self.linear_i.update(**kwargs)
+        self.conv.update(**kwargs)
+        self.linear_o.update(**kwargs)
+
 
 class TransformerBlock(nucleus.Function):
     """ Transformer block: communication followed by computation """
 
-    def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False, swiglu=False,
+    def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False, ffwd='ffn',
                  intermediate=None, expansion=4, rms=False, activate='Mish',
                  chunk_size=None, **kwargs):
         super().__init__()
@@ -157,10 +233,18 @@ class TransformerBlock(nucleus.Function):
             emb_dim, emb_dim//n_head, n_head, causality=causality, chunk_size=chunk_size,
             **kwargs) # entropy制御はkwargsで指定
 
-        if swiglu:
-            self.ffwd = SwiGLU(emb_dim, intermediate, expansion, activate=activate, **kwargs)
-        else:   
-            self.ffwd = FeedForward(emb_dim, intermediate, expansion, activate=activate, **kwargs)
+        if   ffwd == 'ffn':
+            self.ffwd = FeedForward(
+                emb_dim, intermediate, expansion, activate=activate, **kwargs)
+        elif ffwd == 'swiglu':
+            self.ffwd = SwiGLU(
+                emb_dim, intermediate, expansion, activate=activate, **kwargs)
+        elif ffwd == 'ccff':
+            self.ffwd = CausalConvFeedForward(
+                emb_dim, intermediate, expansion, activate=activate, **kwargs)
+        else:
+            raise NotImplementedError(
+                'Unsupported feed-forward type.', self.__class__.__name__, 'ffwd:', ffwd) 
 
         Norm = nn.RMSNormalization if rms else nn.LayerNormalization
         self.ln1 = Norm(**kwargs)
