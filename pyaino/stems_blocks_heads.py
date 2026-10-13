@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20261010 A.Inoue
+# 20261012 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -145,7 +145,157 @@ class SwiGLU(nucleus.Function):
         self.linear_i.update(**kwargs)
         self.linear_o.update(**kwargs)
 
+class CausalConvFeedForward2(nucleus.Function):
+    """ Causal Conv を持つ FeedForward """
+        # Conv1dLayer(M, Fw, stride, pad)causal padding は外側で左側だけに行うので pad=0
+
+    def __init__(self, emb_dim=None, intermediate=None, expansion=1,
+                 kernel_size=3, activate='Mish', **kwargs):
+        super().__init__()
+        self.config = emb_dim, intermediate, expansion
+        self.kernel_size = kernel_size
+        self.conv0 = nn.Conv1dLayer(intermediate, kernel_size, 1, 0, **kwargs)
+        self.act0 = cf.eval_in_module(activate, A)
+        self.conv1 = nn.Conv1dLayer(intermediate, kernel_size, 1, 0, **kwargs)
+        self.act1 = cf.eval_in_module(activate, A)
+        self.linear_o = nn.LinearLayer(matmul=True, **kwargs)
+        self.DO = nn.Dropout()
+        if emb_dim is not None and intermediate is not None:
+            self.linear_o.config = intermediate, emb_dim
+            #self.conv.config = None, None, intermediate, kernel_size, 1, 0, None
+
+    def fix_configuration(self, shape):
+        emb_dim, intermediate, expansion = self.config
+        if emb_dim is None:
+            emb_dim = shape[-1]
+        elif emb_dim != shape[-1]:
+            raise Exception(
+                'Data shape mismatch with configuration.', self.__class__.__name__)
+        if intermediate is None:
+            intermediate = int(emb_dim * expansion)
+
+        self.config = emb_dim, intermediate, expansion
+        # C は Conv1dLayer.fix_configuration() が入力 shape=(B,C,T) から決める
+        self.conv0.config = None, None, intermediate, self.kernel_size, 1, 0, None
+        self.conv1.config = None, None, intermediate, self.kernel_size, 1, 0, None
+        self.linear_o.config = intermediate, emb_dim
+
+        print(self.__class__.__name__,
+            'fix_configuration', shape, self.config, 'kernel_size', self.kernel_size)
+
+    def __forward__(self, x, *, dropout=0.0):
+        if None in self.config or self.config[0] != x.shape[-1]:
+            self.fix_configuration(x.shape)
+            
+        y = x.transpose(0, 2, 1)        # (B,T,H) -> (B,H,T)
+        pad = self.kernel_size - 1      # causal padding
+        if pad > 0:
+            y = np.pad(y, ((0, 0), (0, 0), (pad, 0)))
+        y = self.conv0.forward(y)        # (B,H,T+pad) -> (B,H,T)
+        y = self.act0.forward(y)
+        if pad > 0:
+            y = np.pad(y, ((0, 0), (0, 0), (pad, 0)))
+        y = self.conv1.forward(y)        # (B,H,T+pad) -> (B,H,T)
+        y = self.act1.forward(y)
+        y = y.transpose(0, 2, 1)        # (B,H,T) -> (B,T,H)
+        y = self.linear_o.forward(y)    # (B,T,H) -> (B,T,H)
+        y = self.DO.forward(y, dropout=dropout)
+        return y
+
+
+    def __backward__(self, gy):
+        gx = self.DO.backward(gy)
+        gx = self.linear_o.backward(gx) # (B,T,H) -> (B,T,H)
+        gx = gx.transpose(0, 2, 1)      # (B,T,H) -> (B,H,T) 
+        gx = self.act1.backward(gx)
+        gx = self.conv1.backward(gx)     # (B,H,T) -> (B,H,T+pad)
+        pad = self.kernel_size - 1
+        if pad > 0:
+            gx = gx[:, :, pad:]
+        gx = self.act0.backward(gx)
+        gx = self.conv0.backward(gx)     # (B,H,T) -> (B,H,T+pad)
+        pad = self.kernel_size - 1
+        if pad > 0:
+            gx = gx[:, :, pad:]
+        gx = gx.transpose(0, 2, 1)      # (B,H,T) -> (B,T,H)
+        return gx
+
+    def update(self, **kwargs):
+        self.conv0.update(**kwargs)
+        self.conv1.update(**kwargs)
+        self.linear_o.update(**kwargs)
+
 class CausalConvFeedForward(nucleus.Function):
+    """ Causal Conv を持つ FeedForward """
+        # Conv1dLayer(M, Fw, stride, pad)causal padding は外側で左側だけに行うので pad=0
+
+    def __init__(self, emb_dim=None, intermediate=None, expansion=4,
+                 kernel_size=3, activate='Mish', **kwargs):
+        super().__init__()
+        self.config = emb_dim, intermediate, expansion
+        self.kernel_size = kernel_size
+        self.conv = nn.Conv1dLayer(intermediate, kernel_size, 1, 0, **kwargs)
+        self.act = cf.eval_in_module(activate, A)
+        self.linear_o = nn.LinearLayer(matmul=True, **kwargs)
+        self.DO = nn.Dropout()
+        if emb_dim is not None and intermediate is not None:
+            self.linear_o.config = intermediate, emb_dim
+            #self.conv.config = None, None, intermediate, kernel_size, 1, 0, None
+
+    def fix_configuration(self, shape):
+        emb_dim, intermediate, expansion = self.config
+        if emb_dim is None:
+            emb_dim = shape[-1]
+        elif emb_dim != shape[-1]:
+            raise Exception(
+                'Data shape mismatch with configuration.', self.__class__.__name__)
+        if intermediate is None:
+            intermediate = int(emb_dim * expansion)
+
+        self.config = emb_dim, intermediate, expansion
+        # C は Conv1dLayer.fix_configuration() が入力 shape=(B,C,T) から決める
+        self.conv.config = None, None, intermediate, self.kernel_size, 1, 0, None
+        self.linear_o.config = intermediate, emb_dim
+
+        print(self.__class__.__name__,
+            'fix_configuration', shape, self.config, 'kernel_size', self.kernel_size)
+
+    def __forward__(self, x, *, dropout=0.0):
+        if None in self.config:
+            self.fix_configuration(x.shape)
+            
+        y = x.transpose(0, 2, 1)        # (B,T,H) -> (B,H,T)
+        pad = self.kernel_size - 1      # causal padding
+        if pad > 0:
+            y = np.pad(y, ((0, 0), (0, 0), (pad, 0)))
+        y = self.conv.forward(y)        # (B,H,T+pad) -> (B,H,T)
+        y = self.act.forward(y)
+        y = y.transpose(0, 2, 1)        # (B,H,T) -> (B,T,H)
+
+        y = self.linear_o.forward(y)    # (B,T,H) -> (B,T,H)
+        y = self.DO.forward(y, dropout=dropout)
+        return y
+
+
+    def __backward__(self, gy):
+        gx = self.DO.backward(gy)
+        gx = self.linear_o.backward(gx) # (B,T,H) -> (B,T,H)
+        
+        gx = gx.transpose(0, 2, 1)      # (B,T,H) -> (B,H,T) 
+        gx = self.act.backward(gx)
+        gx = self.conv.backward(gx)     # (B,H,T) -> (B,H,T+pad)
+        pad = self.kernel_size - 1
+        if pad > 0:
+            gx = gx[:, :, pad:]
+        gx = gx.transpose(0, 2, 1)      # (B,H,T) -> (B,T,H)
+
+        return gx
+
+    def update(self, **kwargs):
+        self.conv.update(**kwargs)
+        self.linear_o.update(**kwargs)
+
+class CausalConvFeedForward_bkup(nucleus.Function):
     """ Causal Conv をボトルネック部に持つ FeedForward """
 
     def __init__(self, emb_dim=None, intermediate=None, expansion=4,
@@ -154,9 +304,9 @@ class CausalConvFeedForward(nucleus.Function):
         self.config = emb_dim, intermediate, expansion
         self.kernel_size = kernel_size
         self.linear_i = nn.LinearLayer(matmul=True, **kwargs)
-        self.act = cf.eval_in_module(activate, A)
         # Conv1dLayer(M, Fw, stride, pad)causal padding は外側で左側だけに行うので pad=0
         self.conv = nn.Conv1dLayer(intermediate, kernel_size, 1, 0, **kwargs)
+        self.act = cf.eval_in_module(activate, A)
         self.linear_o = nn.LinearLayer(matmul=True, **kwargs)
         self.DO = nn.Dropout()
         if emb_dim is not None and intermediate is not None:
@@ -187,7 +337,6 @@ class CausalConvFeedForward(nucleus.Function):
         if None in self.config:
             self.fix_configuration(x.shape)
         y = self.linear_i.forward(x)    # (B,T,H) -> (B,T,I)
-        y = self.act.forward(y)
 
         y = y.transpose(0, 2, 1)        # (B,T,I) -> (B,I,T)
         pad = self.kernel_size - 1      # causal padding
@@ -195,6 +344,7 @@ class CausalConvFeedForward(nucleus.Function):
             y = np.pad(y, ((0, 0), (0, 0), (pad, 0)))
         y = self.conv.forward(y)        # (B,I,T+pad) -> (B,I,T)
         y = y.transpose(0, 2, 1)        # (B,I,T) -> (B,T,I)
+        y = self.act.forward(y)
 
         y = self.linear_o.forward(y)    # (B,T,I) -> (B,T,H)
         y = self.DO.forward(y, dropout=dropout)
@@ -205,6 +355,7 @@ class CausalConvFeedForward(nucleus.Function):
         gx = self.DO.backward(gy)
         gx = self.linear_o.backward(gx) # (B,T,H) -> (B,T,I)
         
+        gx = self.act.backward(gx)
         gx = gx.transpose(0, 2, 1)      # (B,T,I) -> (B,I,T) 
         gx = self.conv.backward(gx)     # (B,I,T) -> (B,I,T+pad)
         pad = self.kernel_size - 1
@@ -212,7 +363,6 @@ class CausalConvFeedForward(nucleus.Function):
             gx = gx[:, :, pad:]
         gx = gx.transpose(0, 2, 1)      # (B,I,T) -> (B,T,I)
 
-        gx = self.act.backward(gx)
         gx = self.linear_i.backward(gx)
         return gx
 

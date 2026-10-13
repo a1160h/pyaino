@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20261007 A.Inoue
+# 20261010 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 class ModelBase:
     """ 共通ベース """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, unify=False,
-                 swiglu=False, intermediate=None, expansion=4,
+                 ffwd='ffn', intermediate=None, expansion=4,
                  rms=False, optimize='AdamT', w_decay=0.001, ignore=-1,
                  positional_embedding=True, rope=False, **kwargs):
 
@@ -35,7 +35,7 @@ class ModelBase:
         # -- Transformer blocks ----------------------------------------
         self.blocks = Neuron.Sequential(
             *[sbh.TransformerBlock(
-                emb_dim, n_head, 'tri', False, swiglu, intermediate, expansion,
+                emb_dim, n_head, 'tri', False, ffwd, intermediate, expansion,
                 rms, chunk_size=chunk_size, rope=rope, **kwargs)
               for _ in range(n_layer)]
             )
@@ -253,6 +253,27 @@ class BigramLanguageModel2(ModelBase):
         self.blocks.update(**kwargs)
         self.lm_head.update(**kwargs)
 
+class BigramLanguageModel2a(BigramLanguageModel2):
+    """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
+    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
+                 intermediate=None, expansion=4, **kwargs):
+
+        rms      = kwargs.pop('rms',        False)
+        optimize = kwargs.pop('optimize', 'AdamT')
+        w_decay  = kwargs.pop('w_decay',     0.01)
+        ffwd     = kwargs.get('ffwd',       'ffn')
+
+        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
+                           intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        
+        if rms:
+            self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
+        else:    
+            self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
+
+        self.pffwd = sbh.CausalConvFeedForward(
+                emb_dim, intermediate=None, expansion=1, optimize=optimize, w_decay=w_decay, **kwargs)
+
 class BigramLanguageModel3(BigramLanguageModel2):
     """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
@@ -388,8 +409,9 @@ if __name__=='__main__':
     t = np.array(correct_data)
 
     # -- 各層の初期化 --
-    model = BigramLanguageModel2(vocab_size, block_size, emb_dim, n_layer, n_head,
+    model = BigramLanguageModel2a(vocab_size, block_size, emb_dim, n_layer, n_head,
                                  #unify=True,
+                                 ffwd='ccff', 
                                  rms=True,
                                  optimize='AdamT',
                                  regularizer='AttentionRegularizer()',
