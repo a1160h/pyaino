@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20261010 A.Inoue
+# 20261013 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -57,7 +57,7 @@ class ModelBase:
         self.memory = []
 
     def generate(self, seed, max_tokens=1000,
-                 stochastic=False, beta=2, skip_ids=None, end_id=None,
+                 stochastic=False, beta=2, skip_ids=None, end_ids=None,
                  memory_size=1000, flush=True):
         """
         入力されたidx列の末尾のblock_size長を入力してその次idxを得、
@@ -97,7 +97,7 @@ class ModelBase:
                 next_idx = cf.select_category(probs, stochastic, beta)
             gen_data    = np.concatenate((gen_data,    next_idx)) 
             self.memory = np.concatenate((self.memory, next_idx))
-            if end_id is not None and next_idx==end_id: # end_idが出現したら打切り　
+            if end_ids is not None and next_idx[0] in end_ids: # next_idxは1要素配列 end_idが出現したら打切り　
                 break
 
         return gen_data
