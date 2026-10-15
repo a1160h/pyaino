@@ -1,5 +1,5 @@
 # common_function
-# 20261004 A.Inoue 
+# 20261015 A.Inoue 
 
 from pyaino.Config import *
 from pyaino import Neuron as neuron
@@ -314,6 +314,11 @@ def get_obj_info(obj, name=None, seen=None, generation=0):
             get_obj_info(value, name=key,
                          seen=seen, generation=generation)
             name = key
+
+    # numpy/cupy の演算オブジェクトは内部まで覗かない
+    elif callable(obj) and \
+         getattr(obj.__class__, '__module__', '').split('.')[0] in ('numpy', 'cupy'):
+        print(' '*generation, generation, name, ':', obj.__class__.__name__)
    
     # クラスのインスタンス（`__dict__` の中身）
     elif hasattr(obj, '__dict__'):
@@ -2935,7 +2940,6 @@ class CutOutBatch:
 
     def set_cycle(self):
         """ 全offsetをround-robinで一巡するcycleを構成し、cycle状態を初期化する """
-        self.cycle_iters = 0
         self.set_start_ix()
         if self.shuffle:
             self.shuffle_ix()
@@ -2951,7 +2955,9 @@ class CutOutBatch:
         self.iters = 0
         self.epoch = 0
         self.set_cycle()
-        self.n_batch = self.n_batches[0]
+        self.n_batch = len(self.cycle)
+        if self.n_batch == 0:
+            raise ValueError("No full batch available.")
 
     def shuffle_ix(self):
         """ 各offsetの切り出し開始位置をshuffleする """
@@ -2960,7 +2966,7 @@ class CutOutBatch:
 
     def info(self):
         """ 次に払い出すbatchの状態を表示する """
-        offset, batch = self.cycle[self.cycle_iters]
+        offset, batch = self.cycle[self.iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         print(f'next: epoch {self.epoch} batch {self.iters+1}/{self.n_batch}',
@@ -2968,25 +2974,23 @@ class CutOutBatch:
     
     def __call__(self):
         """ 次のbatchを切り出して返す """
-        various_length = np.random.randint(self.block_size[0], self.block_size[1]+1)
-        offset, batch = self.cycle[self.cycle_iters]
+        various_length = np.random.randint(
+            self.block_size[0], self.block_size[1]+1)
+
+        offset, batch = self.cycle[self.iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         x = np.stack([self.data[int(i):int(i)+various_length] for i in idx])
 
-        self.cycle_iters += 1
         self.iters += 1
 
         if self.iters >= self.n_batch:
             self.epoch += 1
             self.iters = 0
-
-            if self.epoch % self.step == 0:
-                self.set_cycle()
-
-            self.n_batch = self.n_batches[self.epoch % self.step]
+            self.set_cycle()
 
         return x
+
 
 class CutOutBatchIx:
     """
@@ -3008,7 +3012,7 @@ class CutOutBatchIx:
     shuffle : bool
         各offset内の開始位置をshuffleする
 
-    全offsetを一巡する単位をcycleとする
+    全offsetを一巡する単位をcycleとし、1 cycle = 1 epochとする
     """
 
     def __init__(self, length, block_size=500, batch_size=16, step=1, shuffle=True):
@@ -3037,7 +3041,6 @@ class CutOutBatchIx:
 
     def set_cycle(self):
         """ 全offsetをround-robinで一巡するcycleを構成し、cycle状態を初期化する """
-        self.cycle_iters = 0
         self.set_start_ix()
         if self.shuffle:
             self.shuffle_ix()
@@ -3053,7 +3056,9 @@ class CutOutBatchIx:
         self.iters = 0
         self.epoch = 0
         self.set_cycle()
-        self.n_batch = self.n_batches[0]
+        self.n_batch = len(self.cycle)
+        if self.n_batch == 0:
+            raise ValueError("No full batch available.")
 
     def shuffle_ix(self):
         """ 各offsetの切り出し開始位置をshuffleする """
@@ -3062,7 +3067,7 @@ class CutOutBatchIx:
 
     def info(self):
         """ 次に払い出すbatchの状態を表示する """
-        offset, batch = self.cycle[self.cycle_iters]
+        offset, batch = self.cycle[self.iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         print(f'next: epoch {self.epoch} batch {self.iters+1}/{self.n_batch}',
@@ -3071,25 +3076,19 @@ class CutOutBatchIx:
     def __call__(self):
         """ 次のbatchのindexを切り出して返す """
         various_length = np.random.randint(self.block_size[0], self.block_size[1]+1)
-        offset, batch = self.cycle[self.cycle_iters]
+        offset, batch = self.cycle[self.iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         x = np.stack([np.arange(int(i), int(i)+various_length) for i in idx])
 
-        self.cycle_iters += 1
         self.iters += 1
 
         if self.iters >= self.n_batch:
             self.epoch += 1
             self.iters = 0
-
-            if self.epoch % self.step == 0:
-                self.set_cycle()
-
-            self.n_batch = self.n_batches[self.epoch % self.step]
+            self.set_cycle()
 
         return x
-
     
 # -- 複数画像を表示 --
 def display_images(image):
