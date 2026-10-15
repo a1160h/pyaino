@@ -2914,9 +2914,7 @@ class CutOutBatch:
     """
 
     def __init__(self, data, block_size=500, batch_size=16, step=1, shuffle=True):
-        """ CutOutBatchを初期化する """
         self.data = data if isinstance(data, np.ndarray) else np.array(data)
-
         if isinstance(block_size, (tuple, list)) and len(block_size) == 2:
             self.block_size = block_size
         elif isinstance(block_size, int):
@@ -2924,73 +2922,79 @@ class CutOutBatch:
         else:
             raise TypeError(
                 f"{block_size} must be an integer or tuple including integer.")
-        
+
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.step = step
         self.reset()
 
     def set_start_ix(self):
-        """ 各offsetの切り出し開始位置とfull batch数を設定する """
+        """各offsetの開始位置とfull batch数を設定する。"""
         self.start_ixs = [
             np.arange(offset, len(self.data)-self.block_size[1]+1, self.step)
             for offset in range(self.step)
         ]
         self.n_batches = [len(ix) // self.batch_size for ix in self.start_ixs]
+        # full batchを一つも作れないoffsetはepochに数えない。
+        self.active_offsets = [o for o, n in enumerate(self.n_batches) if n > 0]
 
     def set_cycle(self):
-        """ 全offsetをround-robinで一巡するcycleを構成し、cycle状態を初期化する """
+        """全有効offsetのbatch順を再構成し、cycle位置を戻す。"""
+        self.cycle_iters = 0
         self.set_start_ix()
+        if not self.active_offsets:
+            raise ValueError("No full batch available.")
         if self.shuffle:
             self.shuffle_ix()
 
         self.cycle = []
         for batch in range(max(self.n_batches)):
-            for offset in range(self.step):
+            for offset in self.active_offsets:
                 if batch < self.n_batches[offset]:
                     self.cycle.append((offset, batch))
 
     def reset(self):
-        """ epochとcycleを初期状態に戻す """
+        """epochとcycleを初期状態に戻す。"""
         self.iters = 0
         self.epoch = 0
         self.set_cycle()
-        self.n_batch = len(self.cycle)
-        if self.n_batch == 0:
-            raise ValueError("No full batch available.")
+        self.n_batch = self.n_batches[self.active_offsets[0]]
 
     def shuffle_ix(self):
-        """ 各offsetの切り出し開始位置をshuffleする """
+        """各offsetの切り出し開始位置をshuffleする。"""
         for ix in self.start_ixs:
             np.random.shuffle(ix)
 
     def info(self):
-        """ 次に払い出すbatchの状態を表示する """
-        offset, batch = self.cycle[self.iters]
+        """次に払い出すbatchの状態を表示する。"""
+        offset, batch = self.cycle[self.cycle_iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         print(f'next: epoch {self.epoch} batch {self.iters+1}/{self.n_batch}',
               f'offset {offset} start {idx[:5]}')
-    
+
     def __call__(self):
-        """ 次のbatchを切り出して返す """
+        """次のbatchを切り出して返す。"""
         various_length = np.random.randint(
             self.block_size[0], self.block_size[1]+1)
-
-        offset, batch = self.cycle[self.iters]
+        offset, batch = self.cycle[self.cycle_iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         x = np.stack([self.data[int(i):int(i)+various_length] for i in idx])
 
+        self.cycle_iters += 1
         self.iters += 1
 
         if self.iters >= self.n_batch:
             self.epoch += 1
             self.iters = 0
-            self.set_cycle()
+            # 有効offsetを一巡したときだけ、cycleを作り直す。
+            if self.epoch % len(self.active_offsets) == 0:
+                self.set_cycle()
+            o = self.active_offsets[self.epoch % len(self.active_offsets)]
+            self.n_batch = self.n_batches[o]
 
         return x
-
 
 class CutOutBatchIx:
     """
@@ -3016,7 +3020,6 @@ class CutOutBatchIx:
     """
 
     def __init__(self, length, block_size=500, batch_size=16, step=1, shuffle=True):
-        """ CutOutBatchIxを初期化する """
         if isinstance(block_size, (tuple, list)) and len(block_size) == 2:
             self.block_size = block_size
         elif isinstance(block_size, int):
@@ -3032,64 +3035,71 @@ class CutOutBatchIx:
         self.reset()
 
     def set_start_ix(self):
-        """ 各offsetの切り出し開始位置とfull batch数を設定する """
+        """各offsetの開始位置とfull batch数を設定する。"""
         self.start_ixs = [
             np.arange(offset, self.length-self.block_size[1]+1, self.step)
             for offset in range(self.step)
         ]
         self.n_batches = [len(ix) // self.batch_size for ix in self.start_ixs]
+        self.active_offsets = [o for o, n in enumerate(self.n_batches) if n > 0]
 
     def set_cycle(self):
-        """ 全offsetをround-robinで一巡するcycleを構成し、cycle状態を初期化する """
+        """全有効offsetのbatch順を再構成し、cycle位置を戻す。"""
+        self.cycle_iters = 0
         self.set_start_ix()
+        if not self.active_offsets:
+            raise ValueError("No full batch available.")
         if self.shuffle:
             self.shuffle_ix()
 
         self.cycle = []
         for batch in range(max(self.n_batches)):
-            for offset in range(self.step):
+            for offset in self.active_offsets:
                 if batch < self.n_batches[offset]:
                     self.cycle.append((offset, batch))
 
     def reset(self):
-        """ epochとcycleを初期状態に戻す """
+        """epochとcycleを初期状態に戻す。"""
         self.iters = 0
         self.epoch = 0
         self.set_cycle()
-        self.n_batch = len(self.cycle)
-        if self.n_batch == 0:
-            raise ValueError("No full batch available.")
+        self.n_batch = self.n_batches[self.active_offsets[0]]
 
     def shuffle_ix(self):
-        """ 各offsetの切り出し開始位置をshuffleする """
+        """各offsetの開始位置をshuffleする。"""
         for ix in self.start_ixs:
             np.random.shuffle(ix)
 
     def info(self):
-        """ 次に払い出すbatchの状態を表示する """
-        offset, batch = self.cycle[self.iters]
+        """次に払い出すbatchの状態を表示する。"""
+        offset, batch = self.cycle[self.cycle_iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         print(f'next: epoch {self.epoch} batch {self.iters+1}/{self.n_batch}',
               f'offset {offset} start {idx[:5]}')
 
     def __call__(self):
-        """ 次のbatchのindexを切り出して返す """
-        various_length = np.random.randint(self.block_size[0], self.block_size[1]+1)
-        offset, batch = self.cycle[self.iters]
+        """次のbatchのindexを切り出して返す。"""
+        various_length = np.random.randint(
+            self.block_size[0], self.block_size[1]+1)
+        offset, batch = self.cycle[self.cycle_iters]
         i = batch * self.batch_size
         idx = self.start_ixs[offset][i:i+self.batch_size]
         x = np.stack([np.arange(int(i), int(i)+various_length) for i in idx])
 
+        self.cycle_iters += 1
         self.iters += 1
 
         if self.iters >= self.n_batch:
             self.epoch += 1
             self.iters = 0
-            self.set_cycle()
+            if self.epoch % len(self.active_offsets) == 0:
+                self.set_cycle()
+            o = self.active_offsets[self.epoch % len(self.active_offsets)]
+            self.n_batch = self.n_batches[o]
 
         return x
-    
+   
 # -- 複数画像を表示 --
 def display_images(image):
     n = len(image)
