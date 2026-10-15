@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20261013 A.Inoue
+# 20261014 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -272,7 +272,7 @@ class BigramLanguageModel2a(BigramLanguageModel2):
             self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
 
         self.pffwd = sbh.CausalConvFeedForward(
-                emb_dim, intermediate=None, expansion=1, optimize=optimize, w_decay=w_decay, **kwargs)
+                emb_dim, intermediate, expansion, optimize=optimize, w_decay=w_decay, **kwargs)
 
 class BigramLanguageModel3(BigramLanguageModel2):
     """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
