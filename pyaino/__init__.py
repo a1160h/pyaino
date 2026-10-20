@@ -77,5 +77,7 @@ CURRENT_MODULES = (
     'onnx_to_pyaino',
     'pyaino_to_onnx',
     'torch_bridge',
+    'numpy_min',
+    'exe_builder',
 )
 
