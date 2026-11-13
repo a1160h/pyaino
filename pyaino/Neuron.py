@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20261010 A.Inoue
+# 20261113 A.Inoue
 
 import copy
 import warnings
@@ -475,7 +475,7 @@ class LinearLayer(Function):
         self.parameters.accommodate()
             
 #### ニューロンの基本機能 ##############################################
-class LinearLayerCrossEntropy(LinearLayer):
+class LinearLayerCrossEntropy_bkup(LinearLayer):
     """ Softmaxそして損失まで一気に算出するニューロンの基本機能 """
     def __init__(self, *configuration, **kwargs):
         super().__init__(*configuration, **kwargs)
@@ -594,6 +594,171 @@ class LinearLayerCrossEntropy(LinearLayer):
         self.parameters.set_gradient(grad_w, grad_b, ggamma)        
         grad_x = self.prephase.backward(grad_x)
         return grad_x
+
+#### ニューロンの基本機能 ##############################################
+class LinearLayerCrossEntropy(LinearLayer):
+    """タイル式LM head: 推論、通常CE、温度付きKL知識蒸留を共通処理で実行する。
+
+    forward(x)              -> (pred, max_logit)  [従来どおり]
+    forward(x, t)           -> (pred, CE)         [従来どおり]
+    forward(x, q=q, tau=T)  -> (pred, T**2 * KL(q_T || p_T))
+
+    qは教師logitsではなく、温度Tで正規化済みの教師確率。
+    q: array (..., V) または callable(start, end) -> (..., end-start)
+    callableはforwardとbackwardで同じ値を返すこと。
+    """
+    def __init__(self, *configuration, **kwargs):
+        super().__init__(*configuration, **kwargs)
+        self.tile_size = kwargs.pop('tile_size', None)
+
+    def _teacher_tile(self, start, end, leading_shape, dtype):
+        q = self._kd_q(start, end) if callable(self._kd_q) else self._kd_q[..., start:end]
+        q = np.asarray(q, dtype=dtype)
+        shape = leading_shape + (end - start,)
+        if q.shape != shape:
+            raise ValueError(f'q tile shape {q.shape}, expected {shape}')
+        if not bool(np.all(np.isfinite(q))) or bool(np.any(q < 0)):
+            raise ValueError('q must contain finite nonnegative probabilities')
+        return q
+
+    def __forward__(self, x, t=None, *, q=None, tau=1.0, **kwargs):
+        if t is not None and q is not None:
+            raise ValueError('Specify t (CE) or q (KD), not both')
+        kd = q is not None
+        if not kd and tau != 1.0:
+            raise ValueError('tau is used only with q')
+        if kd and not (0.0 < float(tau) < float('inf')):
+            raise ValueError('tau must be positive and finite')
+
+        self.x, self.t = x, t
+        self._kd_mode = kd
+        self._loss_mode = kd or t is not None
+        if None in self.config:
+            self.fix_configuration(x.shape)
+        h = self.prephase.forward(x)
+        self._h = h
+        w, b, gamma = self.parameters()
+        m, n = self.config
+        if self.tile_size is None:
+            self.tile_size = n
+        if self.tile_size <= 0:
+            raise ValueError('tile_size must be positive')
+
+        leading_shape = h.shape[:-1]
+        self.leading_size = 1.0
+        for d in leading_shape:
+            self.leading_size *= d
+
+        if kd:
+            self._kd_q = q
+            self._kd_tau = float(tau)
+            self._kd_leading_shape = leading_shape
+            if not callable(q) and np.shape(q) != leading_shape + (n,):
+                raise ValueError(f'q shape {np.shape(q)}, expected {leading_shape + (n,)}')
+            sum_q = np.zeros(leading_shape, dtype=h.dtype)
+            mean_z = np.zeros(leading_shape, dtype=h.dtype)
+            qlogq = np.zeros(leading_shape, dtype=h.dtype)
+        elif t is not None:
+            zt = np.zeros(leading_shape, dtype=h.dtype)
+
+        max_logit = np.full(leading_shape, -np.inf, dtype=h.dtype)
+        max_index = np.full(leading_shape, -1, dtype=np.int64)
+        sum_exp = np.zeros(leading_shape, dtype=h.dtype)
+
+        for start in range(0, n, self.tile_size):
+            end = min(start + self.tile_size, n)
+            tile_w = w[:, start:end]
+            tile_b = b[start:end] if self.bias else None
+            z = self.dot_linear.forward(h, tile_w, tile_b, gamma)
+            # KLは温度付きsoftmaxを用いる。CE/推論は従来のlogits。
+            u = z / self._kd_tau if kd else z
+            old_max = max_logit.copy()
+            tile_idx = np.argmax(u, axis=-1)
+            tile_max = np.take_along_axis(u, tile_idx[..., None], axis=-1).squeeze(-1)
+            update = tile_max > max_logit
+            max_logit = np.maximum(max_logit, tile_max)
+            max_index = np.where(update, start + tile_idx, max_index)
+            sum_exp = (sum_exp * np.exp(old_max - max_logit)
+                       + np.sum(np.exp(u - max_logit[..., None]), axis=-1))
+
+            if kd:
+                q_tile = self._teacher_tile(start, end, leading_shape, h.dtype)
+                sum_q += np.sum(q_tile, axis=-1)
+                mean_z += np.sum(q_tile * u, axis=-1)
+                safe_q = np.maximum(q_tile, np.array(1.e-30, dtype=h.dtype))
+                qlogq += np.sum(q_tile * np.log(safe_q), axis=-1)
+            elif t is not None:
+                t_in_tile = (start <= t) & (t < end)
+                if t_in_tile.any():
+                    tile_t = np.where(t_in_tile, t - start, 0).astype(np.int32)
+                    tile_zt = F.take_along_axis(
+                        z, tile_t[..., None], axis=-1).squeeze(-1)
+                    zt = np.where(t_in_tile, tile_zt, zt)
+
+        if not self._loss_mode:
+            return max_index, max_logit
+
+        if kd and not bool(np.allclose(sum_q, 1.0, rtol=2.e-4, atol=2.e-4)):
+            raise ValueError('Teacher q must sum to one at each position (at temperature tau)')
+
+        self.max_logit = max_logit
+        self.sum_exp = sum_exp
+        if kd:
+            loss = np.log(sum_exp) + max_logit - mean_z + qlogq
+            loss = np.sum(loss) * (self._kd_tau ** 2 / self.leading_size)
+        else:
+            loss = np.log(sum_exp) + max_logit - zt
+            loss = np.sum(loss) / self.leading_size
+        return max_index, loss
+
+    def __backward__(self, *args):
+        if not self._loss_mode:
+            raise RuntimeError('backward() requires forward(x, t) or forward(x, q=q)')
+
+        m, n = self.config
+        w, b, gamma = self.parameters()
+        kd = self._kd_mode
+        tau = self._kd_tau if kd else 1.0
+        # 既存のCE経路は元の実装に合わせてself.xを使用。
+        # KD経路ではforwardのprephase出力hを使用する。
+        x = self._h if kd else self.x
+        grad_w = np.zeros_like(w)
+        grad_b = np.zeros_like(b) if self.bias else None
+        grad_x = np.zeros_like(x)
+        ggamma = np.zeros_like(gamma) if self.scale else None
+
+        for start in range(0, n, self.tile_size):
+            end = min(start + self.tile_size, n)
+            tile_w = w[:, start:end]
+            tile_b = b[start:end] if self.bias else None
+            z = self.dot_linear.forward(x, tile_w, tile_b, gamma)
+            u = z / tau if kd else z
+            p_tile = np.exp(u - self.max_logit[..., None]) / self.sum_exp[..., None]
+
+            if kd:
+                q_tile = self._teacher_tile(start, end, self._kd_leading_shape, x.dtype)
+                gz = (p_tile - q_tile) * (tau / self.leading_size)
+            else:
+                t_in_tile = (start <= self.t) & (self.t < end)
+                gz = p_tile
+                if t_in_tile.any():
+                    tile_t = np.where(t_in_tile, self.t - start, 0).astype(np.int32)
+                    correction = -t_in_tile.astype(Config.dtype)[..., None]
+                    gz = F.scatter_add_along_axis(
+                        correction, tile_t[..., None], p_tile.shape, axis=-1)
+                    gz += p_tile
+                gz /= self.leading_size
+
+            gx, gw, gb, gg = self.dot_linear.backward(gz)
+            grad_x += gx
+            grad_w[:, start:end] = gw
+            if self.bias:
+                grad_b[start:end] = gb
+            if self.scale:
+                ggamma += gg
+
+        self.parameters.set_gradient(grad_w, grad_b, ggamma)
+        return self.prephase.backward(grad_x)
 
 
 #### ニューロン関連共通部分 ##############################################
@@ -3537,6 +3702,43 @@ class Embedding(Function):
         gx = gy if self.mask is None else gy * self.mask
         self.parameters.set_gradient(x, gx)
             
+
+class LowRankEmbedding(Function):    
+    """
+    埋込み行列を2つの行列に分解して表すEmbedding
+
+    (V, d) = (V, r) @ (r, d)　ここで、r < d とすれば容量を小さくできる
+
+    """ 
+    def __init__(self, vocab_size, dimension, rank, **kwargs):
+        super().__init__()
+        if any(type(v) is not int or v <= 0 for v in (vocab_size, dimension, rank)):
+            raise ValueError('vocab_size, dimension and rank must be positive integers.')
+        self.config = (vocab_size, dimension, rank)
+        print('Initialize', self.__class__.__name__, self.config)
+        self.embed = Embedding(vocab_size, rank, **kwargs)
+        kw = dict(kwargs)
+        kw.update(matmul=True, bias=False, scale=False)
+        self.project = LinearLayer(rank, dimension, **kw)
+
+    def __forward__(self, x, *, mask=None, dropout=0.0, **kwargs):
+        y = self.embed.forward(x, mask=mask, dropout=dropout, **kwargs)
+        y = self.project.forward(y)
+        return y
+
+    def __backward__(self, gy):
+        gx = self.project.backward(gy)
+        self.embed.backward(gx)
+
+    def update(self, eta=0.001, **kwargs):
+        self.embed.update(eta=eta, **kwargs)
+        self.project.update(eta=eta, **kwargs)
+
+    def accommodate(self):
+        self.embed.config = (self.config[0], self.config[2]) # config変更をembedに反映
+        self.embed.accommodate()
+
+
         
 #### 位置符号化 ####################################################　   
 class PositionalEmbedding: 
