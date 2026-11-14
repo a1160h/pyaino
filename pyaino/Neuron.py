@@ -596,7 +596,7 @@ class LinearLayerCrossEntropy_bkup(LinearLayer):
         return grad_x
 
 #### ニューロンの基本機能 ##############################################
-class LinearLayerCrossEntropy(LinearLayer):
+class LinearLayerCrossEntropy_bkup2(LinearLayer):
     """タイル式LM head: 推論、通常CE、温度付きKL知識蒸留を共通処理で実行する。
 
     forward(x)              -> (pred, max_logit)  [従来どおり]
@@ -622,11 +622,10 @@ class LinearLayerCrossEntropy(LinearLayer):
         return q
 
     def __forward__(self, x, t=None, *, q=None, tau=1.0, **kwargs):
-        if t is not None and q is not None:
-            raise ValueError('Specify t (CE) or q (KD), not both')
-        kd = q is not None
-        if not kd and tau != 1.0:
-            raise ValueError('tau is used only with q')
+        kd = t is None and q is not None
+        tau = float(tau) if kd else 1.0
+        self.tau = tau
+
         if kd and not (0.0 < float(tau) < float('inf')):
             raise ValueError('tau must be positive and finite')
 
@@ -718,7 +717,7 @@ class LinearLayerCrossEntropy(LinearLayer):
         m, n = self.config
         w, b, gamma = self.parameters()
         kd = self._kd_mode
-        tau = self._kd_tau if kd else 1.0
+        tau = self.tau
         # 既存のCE経路は元の実装に合わせてself.xを使用。
         # KD経路ではforwardのprephase出力hを使用する。
         x = self._h if kd else self.x
@@ -743,6 +742,147 @@ class LinearLayerCrossEntropy(LinearLayer):
                 gz = p_tile
                 if t_in_tile.any():
                     tile_t = np.where(t_in_tile, self.t - start, 0).astype(np.int32)
+                    correction = -t_in_tile.astype(Config.dtype)[..., None]
+                    gz = F.scatter_add_along_axis(
+                        correction, tile_t[..., None], p_tile.shape, axis=-1)
+                    gz += p_tile
+                gz /= self.leading_size
+
+            gx, gw, gb, gg = self.dot_linear.backward(gz)
+            grad_x += gx
+            grad_w[:, start:end] = gw
+            if self.bias:
+                grad_b[start:end] = gb
+            if self.scale:
+                ggamma += gg
+
+        self.parameters.set_gradient(grad_w, grad_b, ggamma)
+        return self.prephase.backward(grad_x)
+
+#### ニューロンの基本機能 ##############################################
+class LinearLayerCrossEntropy(LinearLayer):
+    """タイル式LM head: 推論、通常CE、温度付きKL知識蒸留(Knowledge Distillation)を共通処理で実行する。
+
+    forward(x)              -> (pred, max_logit)  [従来どおり]
+    forward(x, t)           -> (pred, CE)         [従来どおり]
+    forward(x, q=q, tau=T)  -> (pred, T**2 * KL(q_T || p_T))
+
+    qは教師logitsではなく、温度Tで正規化済みの教師確率。
+    q: array (..., V) または callable(start, end) -> (..., end-start)
+    callableはforwardとbackwardで同じ値を返すこと。
+    """
+    def __init__(self, *configuration, **kwargs):
+        super().__init__(*configuration, **kwargs)
+        self.tile_size = kwargs.pop('tile_size', None)
+        if self.tile_size is not None and self.tile_size <= 0:
+            raise ValueError('tile_size must be positive')
+
+    def forward(self, x, t=None, *, q=None, tau=1.0, **kwargs):
+        self.x, self.t = x, t
+        kd = t is None and q is not None # tがNoneかつqがNoneでないなら知識蒸留
+        tau = float(tau) if kd else 1.0
+        self.tau = tau
+        self.kd = kd
+        self._kd_q = q if kd else None
+        
+        if None in self.config:
+            self.fix_configuration(x.shape)
+        x = self.prephase.forward(x)
+        w, b, gamma = self.parameters()
+        m, n = self.config
+        if self.tile_size is None:
+            self.tile_size = n
+
+        leading_shape = x.shape[:-1]
+        self.leading_size = 1.0
+        for i in leading_shape:
+            self.leading_size *= i
+
+        if kd:
+            mean_z = np.zeros(leading_shape, dtype=x.dtype)
+            qlogq = np.zeros(leading_shape, dtype=x.dtype)
+        elif t is not None:
+            zt = np.zeros(leading_shape, dtype=x.dtype)
+
+        max_logit = np.full(leading_shape, -np.inf, dtype=x.dtype)
+        max_index = np.full(leading_shape, -1, dtype=np.int64)
+        sum_exp = np.zeros(leading_shape, dtype=x.dtype)
+
+        for start in range(0, n, self.tile_size):
+            end = min(start + self.tile_size, n)
+            tile_w = w[:, start:end]
+            tile_b = b[start:end] if self.bias else None
+            tile_z = self.dot_linear.forward(x, tile_w, tile_b, gamma)
+
+            last_max_logit = max_logit.copy()
+
+            # KLは温度付きsoftmaxを用いる。CE/推論は従来のlogits。
+            u = tile_z / tau
+            tile_max_index = np.argmax(u, axis=-1)
+            tile_max_logit = (
+                np.take_along_axis(u, tile_max_index[..., None], axis=-1).squeeze(-1))
+            update = tile_max_logit > max_logit
+            max_logit = np.maximum(max_logit, tile_max_logit)
+            max_index = np.where(update, start + tile_max_index, max_index)
+            sum_exp = (sum_exp * np.exp(last_max_logit - max_logit)
+                       + np.sum(np.exp(u - max_logit[..., None]), axis=-1))
+
+            if kd:
+                q_tile = q(start, end) if callable(q) else q[..., start:end]
+                mean_z += np.sum(q_tile * u, axis=-1)
+                safe_q = np.maximum(q_tile, np.array(1.e-30, dtype=x.dtype))
+                qlogq += np.sum(q_tile * np.log(safe_q), axis=-1)
+            elif t is not None:
+                t_in_tile = (start <= t) & (t < end)
+                if t_in_tile.any():
+                    tile_t = np.where(t_in_tile, t - start, 0).astype(np.int32)
+                    tile_zt = F.take_along_axis(
+                        tile_z, tile_t[..., None], axis=-1).squeeze(-1)
+                    zt = np.where(t_in_tile, tile_zt, zt)
+
+        if t is None and not kd:
+            return max_index, max_logit
+
+        self.max_logit = max_logit
+        self.sum_exp = sum_exp
+        
+        if kd:
+            loss = np.log(sum_exp) + max_logit - mean_z + qlogq
+        else:
+            loss = np.log(sum_exp) + max_logit - zt
+        loss = np.sum(loss) * (tau ** 2 / self.leading_size)
+        return max_index, loss
+
+    def backward(self, *args):
+        m, n = self.config
+        x, t = self.x, self.t
+        w, b, gamma = self.parameters()
+        kd = self.kd
+        tau = self.tau
+        q = self._kd_q
+        x = self.prephase.forward(x)
+        
+        grad_w = np.zeros_like(w)
+        grad_b = np.zeros_like(b) if self.bias else None
+        grad_x = np.zeros_like(x)
+        ggamma = np.zeros_like(gamma) if self.scale else None
+
+        for start in range(0, n, self.tile_size):
+            end = min(start + self.tile_size, n)
+            tile_w = w[:, start:end]
+            tile_b = b[start:end] if self.bias else None
+            tile_z = self.dot_linear.forward(x, tile_w, tile_b, gamma)
+            u = tile_z / tau
+            p_tile = np.exp(u - self.max_logit[..., None]) / self.sum_exp[..., None]
+
+            if kd:
+                q_tile = q(start, end) if callable(q) else q[..., start:end]
+                gz = (p_tile - q_tile) * (tau / self.leading_size)
+            else:
+                t_in_tile = (start <= t) & (t < end)
+                gz = p_tile
+                if t_in_tile.any():
+                    tile_t = np.where(t_in_tile, t - start, 0).astype(np.int32)
                     correction = -t_in_tile.astype(Config.dtype)[..., None]
                     gz = F.scatter_add_along_axis(
                         correction, tile_t[..., None], p_tile.shape, axis=-1)
