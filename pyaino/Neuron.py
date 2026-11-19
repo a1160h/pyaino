@@ -6264,8 +6264,13 @@ class RootMeanSquareNormalization(Function):
                  eps=1e-12, inplace=False, 
                  **kwargs):
         super().__init__()
+        if (type(scale_and_bias) is not bool
+                and not (type(scale_and_bias) is str and scale_and_bias == 'scale')):
+            raise ValueError("scale_and_bias must be False, True, or 'scale'")
+       
         self.ppl = ppl
-        self.sb = scale_and_bias     
+        self.sb = scale_and_bias is not False
+        self.use_beta = scale_and_bias is True
         self.axis = axis
         self.eps = eps
         self.sigma = None
@@ -6278,7 +6283,8 @@ class RootMeanSquareNormalization(Function):
             self.exclude = exclude   # 処理がaxisの指定に沿うのか否か
             optimize = kwargs.pop('optimize',     'AdaGrad') # 勾配降下法
             self.OFg = cf.eval_in_module(optimize, Optimizers) # 最適化関数
-            self.OFb = cf.eval_in_module(optimize, Optimizers) # 最適化関数
+            if self.use_beta:
+                self.OFb = cf.eval_in_module(optimize, Optimizers) # 最適化関数
             self.gamma = None
             self.beta  = None
 
@@ -6293,7 +6299,8 @@ class RootMeanSquareNormalization(Function):
             parameter_shape, remain_axis \
                              = set_axis_and_shape(shape, self.axis, self.exclude)
             self.gamma = np.ones(parameter_shape, dtype=Config.dtype)    # 広がり                    
-            self.beta = np.zeros(parameter_shape, dtype=Config.dtype)    # オフセット                    
+            if self.use_beta:
+                self.beta = np.zeros(parameter_shape, dtype=Config.dtype) # オフセット
             self.remain_axis = remain_axis # 逆伝播に必要
 
     def update(self, eta=0.001, **kwargs):
@@ -6302,7 +6309,8 @@ class RootMeanSquareNormalization(Function):
 
         if self.sb:
             self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
-            self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
+            if self.use_beta:
+                self.OFb.update(self.beta, self.gbeta, eta, **kwargs)
 
     def __forward__(self, x, *, train=False):
         self.x = x
@@ -6315,7 +6323,8 @@ class RootMeanSquareNormalization(Function):
 
         if self.sb:
             y = x * (self.gamma/sigma)          # Norm/sbの除乗算を同時に
-            y += self.beta
+            if self.use_beta:
+                y += self.beta
         else:
             y = x / sigma
            
@@ -6328,7 +6337,8 @@ class RootMeanSquareNormalization(Function):
         z = x / self.sigma                   # 中間値：Norm出力=Scale&Bias入力
 
         if self.sb:
-            self.gbeta  = np.sum(gy, axis=self.remain_axis, keepdims=True)
+            if self.use_beta:
+                self.gbeta = np.sum(gy, axis=self.remain_axis, keepdims=True)
             self.ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
             gx = gy * self.gamma
         else:
