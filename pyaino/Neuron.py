@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20261113 A.Inoue
+# 20261119 A.Inoue
 
 import copy
 import warnings
@@ -4212,39 +4212,36 @@ class RoPE(Function):
         else:
             raise NotImplementedError()
 
-    def get_cos_sin(self, x):
+    def get_cos_sin(self, x, offset=0):
         T = x.shape[-2]
         H = x.shape[-1]
 
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+
         if self.inv_freq is None:
             if H % 2 != 0:
-                raise ValueError(
-                    f"RoPE requires even head_dim, but got {H}"
-                )
+                raise ValueError(f"RoPE requires even head_dim, but got {H}")
 
             i = np.arange(H // 2, dtype=x.dtype)
             self.inv_freq = self.base ** (-2.0 * i / H)
 
-        if self.cos_sin is None or len(self.cos_sin) < T:
-            position = np.arange(T, dtype=x.dtype)
+        N = offset + T
+        if self.cos_sin is None or len(self.cos_sin) < N:
+            position = np.arange(N, dtype=x.dtype)
             theta = position[:, None] * self.inv_freq[None, :]
-            self.cos_sin = np.stack(
-                (np.cos(theta), np.sin(theta)), axis=-1
-            )
+            self.cos_sin = np.stack((np.cos(theta), np.sin(theta)), axis=-1)
 
-        cos = self.cos_sin[:T, :, 0]
-        sin = self.cos_sin[:T, :, 1]
-
+        cos = self.cos_sin[offset:N, :, 0]
+        sin = self.cos_sin[offset:N, :, 1]
         shape = (1,) * (x.ndim - 2) + (T, H // 2)
-
         cos = cos.reshape(shape)
         sin = sin.reshape(shape)
-
         return cos, sin
 
-    def __forward__(self, q, k):
-        cos_q, sin_q = self.get_cos_sin(q)
-        cos_k, sin_k = self.get_cos_sin(k)
+    def __forward__(self, q, k, offset=0):
+        cos_q, sin_q = self.get_cos_sin(q, offset)
+        cos_k, sin_k = self.get_cos_sin(k, offset)
         self.rotateq = self.RT(cos_q, sin_q)
         self.rotatek = self.RT(cos_k, sin_k)
         q = self.rotateq(q)
@@ -4500,11 +4497,13 @@ class AttentionUnit(Function):
             raise ValueError(
                 "head must be int or (q_head, kv_head) or (q_head, k_head, v_head)")
 
-        causality   = kwargs.pop('causality',  False) # 時系列の前後関係 
-        rope        = kwargs.pop('rope',       False) # Rotary Positional Embedding
-        self.scale  = kwargs.pop('scale',       True)
-        temperature = kwargs.pop('temperature',  1.0)  
-        regularizer = kwargs.pop('regularizer', None)
+        causality   = kwargs.pop('causality',         False) # 時系列の前後関係 
+        rope        = kwargs.pop('rope',              False) # Rotary Positional Embedding
+        rope_base   = kwargs.pop('rope_base',       10000.0)
+        rope_mode   = kwargs.pop('rope_mode', 'interleaved')
+        self.scale  = kwargs.pop('scale',              True)
+        temperature = kwargs.pop('temperature',         1.0)  
+        regularizer = kwargs.pop('regularizer',        None)
        
         if type(regularizer) == str:
             self.regularizer = cf.eval_in_module(regularizer, Regularizers)
@@ -4512,7 +4511,7 @@ class AttentionUnit(Function):
             self.regularizer = copy.deepcopy(regularizer) # インスタンス分離のために必須
 
         self.causality = causality
-        self.rope = RoPE() if rope else None
+        self.rope = RoPE(base=rope_base, mode=rope_mode) if rope else None
         self.softmax = Activators.Softmax(temperature=temperature)
         self.DO = Dropout()
         self.iter = 0
