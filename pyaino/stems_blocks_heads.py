@@ -377,32 +377,43 @@ class TransformerBlock(nucleus.Function):
 
     def __init__(self, emb_dim=64, n_head=4, causality=None, proj=False, ffwd='ffn',
                  intermediate=None, expansion=4, rms=False, activate='Mish',
-                 chunk_size=None, **kwargs):
+                 chunk_size=None, head_dim=None, **kwargs):
         super().__init__()
-        self.sa = nn.MultiHeadSelfAttention(
-            emb_dim, emb_dim//n_head, n_head, causality=causality, chunk_size=chunk_size,
-            **kwargs) # entropy制御はkwargsで指定
 
-        if   ffwd == 'ffn':
+        # Separate options that belong to Attention and Normalization.
+        attn_only = {'bias', 'qk_norm', 'qk_norm_eps', 'rope', 'rope_mode', 'rope_base'}
+        norm_only = {'scale_and_bias', 'eps'}
+        attn_kwargs = {k: v for k, v in kwargs.items() if k not in norm_only}
+        ffwd_kwargs = {k: v for k, v in kwargs.items()
+                       if k not in attn_only and k not in norm_only}
+        norm_kwargs = {k: v for k, v in kwargs.items() if k not in attn_only}
+
+        # SelfAttention resolves head_dim when None, including the GQA case.
+        self.sa = nn.MultiHeadSelfAttention(
+            emb_dim, head_dim, n_head, causality=causality, chunk_size=chunk_size,
+            **attn_kwargs)
+
+        if ffwd == 'ffn':
             self.ffwd = FeedForward(
-                emb_dim, intermediate, expansion, activate=activate, **kwargs)
+                emb_dim, intermediate, expansion, activate=activate, **ffwd_kwargs)
         elif ffwd == 'swiglu':
+            # Preserve legacy activate='Mish' semantics. For Qwen3 use activate=None.
             self.ffwd = SwiGLU(
-                emb_dim, intermediate, expansion, activate=activate, **kwargs)
+                emb_dim, intermediate, expansion, activate=activate, **ffwd_kwargs)
         elif ffwd == 'ccff':
             self.ffwd = CausalConvFeedForward(
-                emb_dim, intermediate, expansion, activate=activate, **kwargs)
+                emb_dim, intermediate, expansion, activate=activate, **ffwd_kwargs)
         else:
             raise NotImplementedError(
-                'Unsupported feed-forward type.', self.__class__.__name__, 'ffwd:', ffwd) 
+                'Unsupported feed-forward type.', self.__class__.__name__, 'ffwd:', ffwd)
 
         Norm = nn.RMSNormalization if rms else nn.LayerNormalization
-        self.ln1 = Norm(**kwargs)
-        self.ln2 = Norm(**kwargs)
+        self.ln1 = Norm(**norm_kwargs)
+        self.ln2 = Norm(**norm_kwargs)
 
-        # ベクトル加算用
+        # Optional vector injection; preserve existing behavior and defaults.
         if proj:
-            self.proj = nn.LinearLayer(emb_dim, **kwargs) # 出力幅未定
+            self.proj = nn.LinearLayer(emb_dim, **ffwd_kwargs)
         else:
             self.proj = None
         self.proj_used = False
