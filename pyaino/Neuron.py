@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20261119 A.Inoue
+# 20261121 A.Inoue
 
 import copy
 import warnings
@@ -4943,9 +4943,12 @@ class SelfAttention(Function):
 
         optimize = kwargs.pop('optimize',   'Adam')
         chunk_size = kwargs.pop('chunk_size', None)
+        qk_norm = kwargs.pop('qk_norm', False)
+        qk_norm_eps = kwargs.pop('qk_norm_eps', 1e-6)
+        bias_i, bias_o = kwargs.pop('bias', (False, True))
 
         # linear_iとlinear_oのconfigはfix_configurationで設定
-        self.linear_i = LinearLayer(matmul=True, bias=False,
+        self.linear_i = LinearLayer(matmul=True, bias=bias_i,
                                     #scale=True,
                                     optimize=optimize,
                                     #spctrnorm=1,
@@ -4963,12 +4966,17 @@ class SelfAttention(Function):
                      #scale=scale, temperature=temperature,
                      #entropy_decay=entropy_decay)
 
-        self.linear_o = LinearLayer(matmul=True, bias=True,
+        self.linear_o = LinearLayer(matmul=True, bias=bias_o,
                                     #scale=True,
                                     optimize=optimize,
                                     #spctrnorm=1,
                                     **kwargs)
 
+        # Optional independent Q/K RMSNorm; one gamma vector per projection.
+        self.q_norm = (RMSNormalization(axis=-1, scale_and_bias='scale',
+                                        eps=qk_norm_eps) if qk_norm else None)
+        self.k_norm = (RMSNormalization(axis=-1, scale_and_bias='scale',
+                                        eps=qk_norm_eps) if qk_norm else None)
         self.DO = Dropout()
         self.step = 0
 
@@ -4993,15 +5001,9 @@ class SelfAttention(Function):
                 )
             head_dim = emb_dim // hq
 
-        elif hq * head_dim != emb_dim:
-            raise ValueError(
-                f"head_dim mismatch: "
-                f"emb_dim={emb_dim}, q_head={hq}, head_dim={head_dim}"
-            )
-
         self.config = emb_dim, head_dim, n_head
         self.linear_i.config = emb_dim, (hq + hk + hv) * head_dim
-        self.linear_o.config = emb_dim, emb_dim
+        self.linear_o.config = hq * head_dim, emb_dim
 
         print(self.__class__.__name__, 'fix_configuration', shape, self.config,
               'qkv =', tuple(h * head_dim for h in n_head))
@@ -5014,6 +5016,10 @@ class SelfAttention(Function):
         z = self.linear_i.forward(x)
         # zをhq*head_dimと(hq+hk)*head_dimの2か所で切って3分割する
         query, key, value = np.split(z, [hq*head_dim, (hq+hk)*head_dim], axis=-1) 
+        if self.q_norm is not None:
+            B, T, _ = query.shape
+            query = self.q_norm.forward(query.reshape(B, T, hq, head_dim)).reshape(B, T, -1)
+            key = self.k_norm.forward(key.reshape(B, T, hk, head_dim)).reshape(B, T, -1)
         y = self.attention.forward(query, key, value, mask=mask, dropout=dropout)
         y = self.linear_o.forward(y)
         y = self.DO.forward(y, dropout=dropout)
@@ -5024,6 +5030,12 @@ class SelfAttention(Function):
         gx = self.DO.backward(gy)
         gx = self.linear_o.backward(gx)
         gq, gk, gv = self.attention.backward(gx)
+        if self.q_norm is not None:
+            _, head_dim, n_head = self.config
+            hq, hk, hv = n_head
+            B, T, _ = gq.shape
+            gq = self.q_norm.backward(gq.reshape(B, T, hq, head_dim)).reshape(B, T, -1)
+            gk = self.k_norm.backward(gk.reshape(B, T, hk, head_dim)).reshape(B, T, -1)
         gz = np.concatenate([gq, gk, gv], axis=-1)
         gx = self.linear_i.backward(gz)
         return gx
@@ -5031,6 +5043,9 @@ class SelfAttention(Function):
     def update(self, eta=0.001, **kwargs):
         self.linear_i.update(eta=eta, **kwargs)
         self.linear_o.update(eta=eta, **kwargs)
+        if self.q_norm is not None:
+            self.q_norm.update(eta=eta, **kwargs)
+            self.k_norm.update(eta=eta, **kwargs)
 
     def entropy(self):
         return self.attention.entropy
