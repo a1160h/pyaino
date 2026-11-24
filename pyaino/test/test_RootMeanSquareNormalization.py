@@ -55,7 +55,7 @@ def test_forward_basic():
     _assert_allfinite("y", y)
     assert y.shape == x.shape
 
-    # sigma が作れていること（forward で self.sigma を作る）:contentReference[oaicite:2]{index=2}
+    # sigma が作れていること（forward で self.sigma を作る）
     assert f.sigma is not None
     _assert_allfinite("sigma", f.sigma)
 
@@ -78,8 +78,7 @@ def test_backward_numeric_no_sb():
     y = f.__forward__(x, train=True)
     _assert_allfinite("y", y)
 
-    # backward は self.inputs を使うのでセット :contentReference[oaicite:3]{index=3}
-    f.inputs = (x,)
+    # __forward__() が self.x を保持する。
     gx = f.__backward__(gy)
     _assert_allfinite("gx", gx)
     assert gx.shape == x.shape
@@ -111,16 +110,15 @@ def test_forward_backward_with_sb_numeric():
 
     f = RootMeanSquareNormalization(axis=-1, eps=1e-12, scale_and_bias=True)
 
-    # forward（ここで gamma/beta が必要なら init_parameters が呼ばれる）:contentReference[oaicite:4]{index=4}
+    # forward（ここで gamma/beta が必要なら init_parameters が呼ばれる）
     y = f.__forward__(x, train=True)
     _assert_allfinite("y", y)
 
     # backward
-    f.inputs = (x,)
     gx = f.__backward__(gy)
     _assert_allfinite("gx", gx)
 
-    # ggamma, gbeta が作れていること :contentReference[oaicite:5]{index=5}
+    # ggamma, gbeta が作れていること 
     assert hasattr(f, "ggamma") and hasattr(f, "gbeta")
     _assert_allfinite("ggamma", f.ggamma)
     _assert_allfinite("gbeta", f.gbeta)
@@ -200,12 +198,11 @@ def test_scale_only_numeric():
     y = f.__forward__(x, train=True)
     np.testing.assert_allclose(y, y_expected*f.gamma, rtol=1e-7, atol=1e-7)
 
-    f.inputs = (x,)
     gx = f.__backward__(gy)
     _assert_allfinite('scale gx', gx)
     _assert_allfinite('scale ggamma', f.ggamma)
     assert gx.shape == x.shape
-    assert not hasattr(f, 'gbeta')
+    assert f.gbeta is None  # beta勾配は未使用
 
     # ---- x の数値微分 ----
     def loss_x(x_var):
@@ -261,8 +258,6 @@ def test_scale_only_equivalence_to_sb():
     y_both = both.__forward__(x, train=True)
     np.testing.assert_allclose(y_scale, y_both, rtol=0, atol=1e-12)
 
-    scale.inputs = (x,)
-    both.inputs = (x,)
     gx_scale = scale.__backward__(gy)
     gx_both = both.__backward__(gy)
     np.testing.assert_allclose(gx_scale, gx_both, rtol=0, atol=1e-12)
@@ -273,7 +268,7 @@ def test_scale_only_equivalence_to_sb():
 
 def test_ppl_mode_behavior():
     """
-    ppl=True は非訓練時に sigma_ppl を使う仕様（バッチノーマライゼーション用途）:contentReference[oaicite:6]{index=6}
+    ppl=True は非訓練時に sigma_ppl を使う仕様（バッチノーマライゼーション用途）
     - 初回は sigma_ppl=1 で初期化されるので、train=False の出力は概ね x と一致（sb=Falseの場合）
     - train=True を1回通して update しても落ちないことを確認
     """
@@ -283,7 +278,7 @@ def test_ppl_mode_behavior():
 
     f = RootMeanSquareNormalization(axis=-1, ppl=True, scale_and_bias=False, eps=1e-12)
 
-    # 非訓練 forward：sigma_ppl を使う :contentReference[oaicite:7]{index=7}
+    # 非訓練 forward：sigma_ppl を使う 
     y_eval = f.__forward__(x, train=False)
     _assert_allfinite("y_eval", y_eval)
 
@@ -296,7 +291,7 @@ def test_ppl_mode_behavior():
     y_train = f.__forward__(x, train=True)
     _assert_allfinite("y_train", y_train)
 
-    # update が落ちないこと（sigma_ppl を更新）:contentReference[oaicite:8]{index=8}
+    # update が落ちないこと（sigma_ppl を更新）
     f.update()
 
     print("[OK] ppl_mode_behavior")
@@ -313,7 +308,6 @@ def test_zero_input_stability():
 
     # backward
     gy = np.random.randn(B, T, D).astype(np.float64)
-    f.inputs = (x,)
     gx = f.__backward__(gy)
     _assert_allfinite("gx", gx)
 

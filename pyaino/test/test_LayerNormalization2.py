@@ -1,5 +1,4 @@
 from pyaino.Config import *
-set_derivative(True)
 from pyaino import Neuron
 from pyaino import Functions as F
 import matplotlib.pyplot as plt
@@ -49,6 +48,6 @@ plt.show()
 
 # グラフで確認 逆伝播
 plt.plot(gx.reshape(-1).tolist(), marker='x')
-plt.plot(model.scale_and_bias.ggamma.reshape(-1).tolist(), marker='x')
-plt.plot(model.scale_and_bias.gbeta.reshape(-1).tolist(), marker='x')
+plt.plot(model.ggamma.reshape(-1).tolist(), marker='x')
+plt.plot(model.gbeta.reshape(-1).tolist(), marker='x')
 plt.show()
