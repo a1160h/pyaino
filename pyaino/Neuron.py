@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20261121 A.Inoue
+# 20261124 A.Inoue
 
 import copy
 import warnings
@@ -35,15 +35,15 @@ class Sequential:
         self.error_layer = None    
         return y
 
-    def backward(self, gy=None):
+    def backward(self, gy=None, flush=True):
         self.error_layer = self.layers[-1]
         if gy is None:
-            gx = self.layers[-1].backward()
+            gx = self.layers[-1].backward(flush=flush)
         else:
-            gx = self.layers[-1].backward(gy)
+            gx = self.layers[-1].backward(gy, flush=flush)
         for layer in reversed(self.layers[:-1]):
             self.error_layer = layer
-            gx = layer.backward(gx)
+            gx = layer.backward(gx, flush=flush)
         self.error_layer = None    
         return gx
 
@@ -123,7 +123,7 @@ class SequentialWithLoss:
             self.error_layer = None 
             return y, l
 
-    def backward(self, *args, **kwargs): # 外部の勾配には未対応20260414AI
+    def backward(self, *args, flush=True, **kwargs): # 外部の勾配には未対応20260414AI
         self.error_layer = self.layers[-1]
         if self.type==0:  # 通常の損失関数
             if len(args) == 0:
@@ -132,10 +132,10 @@ class SequentialWithLoss:
                 gy, = args # 仮対処20260615AI 
                 gx = gy + self.layers[-1].backward()
         if self.type==1:  # LLCE
-            gx = self.layers[-1].backward()
+            gx = self.layers[-1].backward(flush=flush)
         for layer in reversed(self.layers[:-1]):
             self.error_layer = layer
-            gx = layer.backward(gx)
+            gx = layer.backward(gx, flush=flush)
         self.error_layer = None    
         return gx
 
@@ -314,13 +314,14 @@ class WeightsAndBiases:
         self.grad_w, self.grad_b, self.ggamma = None, None, None
         self.w_bkup, self.b_bkup, self.gamma_bkup = None, None, None
 
-        self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)  # 最適化関数
+        self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs) # 最適化関数
         if self.bias:
             self.optimizer_b = \
                 cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs) # w_decayなどの対象外
         if self.scale:
             self.optimizer_g = \
                 cf.eval_in_module(optimize, Optimizers, bias=True, **kwargs) # w_decayなどの対象外
+        self.n_accum = 0 # 勾配蓄積の回数 
 
     def __call__(self):
         if self.w is None:
@@ -347,12 +348,21 @@ class WeightsAndBiases:
     def update(self, eta=0.001, bkup=False, **kwargs):
         if bkup:
             self.backup()
-        self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs) # 戻り値=更新量
+
+        if self.n_accum > 1:
+            scale = 1.0 / self.n_accum
+            self.grad_w *= scale
+            if self.bias:
+                self.grad_b *= scale
+            if self.scale:
+                self.ggamma *= scale
+
+        self.optimizer_w.update(self.w, self.grad_w, eta, **kwargs)
         if self.bias:
-            self.optimizer_b.update(self.b, self.grad_b, eta, **kwargs) # 戻り値=更新量
+            self.optimizer_b.update(self.b, self.grad_b, eta, **kwargs)
         if self.scale:
             self.optimizer_g.update(self.gamma, self.ggamma, eta, **kwargs)
-        
+
     def backup(self):
         if self.w_bkup is not None:
             self.w_bkup[...] = self.w
@@ -376,7 +386,6 @@ class WeightsAndBiases:
         if self.scale:
             self.gamma[...] = self.gamma_bkup
 
-
     def accommodate(self):
         m, n = self.layer.get_parameter_size()
         if n <= self.w.shape[1]:
@@ -399,25 +408,26 @@ class WeightsAndBiases:
     def set_gradient(self, *grads, flush=True):
         if flush:
             self.grad_w = grads[0]
+            if self.bias:
+                self.grad_b = grads[1]
+            if self.scale:
+                self.ggamma = grads[-1]
+            self.n_accum = 1
         else:
             self.grad_w += grads[0]
-        if self.bias:
-            if flush:
-                self.grad_b = grads[1]
-            else:
+            if self.bias:
                 self.grad_b += grads[1]
-        if self.scale:
-            if flush:
-                self.ggamma = grads[-1]
-            else:
+            if self.scale:
                 self.ggamma += grads[-1]
+            self.n_accum += 1
 
     def flush_gradient(self):
         self.grad_w = np.zeros_like(self.w, dtype=Config.dtype)
         if self.bias:
             self.grad_b = np.zeros_like(self.b, dtype=Config.dtype)
         if self.scale:
-            self.ggamma = np.array(1.0, dtype=Config.dtype)
+            self.ggamma = np.array(0.0, dtype=Config.dtype)
+        self.n_accum = 0    
 
 #### ニューロンの基本機能 ##############################################
 class LinearLayer(Function):
@@ -462,10 +472,10 @@ class LinearLayer(Function):
         y = self.dot_linear.forward(x, w, b, gamma)
         return y 
         
-    def __backward__(self, grad_y):
+    def __backward__(self, grad_y, flush=True):
         grad_x, grad_w, grad_b, ggamma = self.dot_linear.backward(grad_y)
-        self.parameters.set_gradient(grad_w, grad_b, ggamma) 
-        grad_x = self.prephase.backward(grad_x)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush) 
+        grad_x = self.prephase.backward(grad_x, flush=flush)
         return grad_x
 
     def get_parameter_size(self):
@@ -853,7 +863,7 @@ class LinearLayerCrossEntropy(LinearLayer):
         loss = np.sum(loss) * (tau ** 2 / self.leading_size)
         return max_index, loss
 
-    def backward(self, *args):
+    def backward(self, *args, flush=True):
         m, n = self.config
         x, t = self.x, self.t
         w, b, gamma = self.parameters()
@@ -897,8 +907,9 @@ class LinearLayerCrossEntropy(LinearLayer):
             if self.scale:
                 ggamma += gg
 
-        self.parameters.set_gradient(grad_w, grad_b, ggamma)
-        return self.prephase.backward(grad_x)
+        self.parameters.set_gradient(grad_w, grad_b, ggamma, flush=flush)
+        grad_x = self.prephase.backward(grad_x, flush=flush)
+        return grad_x
 
 
 #### ニューロン関連共通部分 ##############################################
@@ -992,14 +1003,16 @@ class BaseLayer(Function):
         
     def recover(self):
         self.parameters.recover()
-        
+
     def align_config_and_input(self, x):
         self.original_x_shape = x.shape
         if None in self.config:
             self.fix_configuration(x.shape)
 
-        if self.canonical_x_shape is None \
-           or x.shape[1:] == self.canonical_x_shape[1:]:
+        if self.canonical_x_shape is None:
+            self.canonical_x_shape = (-1,) + self.config[:self.typeid + 1]
+
+        if x.shape[1:] == self.canonical_x_shape[1:]:
             self.did_reshape_x = False
             self.feature_axis_preserved = True
             return x
@@ -1051,17 +1064,17 @@ class BaseLayer(Function):
         return y    
             
 
-    def __backward__(self, grad_y, **kwargs):
+    def __backward__(self, grad_y, flush=True, **kwargs):
         if self.did_reshape_y: 
             m, n = self.config
             grad_y = grad_y.reshape(-1, n)
 
         # 後処理の逆伝播
-        grad_y, grad_r = self.postphase.backward(grad_y, **kwargs)
+        grad_y, grad_r = self.postphase.backward(grad_y, flush=flush, **kwargs)
         # コアの逆伝播
-        grad_x = self._backward(grad_y)
+        grad_x = self._backward(grad_y, flush=flush)
         # 前処理の逆伝播
-        grad_x = self.prephase.backward(grad_x)
+        grad_x = self.prephase.backward(grad_x, flush=flush)
         
         if self.did_reshape_x:
             grad_x = grad_x.reshape(*self.original_x_shape)
@@ -1122,11 +1135,11 @@ class PrePhase(Function):
             x = self.activator.forward(x)
         return x
         
-    def __backward__(self, grad_x, **kwargs):
+    def __backward__(self, grad_x, flush=True, **kwargs):
         if self.activator:
             grad_x = self.activator.backward(grad_x)
         if self.Norm:
-            grad_x = self.Norm.backward(grad_x)        # バッチor層ノーマライゼーション
+            grad_x = self.Norm.backward(grad_x, flush=flush) # バッチor層ノーマライゼーション
         return grad_x
 
     def update(self, eta=0.001, **kwargs):
@@ -1194,7 +1207,7 @@ class PostPhase(Function):
             y = self.DO.forward(y, dropout=dropout) # ドロップアウト
         return y    
         
-    def __backward__(self, grad_y, **kwargs):
+    def __backward__(self, grad_y, flush=True, **kwargs):
         if self.DO:
             grad_y = self.DO.backward(grad_y)       # ドロップアウト
         if self.activator:    
@@ -1203,7 +1216,7 @@ class PostPhase(Function):
         grad_r = grad_y      # 加算点のもう一方の枝への局所勾配をそのまま返す
 
         if self.Norm:
-            grad_y = self.Norm.backward(grad_y)     # バッチor層ノーマライゼーション
+            grad_y = self.Norm.backward(grad_y, flush=flush) # バッチor層ノーマライゼーション
         return grad_y, grad_r
 
 #### 基本的な Neuron層 ##############################################
@@ -3746,6 +3759,7 @@ class ParametersForEmbedding:
         self.debug_mode = kwargs.pop('debug_mode', False) # 重みを一律に初期化
         optimize        = kwargs.pop('optimize',   'SGD') 
         self.w, self.grad_w = None, None
+        self.n_accum = 0
         self.optimizer_w = cf.eval_in_module(optimize, Optimizers, **kwargs)
 
     def __call__(self):
@@ -3769,6 +3783,8 @@ class ParametersForEmbedding:
             raise Exception('Invalid method for ' + self.__class__.__name__+' specified.')
 
     def update(self, eta=0.001, **kwargs):
+        if self.n_accum > 1:
+            self.grad_w *= 1.0 / self.n_accum
         self.optimizer_w.update(self.w, self.grad_w, eta=eta, **kwargs)
 
     def accommodate(self):
@@ -3783,12 +3799,17 @@ class ParametersForEmbedding:
         print('new_rows =', new_rows.shape)
         self.w = np.concatenate([self.w, new_rows], axis=0)
         
-    def set_gradient(self, x, gy, flush=True): # 未
-        if flush:
-            self.grad_w = np.zeros_like(self.w, dtype=Config.dtype)
-        elif self.grad_w.shape == self.w.shape:
-            pass
+    def set_gradient(self, x, gy, flush=True): 
+        if flush or self.grad_w is None or self.grad_w.shape != self.w.shape:
+            self.flush_gradient()
+        self.accum += 1
         snp.add_at(self.grad_w, x, gy)
+
+    def flush_gradient(self):
+        self.grad_w = np.zeros_like(self.w, dtype=Config.dtype)
+        self.n_accum = 0
+        
+        
            
             
 #### 時系列データをまとめて処理する Embedding層 #######################
@@ -3837,10 +3858,10 @@ class Embedding(Function):
         raise ValueError(f"Mask shape {mask.shape} does not match input shape {x.shape}" \
                            + self.__class__.__name__)
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         x = self.x
         gx = gy if self.mask is None else gy * self.mask
-        self.parameters.set_gradient(x, gx)
+        self.parameters.set_gradient(x, gx, flush=flush)
             
 
 class LowRankEmbedding(Function):    
@@ -3866,9 +3887,9 @@ class LowRankEmbedding(Function):
         y = self.project.forward(y)
         return y
 
-    def __backward__(self, gy):
-        gx = self.project.backward(gy)
-        self.embed.backward(gx)
+    def __backward__(self, gy, flush=True):
+        gx = self.project.backward(gy, flush=flush)
+        self.embed.backward(gx, flush=flush)
 
     def update(self, eta=0.001, **kwargs):
         self.embed.update(eta=eta, **kwargs)
@@ -3902,12 +3923,12 @@ class PositionalEmbedding:
         self.y = y    
         return y 
 
-    def backward(self, gy=None):
+    def backward(self, gy=None, flush=True):
         """ 逆伝播：入力へ勾配は伝搬しないから形状や剰余などの対応不要 """
         if gy is None:
             gy = np.ones_like(self.y)
-        self.position_embedding.backward(gy) 
-        self.token_embedding.backward(gy)
+        self.position_embedding.backward(gy, flush=flush) 
+        self.token_embedding.backward(gy, flush=flush)
         
     def update(self, **kwargs):
         self.token_embedding.update(**kwargs)
@@ -5026,18 +5047,20 @@ class SelfAttention(Function):
         self.y = y
         return y
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         gx = self.DO.backward(gy)
-        gx = self.linear_o.backward(gx)
+        gx = self.linear_o.backward(gx, flush=flush)
         gq, gk, gv = self.attention.backward(gx)
         if self.q_norm is not None:
             _, head_dim, n_head = self.config
             hq, hk, hv = n_head
             B, T, _ = gq.shape
-            gq = self.q_norm.backward(gq.reshape(B, T, hq, head_dim)).reshape(B, T, -1)
-            gk = self.k_norm.backward(gk.reshape(B, T, hk, head_dim)).reshape(B, T, -1)
+            gq = self.q_norm.backward(gq.reshape(B, T, hq, head_dim), flush=flush)
+            gq = gq.reshape(B, T, -1)
+            gk = self.k_norm.backward(gk.reshape(B, T, hk, head_dim), flush=flush)
+            gk = gk.reshape(B, T, -1)
         gz = np.concatenate([gq, gk, gv], axis=-1)
-        gx = self.linear_i.backward(gz)
+        gx = self.linear_i.backward(gz, flush=flush)
         return gx
 
     def update(self, eta=0.001, **kwargs):
@@ -6042,12 +6065,17 @@ class GeneralNormalizationBase(Function):
                  **kwargs):
         super().__init__()
         self.ppl = ppl
-        self.sb = scale_and_bias     
+        if (type(scale_and_bias) is not bool
+                and not (type(scale_and_bias) is str and scale_and_bias == 'scale')):
+            raise ValueError("scale_and_bias must be False, True, or 'scale'")
+        self.sb = scale_and_bias is not False
+        self.use_beta = scale_and_bias is True
         self.axis = axis
         self.eps = eps
         self.mu = None
         self.sigma = None
         self.inplace = inplace
+        self.n_accum = 0
         if ppl: # 非訓練時に移動平均を使用(バッチノーマライゼーション)
             self.mu_ppl = None
             self.sigma_ppl = None
@@ -6058,9 +6086,12 @@ class GeneralNormalizationBase(Function):
             self.exclude = exclude   # 処理がaxisの指定に沿うのか否か
             optimize = kwargs.pop('optimize',     'AdaGrad') # 勾配降下法
             self.OFg = cf.eval_in_module(optimize, Optimizers) # 最適化関数
-            self.OFb = cf.eval_in_module(optimize, Optimizers) # 最適化関数
+            if self.use_beta:
+                self.OFb = cf.eval_in_module(optimize, Optimizers) # 最適化関数
             self.gamma = None
             self.beta  = None
+            self.ggamma = None
+            self.gbeta  = None
 
     def init_parameters(self, shape):
         if self.ppl:
@@ -6073,8 +6104,9 @@ class GeneralNormalizationBase(Function):
             """ 軸の指定に従いparameterの形状を決めて初期化、指定外の軸も設定 """
             parameter_shape, remain_axis \
                              = set_axis_and_shape(shape, self.axis, self.exclude)
-            self.gamma = np.ones(parameter_shape, dtype=Config.dtype)    # 広がり                    
-            self.beta = np.zeros(parameter_shape, dtype=Config.dtype)    # オフセット                    
+            self.gamma = np.ones(parameter_shape, dtype=Config.dtype)    # 広がり
+            if self.use_beta:
+                self.beta = np.zeros(parameter_shape, dtype=Config.dtype) # オフセット
             self.remain_axis = remain_axis # 逆伝播に必要
 
     def update(self, eta=0.001, **kwargs):
@@ -6082,8 +6114,21 @@ class GeneralNormalizationBase(Function):
             self.OFm.update(self.mu_ppl,    self.mu_ppl    - self.mu,    eta=0.1)
             self.OFs.update(self.sigma_ppl, self.sigma_ppl - self.sigma, eta=0.1)
         if self.sb:
-            self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
-            self.OFb.update(self.beta,  self.gbeta,  eta, **kwargs)  
+            if self.n_accum > 1:
+                scale = 1.0 / self.n_accum
+                self.ggamma *= scale
+                if self.use_beta:
+                    self.gbeta *= scale
+            self.OFg.update(self.gamma, self.ggamma, eta, **kwargs)
+            if self.use_beta:
+                self.OFb.update(self.beta, self.gbeta, eta, **kwargs)
+
+    def flush_gradient(self):
+        if self.sb:
+            self.ggamma = np.zeros_like(self.gamma)
+            if self.use_beta:
+                self.gbeta = np.zeros_like(self.beta)
+        self.n_accum = 0
 
     def __forward__(self, x, *, train=False):
         self.x = x
@@ -6099,52 +6144,42 @@ class GeneralNormalizationBase(Function):
 
         if self.sb:
             y *= (self.gamma/sigma)          # Norm/sbの除乗算を同時に
-            y += self.beta
+            if self.use_beta:
+                y += self.beta
         else:
             y /= sigma
            
         return y        
 
-    def __backward__(self, gy):
-        #x, = self.inputs
+    def __backward__(self, gy, flush=True):
         x = self.x
-        #y = self.get_outputs()
-        n = x.size // self.sigma.size        # 正規化対象の要素数
-        z = (x - self.mu) / self.sigma       # 中間値：Norm出力=Scale&Bias入力
-
-        if self.sb:
-            self.gbeta  = np.sum(gy, axis=self.remain_axis, keepdims=True)
-            self.ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
-            gx = gy * self.gamma
-        else:
-            gx = gy if self.inplace else gy.copy()
-
-        gsigma = np.sum(-gx * z, axis=self.axis, keepdims=True) / self.sigma 
-        gx /= self.sigma
-        gmu = np.sum(gx, axis=self.axis, keepdims=True) 
-        gx -= (gmu / n)
-        gx += z * (gsigma / n)
-        return gx 
-
-    def __backward__bkup(self, gy):
-        x = self.x
-        #y = self.get_outputs()
         n = x.size // self.sigma.size        # 正規化対象の要素数
         z = (x - self.mu) / self.sigma       # Norm出力=Scale&Bias入力
 
         if self.sb:
-            self.gbeta  = np.sum(gy, axis=self.remain_axis, keepdims=True)
-            self.ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
+            ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
+            if self.use_beta:
+                gbeta = np.sum(gy, axis=self.remain_axis, keepdims=True)
+            if flush:
+                self.ggamma = ggamma
+                if self.use_beta:
+                    self.gbeta = gbeta
+                self.n_accum = 1
+            else:
+                self.ggamma += ggamma
+                if self.use_beta:
+                    self.gbeta += gbeta
+                self.n_accum += 1
             gx = gy * self.gamma
         else:
-            gx = gy
+            gx = gy if self.inplace else gy.copy()
 
-        sum_gx = np.sum(gx, axis=self.axis, keepdims=True)
-        sum_gx_y = np.sum(gx * z, axis=self.axis, keepdims=True)
-        gx = (gx - sum_gx / n - z * (sum_gx_y / n)) / self.sigma
-
+        gsigma = np.sum(-gx * z, axis=self.axis, keepdims=True) / self.sigma
+        gx /= self.sigma
+        gmu = np.sum(gx, axis=self.axis, keepdims=True)
+        gx -= (gmu / n)
+        gx += z * (gsigma / n)
         return gx
-
 
 
 #### 正規化の汎用ベース #### 
@@ -6290,6 +6325,7 @@ class RootMeanSquareNormalization(Function):
         self.eps = eps
         self.sigma = None
         self.inplace = inplace
+        self.n_accum = 0
         if ppl: # 非訓練時に移動平均を使用(バッチノーマライゼーション)
             self.sigma_ppl = None
             self.OFs = cf.eval_in_module('SGD', Optimizers) # 最適化関数は固定
@@ -6302,7 +6338,9 @@ class RootMeanSquareNormalization(Function):
                 self.OFb = cf.eval_in_module(optimize, Optimizers) # 最適化関数
             self.gamma = None
             self.beta  = None
-
+            self.ggamma = None
+            self.gbeta  = None
+          
     def init_parameters(self, shape):
         if self.ppl:
             """ 軸の指定に従いmuとsigmaの形状を決めて初期化 """
@@ -6323,9 +6361,21 @@ class RootMeanSquareNormalization(Function):
             self.OFs.update(self.sigma_ppl, self.sigma_ppl - self.sigma, eta=0.1)
 
         if self.sb:
+            if self.n_accum > 1:
+                scale = 1.0 / self.n_accum
+                self.ggamma *= scale
+                if self.use_beta:
+                    self.gbeta *= scale
             self.OFg.update(self.gamma, self.ggamma, eta, **kwargs) 
             if self.use_beta:
                 self.OFb.update(self.beta, self.gbeta, eta, **kwargs)
+
+    def flush_gradient(self):
+        if self.sb:
+            self.ggamma = np.zeros_like(self.gamma)
+            if self.use_beta:
+                self.gbeta = np.zeros_like(self.beta)
+        self.n_accum = 0
 
     def __forward__(self, x, *, train=False):
         self.x = x
@@ -6345,24 +6395,36 @@ class RootMeanSquareNormalization(Function):
            
         return y        
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         x = self.x
-        #y = self.get_outputs()
         n = x.size // self.sigma.size        # 正規化対象の要素数
         z = x / self.sigma                   # 中間値：Norm出力=Scale&Bias入力
 
         if self.sb:
+            ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
             if self.use_beta:
-                self.gbeta = np.sum(gy, axis=self.remain_axis, keepdims=True)
-            self.ggamma = np.sum(gy * z, axis=self.remain_axis, keepdims=True)
+                gbeta = np.sum(gy, axis=self.remain_axis, keepdims=True)
+
+            if flush:
+                self.ggamma = ggamma
+                if self.use_beta:
+                    self.gbeta = gbeta
+                self.n_accum = 1
+            else:
+                self.ggamma += ggamma
+                if self.use_beta:
+                    self.gbeta += gbeta
+                self.n_accum += 1
+
             gx = gy * self.gamma
         else:
             gx = gy if self.inplace else gy.copy()
 
-        gsigma = np.sum(-gx * z, axis=self.axis, keepdims=True) / self.sigma 
+        gsigma = np.sum(-gx * z, axis=self.axis, keepdims=True) / self.sigma
         gx /= self.sigma
         gx += z * (gsigma / n)
-        return gx 
+        return gx
+
 
 class RMSNormalization(RootMeanSquareNormalization):
     def __init__(self, axis=-1, scale_and_bias=False, inplace=False, **kwargs):

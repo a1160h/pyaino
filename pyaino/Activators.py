@@ -1,5 +1,5 @@
 ﻿# Activators
-# 2026.11.20 A.Inoue
+# 2026.11.24 A.Inoue
 
 from pyaino.Config import *
 from pyaino.nucleus import Function
@@ -12,6 +12,9 @@ class ActivatorBase(Function):
 
     def forward(self, x, **kwargs):
         return super().forward(x)     # kwargsは無視する
+
+    def backward(self, *gys, **kwargs):
+        return super().backward(*gys)  # kwargsは無視する
     
     def update(self, *args, **kwargs): 
         pass                          # update()メソッドは何もしない 
