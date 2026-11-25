@@ -1,5 +1,5 @@
 ﻿# Neuron
-# 20261124 A.Inoue
+# 20261125 A.Inoue
 
 import copy
 import warnings
@@ -1004,22 +1004,25 @@ class BaseLayer(Function):
     def recover(self):
         self.parameters.recover()
 
+
     def align_config_and_input(self, x):
         self.original_x_shape = x.shape
         if None in self.config:
             self.fix_configuration(x.shape)
 
-        if self.canonical_x_shape is None:
-            self.canonical_x_shape = (-1,) + self.config[:self.typeid + 1]
+        shape = self.canonical_x_shape
 
-        if x.shape[1:] == self.canonical_x_shape[1:]:
+        if shape is None and self.typeid==0 and not self.matmul:
+            shape = (-1, self.config[0])
+
+        if shape is None or x.shape[1:]==shape[1:]:
             self.did_reshape_x = False
             self.feature_axis_preserved = True
             return x
 
         self.did_reshape_x = True
-        self.feature_axis_preserved = (x.shape[-1]==self.config[0]) # True/False
-        return x.reshape(*self.canonical_x_shape)   # (-1,m)
+        self.feature_axis_preserved = (x.shape[-1]==self.config[0])
+        return x.reshape(*shape)
 
     def align_output(self, y):
         # 仮設定(そのままor後で上書き)
@@ -3800,7 +3803,7 @@ class ParametersForEmbedding:
         self.w = np.concatenate([self.w, new_rows], axis=0)
         
     def set_gradient(self, x, gy, flush=True): 
-        if flush or self.grad_w is None or self.grad_w.shape != self.w.shape:
+        if flush: # flush==Falseの場合には初回は明示的にflush_gradient()が必要
             self.flush_gradient()
         self.accum += 1
         snp.add_at(self.grad_w, x, gy)
