@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20261012 A.Inoue
+# 20261125 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -25,10 +25,10 @@ class FeedForward_bkup:
         y = self.net.forward(x, dropout=dropout)
         return y
 
-    def backward(self, gy=None):
+    def backward(self, gy=None, flush=True):
         if gy is None:
             gy = np.ones_like(self.y)
-        gx = self.net.backward(gy)    
+        gx = self.net.backward(gy, flush=flush)    
         return gx
 
     def update(self, **kwargs):
@@ -71,11 +71,11 @@ class FeedForward(nucleus.Function):
         y = self.DO.forward(y, dropout=dropout)
         return y
         
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         gx = self.DO.backward(gy)
-        gx = self.linear_o.backward(gx)
+        gx = self.linear_o.backward(gx, flush=flush)
         gx = self.act.backward(gx)
-        gx = self.linear_i.backward(gx)
+        gx = self.linear_i.backward(gx, flush=flush)
         return gx
 
     def update(self, **kwargs):
@@ -130,14 +130,14 @@ class SwiGLU(nucleus.Function):
         y = self.DO.forward(y, dropout=dropout)
         return y
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         gy = self.DO.backward(gy)
-        gprod = self.linear_o.backward(gy)
+        gprod = self.linear_o.backward(gy, flush=flush)
         ggate = gprod * self.up
         gup = gprod * self.gate
-        gx = self.linear_i.backward(gup)
+        gx = self.linear_i.backward(gup, flush=flush)
         ggate = self.act.backward(ggate)
-        gx = gx + self.linear_g.backward(ggate)
+        gx = gx + self.linear_g.backward(ggate, flush=flush)
         return gx
 
     def update(self, **kwargs):
@@ -203,17 +203,17 @@ class CausalConvFeedForward2(nucleus.Function):
         return y
 
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         gx = self.DO.backward(gy)
-        gx = self.linear_o.backward(gx) # (B,T,H) -> (B,T,H)
+        gx = self.linear_o.backward(gx, flush=flush) # (B,T,H) -> (B,T,H)
         gx = gx.transpose(0, 2, 1)      # (B,T,H) -> (B,H,T) 
         gx = self.act1.backward(gx)
-        gx = self.conv1.backward(gx)     # (B,H,T) -> (B,H,T+pad)
+        gx = self.conv1.backward(gx, flush=flush)     # (B,H,T) -> (B,H,T+pad)
         pad = self.kernel_size - 1
         if pad > 0:
             gx = gx[:, :, pad:]
         gx = self.act0.backward(gx)
-        gx = self.conv0.backward(gx)     # (B,H,T) -> (B,H,T+pad)
+        gx = self.conv0.backward(gx, flush=flush)     # (B,H,T) -> (B,H,T+pad)
         pad = self.kernel_size - 1
         if pad > 0:
             gx = gx[:, :, pad:]
@@ -277,13 +277,13 @@ class CausalConvFeedForward(nucleus.Function):
         return y
 
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         gx = self.DO.backward(gy)
-        gx = self.linear_o.backward(gx) # (B,T,H) -> (B,T,H)
+        gx = self.linear_o.backward(gx, flush=flush) # (B,T,H) -> (B,T,H)
         
         gx = gx.transpose(0, 2, 1)      # (B,T,H) -> (B,H,T) 
         gx = self.act.backward(gx)
-        gx = self.conv.backward(gx)     # (B,H,T) -> (B,H,T+pad)
+        gx = self.conv.backward(gx, flush=flush)     # (B,H,T) -> (B,H,T+pad)
         pad = self.kernel_size - 1
         if pad > 0:
             gx = gx[:, :, pad:]
@@ -351,19 +351,19 @@ class CausalConvFeedForward_bkup(nucleus.Function):
         return y
 
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         gx = self.DO.backward(gy)
-        gx = self.linear_o.backward(gx) # (B,T,H) -> (B,T,I)
+        gx = self.linear_o.backward(gx, flush=flush) # (B,T,H) -> (B,T,I)
         
         gx = self.act.backward(gx)
         gx = gx.transpose(0, 2, 1)      # (B,T,I) -> (B,I,T) 
-        gx = self.conv.backward(gx)     # (B,I,T) -> (B,I,T+pad)
+        gx = self.conv.backward(gx, flush=flush)     # (B,I,T) -> (B,I,T+pad)
         pad = self.kernel_size - 1
         if pad > 0:
             gx = gx[:, :, pad:]
         gx = gx.transpose(0, 2, 1)      # (B,I,T) -> (B,T,I)
 
-        gx = self.linear_i.backward(gx)
+        gx = self.linear_i.backward(gx, flush=flush)
         return gx
 
     def update(self, **kwargs):
@@ -456,19 +456,19 @@ class TransformerBlock(nucleus.Function):
         self.y = y
         return y
 
-    def __backward__(self, gy):
-        gz = self.ffwd.backward(gy)     
-        gz = self.ln2.backward(gz)      
+    def __backward__(self, gy, flush=True):
+        gz = self.ffwd.backward(gy, flush=flush)     
+        gz = self.ln2.backward(gz, flush=flush)      
         gz += gy                        
 
         if self.proj_used:
             gu = np.sum(gz, axis=1)     # u[:,None,:]として足し込んでいるのでsumで戻す
-            gv = self.proj.backward(gu)
+            gv = self.proj.backward(gu, flush=flush)
         else:
             gv = None
 
-        gx = self.sa.backward(gz)
-        gx = self.ln1.backward(gx)
+        gx = self.sa.backward(gz, flush=flush)
+        gx = self.ln1.backward(gx, flush=flush)
         gx += gz
 
         if not self.proj_used:
@@ -549,32 +549,32 @@ class ConvBlock(nucleus.Function):
             y = self.convs[1](y, train=train)
         return y
         
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         # convs[1] 側
         if self.residual:
-            gy, gr = self.convs[1].backward(gy)
+            gy, gr = self.convs[1].backward(gy, flush=flush)
 
             if self.shortcut_used:
-                gx = self.shortcut.backward(gr)
+                gx = self.shortcut.backward(gr, flush=flush)
             else:
                 gx = gr
         else:
-            gy = self.convs[1].backward(gy)
+            gy = self.convs[1].backward(gy, flush=flush)
             gx = 0
 
         # attention
         if self.attn is not None:
-            gy = self.attn.backward(gy)
+            gy = self.attn.backward(gy, flush=flush)
 
         # time / label projection injection
         if self.proj_used:
             gz = gy.sum(axis=(2, 3))
-            gv = self.proj.backward(gz)
+            gv = self.proj.backward(gz, flush=flush)
         else:
             gv = None
 
         # convs[0]
-        gx = self.convs[0].backward(gy) + gx
+        gx = self.convs[0].backward(gy, flush=flush) + gx
 
         if self.proj_used:
             return gx, gv
@@ -588,6 +588,8 @@ class ConvBlock(nucleus.Function):
     def update(self, eta=0.001, **kwargs):
         if self.proj is not None and self.proj_used:
             self.proj.update(eta=eta, **kwargs)
+        if self.attn is not None:     
+            self.attn.update(eta=eta, **kwargs)    
         for conv in self.convs:
             conv.update(eta=eta, **kwargs)
         if self.residual and self.shortcut_used:
@@ -672,33 +674,33 @@ class ConvBlockBottleneck(ConvBlock):
         return y
 
 
-    def __backward__(self, gy):
+    def __backward__(self, gy, flush=True):
         # convs[2] 側
         if self.residual:
-            gy, gr = self.convs[2].backward(gy)
+            gy, gr = self.convs[2].backward(gy, flush=flush)
 
             if self.shortcut_used:
-                gx = self.shortcut.backward(gr)
+                gx = self.shortcut.backward(gr, flush=flush)
             else:
                 gx = gr
         else:
-            gy = self.convs[2].backward(gy)
+            gy = self.convs[2].backward(gy, flush=flush)
             gx = 0
 
         # attention
         if self.attn is not None:
-            gy = self.attn.backward(gy)
+            gy = self.attn.backward(gy, flush=flush)
 
         # time / label projection injection
         if self.proj_used:
             gz = gy.sum(axis=(2, 3))
-            gv = self.proj.backward(gz)
+            gv = self.proj.backward(gz, flush=flush)
         else:
             gv = None
 
         # convs[1] -> convs[0]
-        gy = self.convs[1].backward(gy)
-        gx = self.convs[0].backward(gy) + gx
+        gy = self.convs[1].backward(gy, flush=flush)
+        gx = self.convs[0].backward(gy, flush=flush) + gx
 
         if self.proj_used:
             return gx, gv
@@ -875,14 +877,14 @@ class LmHead:
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
-    def backward(self, gy=None):
+    def backward(self, gy=None, flush=True):
         if self.unify:
-            gx = self.linear_layer.backward()
+            gx = self.linear_layer.backward(flush=flush)
         else:
             if gy is None: # gyが指定されない場合は損失関数から得る
                 gy = self.loss_function.backward()
-            gx = self.linear_layer.backward(gy)
-        gx = self.ln_f.backward(gx)
+            gx = self.linear_layer.backward(gy, flush=flush)
+        gx = self.ln_f.backward(gx, flush=flush)
         return gx     
 
     def update(self, **kwargs):
@@ -928,14 +930,14 @@ class TransformerBlock_bkup: # 使わなくなった20260616AI
         self.y = y
         return y
 
-    def backward(self, gy=None):
+    def backward(self, gy=None, flush=True):
         if gy is None:
             gy = np.ones_like(self.y)
-        gz = self.ffwd.backward(gy)
-        gz = self.ln2.backward(gz)
+        gz = self.ffwd.backward(gy, flush=flush)
+        gz = self.ln2.backward(gz, flush=flush)
         gz += gy
-        gx = self.sa.backward(gz)
-        gx = self.ln1.backward(gx)
+        gx = self.sa.backward(gz, flush=flush)
+        gx = self.ln1.backward(gx, flush=flush)
         gx += gz
         return gx
 
