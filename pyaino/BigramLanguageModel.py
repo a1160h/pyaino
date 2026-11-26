@@ -1,5 +1,5 @@
 # BigramLanguageModel
-# 20261014 A.Inoue
+# 20261126 A.Inoue
 
 from pyaino.Config import *
 #set_np('numpy'); np=Config.np
@@ -17,7 +17,8 @@ class ModelBase:
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, unify=False,
                  ffwd='ffn', intermediate=None, expansion=4,
                  rms=False, optimize='AdamT', w_decay=0.001, ignore=-1,
-                 positional_embedding=True, rope=False, **kwargs):
+                 positional_embedding=True, rope=False,
+                 bias=(False, True), lm_head_bias=True, **kwargs):
 
         kwargs['optimize']  = optimize
         #kwargs['decayrate'] = decayrate
@@ -36,7 +37,7 @@ class ModelBase:
         self.blocks = Neuron.Sequential(
             *[sbh.TransformerBlock(
                 emb_dim, n_head, 'tri', False, ffwd, intermediate, expansion,
-                rms, chunk_size=chunk_size, rope=rope, **kwargs)
+                rms, chunk_size=chunk_size, rope=rope, bias=bias, **kwargs)
               for _ in range(n_layer)]
             )
 
@@ -44,7 +45,8 @@ class ModelBase:
         matmul = True                   
         tile_size = 1000 if vocab_size > 1000 else None 
         self.lm_head = sbh.LmHead(
-            emb_dim, vocab_size, matmul, unify, rms, tile_size, **kwargs)
+            emb_dim, vocab_size, matmul, unify, rms, tile_size,
+            bias=lm_head_bias, **kwargs)
 
         if not unify: # 以下2項は明示的に見せる必要がある
             self.softmax = Activators.Softmax()
@@ -201,10 +203,10 @@ class BigramLanguageModel(ModelBase):
         y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
         return y
 
-    def backward(self, gy=None):
-        gx = self.lm_head.backward(gy)
-        gx = self.blocks.backward(gx)
-        self.embed.backward(gx)
+    def backward(self, gy=None, flush=True):
+        gx = self.lm_head.backward(gy, flush=flush)
+        gx = self.blocks.backward(gx, flush=flush)
+        self.embed.backward(gx, flush=flush)
 
     def update(self, **kwargs):
         self.embed.update(**kwargs)
@@ -238,13 +240,13 @@ class BigramLanguageModel2(ModelBase):
         y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
         return y
     
-    def backward(self, gy=None):
-        gz = self.lm_head.backward(gy)
-        gz = self.blocks.backward(gz)
-        gx = self.pffwd.backward(gz)
-        gx = self.ln_pf.backward(gx)
+    def backward(self, gy=None, flush=True):
+        gz = self.lm_head.backward(gy, flush=flush)
+        gz = self.blocks.backward(gz, flush=flush)
+        gx = self.pffwd.backward(gz, flush=flush)
+        gx = self.ln_pf.backward(gx, flush=flush)
         gx += gz
-        self.embed.backward(gx)
+        self.embed.backward(gx, flush=flush)
 
     def update(self, **kwargs):
         self.embed.update(**kwargs)
@@ -332,18 +334,70 @@ class BigramLanguageModel5(ModelBase):
         y = self.lm_head(x, targets) # logits.shape=(B,T,vocab_size)
         return y
     
-    def backward(self, gy=None):
-        gz = self.lm_head.backward(gy)
-        gz = self.blocks.backward(gz)
-        gx = self.pffwd.backward(gz)
+    def backward(self, gy=None, flush=True):
+        gz = self.lm_head.backward(gy, flush=flush)
+        gz = self.blocks.backward(gz, flush=flush)
+        gx = self.pffwd.backward(gz, flush=flush)
         gx += gz
-        self.embed.backward(gx)
+        self.embed.backward(gx, flush=flush)
 
     def update(self, **kwargs):
         self.embed.update(**kwargs)
         self.pffwd.update(**kwargs)
         self.blocks.update(**kwargs)
         self.lm_head.update(**kwargs)
+
+
+class QwenModel(ModelBase):
+    """Qwen3構成。共通のModelBaseを使い、重み共有だけをこのクラスで管理する。"""
+    def __init__(self, vocab_size=151936, block_size=40960, emb_dim=1024,
+                 n_layer=28, n_head=(16, 8), head_dim=128, intermediate=3072,
+                 unify=True, **kwargs):
+        super().__init__(
+            vocab_size=vocab_size, block_size=block_size, emb_dim=emb_dim,
+            n_layer=n_layer, n_head=n_head, head_dim=head_dim,
+            unify=unify, ffwd='swiglu', intermediate=intermediate, activate=None,
+            rms=True, scale_and_bias='scale', eps=1e-6,
+            positional_embedding=False, rope=True,
+            rope_mode='half', rope_base=1e6,
+            qk_norm=True, qk_norm_eps=1e-6,
+            bias=(False, False), lm_head_bias=False, scale=False, **kwargs)
+
+    def tie_weights(self):
+        w = self.embed.parameters()
+        head = self.lm_head.linear_layer
+        head.config = (w.shape[1], w.shape[0])
+        head.parameters.w = w.T
+
+    def _merge_tied_gradient(self):
+        e = self.embed.parameters
+        h = self.lm_head.linear_layer.parameters
+        if e.n_accum < 1 or e.n_accum != h.n_accum:
+            raise RuntimeError('Tied gradient accumulation count mismatch')
+        e.grad_w += h.grad_w.T
+
+    def forward(self, idx, targets=None, mask=None, dropout=0.0):
+        x = self.embed.forward(idx)
+        x = self.blocks.forward(x, mask=mask, dropout=dropout)
+        self.tie_weights()
+        y = self.lm_head(x, targets)
+        return y
+
+    def backward(self, gy=None, flush=True):
+        gx = self.lm_head.backward(gy, flush=flush)
+        gx = self.blocks.backward(gx, flush=flush)
+        self.embed.backward(gx, flush=flush)
+
+    def update(self, **kwargs):
+        self._merge_tied_gradient()
+        self.embed.update(**kwargs)
+        self.blocks.update(**kwargs)
+        self.lm_head.ln_f.update(**kwargs)
+
+    def accommodate(self):
+        self.embed.accommodate()
+        self.tie_weights()
+        self.vocab_size = self.embed.parameters.w.shape[0]
 
 
 def graph_plus(error_record=None, entropy_record=None, kldjsd_record=None,

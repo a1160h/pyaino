@@ -1,5 +1,5 @@
 # stems_blocks_heads
-# 20261125 A.Inoue
+# 20261126 A.Inoue
 
 from pyaino.Config import *
 from pyaino import nucleus
@@ -845,11 +845,11 @@ class LmHead:
     # 隠れ状態を語彙サイズのベクトルに変換,unifyに従い最終LN～最終層～損失関数を構築
     def __init__(self, emb_dim, vocab_size, matmul=True, unify=True, rms=False, 
                        tile_size=200, ignore=-1, **kwargs):
-        optimize = kwargs.get('optimize', 'AdamT')
+        kwargs.setdefault('optimize', 'AdamT')
         if rms:
-            self.ln_f = nn.RMSNormalization(optimize=optimize)
-        else:    
-            self.ln_f = nn.LayerNormalization(optimize=optimize) #mask_enable=True) 
+            self.ln_f = nn.RMSNormalization(**kwargs)
+        else:
+            self.ln_f = nn.LayerNormalization(**kwargs)
         if unify: # 損失関数までの一体処理
             self.linear_layer = nn.LinearLayerCrossEntropy(
                 emb_dim, vocab_size, matmul=matmul, tile_size=tile_size,
