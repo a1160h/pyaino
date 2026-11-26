@@ -16,13 +16,17 @@ class ModelBase:
     """ 共通ベース """
     def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4, unify=False,
                  ffwd='ffn', intermediate=None, expansion=4,
-                 rms=False, optimize='AdamT', w_decay=0.001, ignore=-1,
+                 rms=False, ignore=-1,
                  positional_embedding=True, rope=False,
                  bias=(False, True), lm_head_bias=True, **kwargs):
 
-        kwargs['optimize']  = optimize
-        #kwargs['decayrate'] = decayrate
-        kwargs['w_decay']   = w_decay
+        self.emb_dim = emb_dim
+        self.intermediate = intermediate
+        self.expansion = expansion
+        self.rms = rms
+        kwargs.setdefault('optimize', 'AdamT')
+        kwargs.setdefault('w_decay',    0.001)
+        self.kwargs = kwargs
         chunk_size = kwargs.pop('chunk_size', None) # Attention用
 
         # -- Embedding -------------------------------------------------
@@ -215,21 +219,21 @@ class BigramLanguageModel(ModelBase):
 
 class BigramLanguageModel2(ModelBase):
     """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 intermediate=None, expansion=4, **kwargs):
+    def __init__(self, *args, **kwargs):
 
-        rms      = kwargs.pop('rms',        False)
-        optimize = kwargs.pop('optimize', 'AdamT')
-        w_decay  = kwargs.pop('w_decay',     0.01)
+        super().__init__(*args, **kwargs)
 
-        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                         intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
-        
-        if rms:
-            self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
+        kwargs = self.kwargs        
+        expansion = self.expansion
+        emb_dim = self.emb_dim
+        intermediate = self.intermediate
+
+        if self.rms:
+            self.ln_pf = Neuron.RMSNormalization(optimize=kwargs['optimize'])
         else:    
-            self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
-        self.pffwd = sbh.FeedForward(emb_dim, intermediate, expansion, optimize=optimize, w_decay=w_decay, **kwargs)
+            self.ln_pf = Neuron.LayerNormalization(optimize=kwargs['optimize'])
+
+        self.pffwd = sbh.FeedForward(emb_dim, intermediate, expansion, **kwargs)
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
@@ -257,74 +261,59 @@ class BigramLanguageModel2(ModelBase):
 
 class BigramLanguageModel2a(BigramLanguageModel2):
     """ GPT2：Embedding と最初の Block の間に LayerNorm + 2層FFN を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 intermediate=None, expansion=4, **kwargs):
+    def __init__(self, *args, **kwargs):
 
-        rms      = kwargs.pop('rms',        False)
-        optimize = kwargs.pop('optimize', 'AdamT')
-        w_decay  = kwargs.pop('w_decay',     0.01)
-        ffwd     = kwargs.get('ffwd',       'ffn')
+        ModelBase.__init__(self, *args, **kwargs)
 
-        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                           intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        kwargs = self.kwargs
+        expansion = self.expansion
+        emb_dim = self.emb_dim
+        intermediate = self.intermediate
         
-        if rms:
-            self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
+        if self.rms:
+            self.ln_pf = Neuron.RMSNormalization(optimize=kwargs['optimize'])
         else:    
-            self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
+            self.ln_pf = Neuron.LayerNormalization(optimize=kwargs['optimize'])
 
-        self.pffwd = sbh.CausalConvFeedForward(
-                emb_dim, intermediate, expansion, optimize=optimize, w_decay=w_decay, **kwargs)
+        self.pffwd = sbh.CausalConvFeedForward(emb_dim, intermediate, expansion, **kwargs)
 
 class BigramLanguageModel3(BigramLanguageModel2):
     """ GPT3：Embedding と最初の Block の間に LayerNorm + 単層LinearLayer を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 intermediate=None, expansion=4, **kwargs):
+    def __init__(self, *args, **kwargs):
 
-        rms      = kwargs.pop('rms',        False)
-        optimize = kwargs.pop('optimize', 'AdamT')
-        w_decay  = kwargs.pop('w_decay',     0.01)
-
-        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                           intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        ModelBase.__init__(self, *args, **kwargs)
         
-        if rms:
-            self.ln_pf = Neuron.RMSNormalization(optimize=optimize)
+        kwargs = self.kwargs        
+        emb_dim = self.emb_dim
+
+        if self.rms:
+            self.ln_pf = Neuron.RMSNormalization(optimize=kwargs['optimize'])
         else:    
-            self.ln_pf = Neuron.LayerNormalization(optimize=optimize)
-        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
-                                        matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
+            self.ln_pf = Neuron.LayerNormalization(optimize=kwargs['optimize'])
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
    
 class BigramLanguageModel4(BigramLanguageModel2):
     """ GPT4：Embedding と最初の Block の間に 簡易LN + 単層LinearLayer を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 intermediate=None, expansion=4, **kwargs):
+    def __init__(self, *args, **kwargs):
 
-        rms      = kwargs.pop('rms',        False)
-        optimize = kwargs.pop('optimize', 'AdamT')
-        w_decay  = kwargs.pop('w_decay',     0.01)
+        ModelBase.__init__(self, *args, **kwargs)
 
-        ModelBase.__init__(self, vocab_size, block_size, emb_dim, n_layer, n_head,
-                           intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        kwargs = self.kwargs        
+        emb_dim = self.emb_dim
         
-        self.ln_pf = Neuron.Normalization(axis=-1)
-        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
-                                        matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
+        self.ln_pf = Neuron.LayerNormalization(axis=-1, scale_and_bias=False)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
 
 class BigramLanguageModel5(ModelBase):
     """ GPT5：Embedding と最初の Block の間に単層LinearLayer を挿入 """
-    def __init__(self, vocab_size=10000, block_size=500, emb_dim=64, n_layer=4, n_head=4,
-                 intermediate=None, expansion=4, **kwargs):
+    def __init__(self, *args, **kwargs):
 
-        rms      = kwargs.pop('rms',        False)
-        optimize = kwargs.pop('optimize', 'AdamT')
-        w_decay  = kwargs.pop('w_decay',     0.01)
+        super().__init__(*args, **kwargs)
 
-        super().__init__(vocab_size, block_size, emb_dim, n_layer, n_head,
-                         intermediate=intermediate, expansion=expansion, rms=rms, optimize=optimize, w_decay=w_decay, **kwargs)
+        kwargs = self.kwargs
+        emb_dim = self.emb_dim
         
-        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim,
-                                        matmul=True, optimize=optimize, w_decay=w_decay, **kwargs)
+        self.pffwd = Neuron.LinearLayer(emb_dim, emb_dim, matmul=True, **kwargs)
 
     def forward(self, idx, targets=None, mask=None, dropout=0.0):
         x = self.embed.forward(idx)
@@ -350,26 +339,37 @@ class BigramLanguageModel5(ModelBase):
 
 class QwenModel(ModelBase):
     """Qwen3構成。共通のModelBaseを使い、重み共有だけをこのクラスで管理する。"""
-    def __init__(self, vocab_size=151936, block_size=40960, emb_dim=1024,
-                 n_layer=28, n_head=(16, 8), head_dim=128, intermediate=3072,
-                 unify=True, **kwargs):
-        super().__init__(
-            vocab_size=vocab_size, block_size=block_size, emb_dim=emb_dim,
-            n_layer=n_layer, n_head=n_head, head_dim=head_dim,
-            unify=unify, ffwd='swiglu', intermediate=intermediate, activate=None,
+    def __init__(self, *args, **kwargs):
+
+        model_settings = dict(
+            vocab_size=151936, block_size=40960, emb_dim=1024,
+            n_layer=28, n_head=(16, 8), head_dim=128,
+            intermediate=3072, unify=True,
+            ffwd='swiglu', activate=None,
             rms=True, scale_and_bias='scale', eps=1e-6,
             positional_embedding=False, rope=True,
             rope_mode='half', rope_base=1e6,
             qk_norm=True, qk_norm_eps=1e-6,
-            bias=(False, False), lm_head_bias=False, scale=False, **kwargs)
+            bias=(False, False), lm_head_bias=False, scale=False,
+        )
 
+        # 位置引数もmodel_settingsに組み込む
+        names = ('vocab_size', 'block_size', 'emb_dim', 'n_layer', 'n_head',
+                 'unify', 'ffwd', 'intermediate')
+
+        model_settings.update(zip(names, args))
+        model_settings.update(kwargs)
+
+        super().__init__(**model_settings)
+
+        
     def tie_weights(self):
         w = self.embed.parameters()
         head = self.lm_head.linear_layer
         head.config = (w.shape[1], w.shape[0])
         head.parameters.w = w.T
 
-    def _merge_tied_gradient(self):
+    def merge_tied_gradient(self):
         e = self.embed.parameters
         h = self.lm_head.linear_layer.parameters
         if e.n_accum < 1 or e.n_accum != h.n_accum:
@@ -389,7 +389,7 @@ class QwenModel(ModelBase):
         self.embed.backward(gx, flush=flush)
 
     def update(self, **kwargs):
-        self._merge_tied_gradient()
+        self.merge_tied_gradient()
         self.embed.update(**kwargs)
         self.blocks.update(**kwargs)
         self.lm_head.ln_f.update(**kwargs)
